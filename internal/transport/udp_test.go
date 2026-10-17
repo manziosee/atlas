@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -63,7 +64,7 @@ func TestDropsPacketsFromForeignCluster(t *testing.T) {
 
 func TestRejectsOversizePayload(t *testing.T) {
 	a := listen(t, newKeyring(t))
-	if err := a.Send("127.0.0.1:1", make([]byte, MaxPayload+1)); err != ErrPayloadTooLarge {
+	if err := a.Send("127.0.0.1:1", make([]byte, MaxPayload+1)); !errors.Is(err, ErrPayloadTooLarge) {
 		t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
 	}
 }

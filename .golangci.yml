@@ -31,6 +31,16 @@ linters:
     rules:
       - path: _test\.go
         linters: [gosec, noctx]
+      # Peer selection and probe sequence numbers only need statistical
+      # randomness; packets are authenticated by AES-GCM, not by
+      # unpredictable sequence numbers.
+      - path: internal/membership/
+        linters: [gosec]
+        text: G404
+      # The CLI's whole purpose is to call the operator-supplied --addr.
+      - path: cmd/atlas-cli/
+        linters: [gosec]
+        text: G704
 
 formatters:
   enable:

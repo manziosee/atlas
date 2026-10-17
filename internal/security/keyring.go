@@ -111,7 +111,7 @@ func (k *Keyring) Seal(plaintext, aad []byte) ([]byte, error) {
 	if _, err := rand.Read(out[1:]); err != nil {
 		return nil, fmt.Errorf("security: nonce: %w", err)
 	}
-	return a.Seal(out, out[1:1+ns], plaintext, aad), nil
+	return a.Seal(out, out[1:1+ns], plaintext, aad), nil //nolint:gosec // G407 false positive: nonce filled by crypto/rand above
 }
 
 // Open verifies and decrypts msg, trying the primary key first.
