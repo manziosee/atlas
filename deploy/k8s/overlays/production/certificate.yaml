@@ -1,0 +1,25 @@
+# Requires cert-manager and a ClusterIssuer named "atlas-ca-issuer".
+# cert-manager renews before expiry; atlas-node hot-reloads the new pair.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: atlas-tls
+spec:
+  secretName: atlas-tls
+  duration: 2160h    # 90d
+  renewBefore: 360h  # 15d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages: [server auth, digital signature]
+  dnsNames:
+    - atlas
+    - atlas.atlas.svc
+    - atlas.atlas.svc.cluster.local
+    - "*.atlas-headless.atlas.svc.cluster.local"
+  ipAddresses:
+    - 127.0.0.1
+  issuerRef:
+    name: atlas-ca-issuer
+    kind: ClusterIssuer

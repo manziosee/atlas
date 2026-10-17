@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atlas-config
+data:
+  ATLAS_ENV: production
+  ATLAS_TLS_ENABLED: "true"
+  ATLAS_TLS_CLIENT_AUTH: "false" # "true" requires client certs (mTLS)

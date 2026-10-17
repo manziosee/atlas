@@ -1,0 +1,30 @@
+# Headless service: stable DNS for gossip seeding. publishNotReadyAddresses
+# lets nodes find each other before they report ready (no bootstrap deadlock).
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-headless
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: atlas
+  ports:
+    - name: gossip
+      port: 7946
+      targetPort: gossip
+      protocol: UDP
+---
+# API service: load-balanced across ready pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas
+spec:
+  selector:
+    app.kubernetes.io/name: atlas
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

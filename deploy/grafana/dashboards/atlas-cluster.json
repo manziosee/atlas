@@ -1,0 +1,82 @@
+{
+  "uid": "atlas-cluster",
+  "title": "Atlas — Cluster Overview",
+  "tags": ["atlas"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Alive members (min across nodes)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "min(atlas_membership_members{state=\"alive\"})" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Suspect",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "max(atlas_membership_members{state=\"suspect\"})" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } } }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Dead",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "max(atlas_membership_members{state=\"dead\"})" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Rejected packets / s",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum(rate(atlas_transport_packets_rejected_total[1m]))" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.01 }] } } }
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Members by state (per node view)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "atlas_membership_members", "legendFormat": "{{node}} {{state}}" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Probe RTT p50 / p99",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le, node) (rate(atlas_membership_probe_rtt_seconds_bucket[1m])))", "legendFormat": "p50 {{node}}" },
+        { "expr": "histogram_quantile(0.99, sum by (le, node) (rate(atlas_membership_probe_rtt_seconds_bucket[1m])))", "legendFormat": "p99 {{node}}" }
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Gossip traffic (bytes/s)",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [
+        { "expr": "sum by (node) (rate(atlas_transport_bytes_sent_total[1m]))", "legendFormat": "tx {{node}}" },
+        { "expr": "sum by (node) (rate(atlas_transport_bytes_received_total[1m]))", "legendFormat": "rx {{node}}" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "State transitions / s",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (to) (rate(atlas_membership_state_transitions_total[1m]))", "legendFormat": "→ {{to}}" }]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "API requests by status",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (code) (rate(atlas_http_requests_total[1m]))", "legendFormat": "{{code}}" }]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Rejected packets by reason",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "sum by (reason) (rate(atlas_transport_packets_rejected_total[1m]))", "legendFormat": "{{reason}}" }]
+    }
+  ]
+}

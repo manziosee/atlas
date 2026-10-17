@@ -1,0 +1,16 @@
+# Local cluster (kind / k3d / minikube / Docker Desktop):
+#   cp secrets.env.example secrets.env   # then fill it
+#   kubectl apply -k deploy/k8s/overlays/dev
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: atlas
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/manziosee/atlas
+    newName: atlas
+    newTag: dev
+secretGenerator:
+  # The content-hash suffix makes pods roll automatically on secret rotation.
+  - name: atlas-secrets
+    envs: [secrets.env]

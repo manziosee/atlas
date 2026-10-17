@@ -1,0 +1,26 @@
+# Keep the build context minimal and secrets out of image layers.
+.git
+.github
+.kombai
+.vscode
+.idea
+**/*.md
+!README.md
+docs/
+deploy/
+scripts/
+web/node_modules/
+bin/
+dist/
+coverage.*
+*.test
+*.out
+
+# Secrets — never send to the Docker daemon
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.crt
+deploy/certs/

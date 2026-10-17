@@ -1,0 +1,32 @@
+# Binaries & build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+deploy/certs/*
+!deploy/certs/.gitkeep
+deploy/k8s/overlays/*/secrets.env
+
+# Runtime data
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.kombai/

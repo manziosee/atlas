@@ -1,0 +1,21 @@
+# Production: TLS via cert-manager, 5 replicas, pinned image.
+#   cp secrets.env.example secrets.env   # or External Secrets / SOPS
+#   kubectl apply -k deploy/k8s/overlays/production
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: atlas
+resources:
+  - ../../base
+  - certificate.yaml
+images:
+  - name: ghcr.io/manziosee/atlas
+    newTag: "0.1.0" # prefer pinning by digest: sha256:...
+replicas:
+  - name: atlas
+    count: 5
+secretGenerator:
+  - name: atlas-secrets
+    envs: [secrets.env]
+patches:
+  - path: patch-config.yaml
+  - path: patch-tls.yaml

@@ -1,0 +1,17 @@
+name: Feature / RFC
+description: Propose a feature or design change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: Problem, description: What can't you do today? }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Proposal, description: Design sketch, alternatives, tradeoffs. }
+    validations: { required: true }
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Roadmap phase
+      options: [1 Membership, 2 Gossip, 3 Service registry, 4 Routing, 5 Dashboard, Infra/Security]

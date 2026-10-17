@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: atlas
+spec:
+  template:
+    spec:
+      containers:
+        - name: atlas
+          env:
+            - name: ATLAS_ADDR
+              value: https://127.0.0.1:8080
+            - name: ATLAS_CA_FILE
+              value: /etc/atlas/tls/ca.crt
+          startupProbe:
+            httpGet: { path: /healthz, port: http, scheme: HTTPS }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http, scheme: HTTPS }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http, scheme: HTTPS }
+          volumeMounts:
+            - { name: tls, mountPath: /etc/atlas/tls, readOnly: true }
+      volumes:
+        - name: tls
+          secret:
+            secretName: atlas-tls
+            defaultMode: 0440

@@ -1,0 +1,138 @@
+# Local 3-node Atlas cluster + Prometheus + Grafana.
+#
+#   cp .env.example .env && ./scripts/gen-secrets.sh   # once
+#   docker compose up --build
+#
+# Every container runs hardened: read-only root FS, all Linux capabilities
+# dropped, no privilege escalation, non-root user, resource limits.
+# Host ports bind to 127.0.0.1 only — nothing is exposed to your LAN.
+
+name: atlas
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  networks: [atlas]
+
+x-atlas-node: &atlas-node
+  <<: *hardening
+  build:
+    context: .
+    args:
+      VERSION: ${ATLAS_VERSION:-dev}
+  image: ${IMAGE_NAME:-atlas}:${ATLAS_VERSION:-dev}
+  user: "65532:65532"
+  tmpfs: ["/tmp:size=16m,mode=1777"]
+  deploy:
+    resources:
+      limits: { cpus: "0.50", memory: 128M }
+  environment: &atlas-env
+    ATLAS_ENV: ${ATLAS_ENV:-development}
+    ATLAS_REGION: ${ATLAS_REGION:-local}
+    ATLAS_LOG_LEVEL: ${ATLAS_LOG_LEVEL:-info}
+    ATLAS_LOG_FORMAT: ${ATLAS_LOG_FORMAT:-json}
+    ATLAS_GOSSIP_BIND_ADDR: 0.0.0.0:7946
+    ATLAS_SEEDS: atlas-1:7946,atlas-2:7946,atlas-3:7946
+    ATLAS_GOSSIP_KEY: ${ATLAS_GOSSIP_KEY:?run scripts/gen-secrets.sh}
+    ATLAS_GOSSIP_KEYS_SECONDARY: ${ATLAS_GOSSIP_KEYS_SECONDARY:-}
+    ATLAS_PROBE_INTERVAL: ${ATLAS_PROBE_INTERVAL:-1s}
+    ATLAS_PROBE_TIMEOUT: ${ATLAS_PROBE_TIMEOUT:-500ms}
+    ATLAS_SUSPICION_TIMEOUT: ${ATLAS_SUSPICION_TIMEOUT:-5s}
+    ATLAS_GOSSIP_INTERVAL: ${ATLAS_GOSSIP_INTERVAL:-200ms}
+    ATLAS_GOSSIP_FANOUT: ${ATLAS_GOSSIP_FANOUT:-3}
+    ATLAS_DEAD_NODE_REAP: ${ATLAS_DEAD_NODE_REAP:-5m}
+    ATLAS_MAX_CLOCK_SKEW: ${ATLAS_MAX_CLOCK_SKEW:-30s}
+    ATLAS_HTTP_ADDR: 0.0.0.0:8080
+    ATLAS_METRICS_ADDR: 0.0.0.0:9090
+    ATLAS_API_TOKENS: ${ATLAS_API_TOKENS:?run scripts/gen-secrets.sh}
+    ATLAS_RATE_LIMIT_RPS: ${ATLAS_RATE_LIMIT_RPS:-20}
+    ATLAS_RATE_LIMIT_BURST: ${ATLAS_RATE_LIMIT_BURST:-40}
+    ATLAS_TLS_ENABLED: ${ATLAS_TLS_ENABLED:-false}
+    ATLAS_TLS_CERT_FILE: /etc/atlas/tls/server.crt
+    ATLAS_TLS_KEY_FILE: /etc/atlas/tls/server.key
+    ATLAS_TLS_CA_FILE: /etc/atlas/tls/ca.crt
+    ATLAS_TLS_CLIENT_AUTH: ${ATLAS_TLS_CLIENT_AUTH:-false}
+    # Used by the container HEALTHCHECK (atlas-cli health)
+    ATLAS_ADDR: ${ATLAS_HEALTHCHECK_ADDR:-http://127.0.0.1:8080}
+    ATLAS_CA_FILE: /etc/atlas/tls/ca.crt
+  volumes:
+    - ./deploy/certs:/etc/atlas/tls:ro
+
+services:
+  atlas-1:
+    <<: *atlas-node
+    hostname: atlas-1
+    environment:
+      <<: *atlas-env
+      ATLAS_NODE_ID: atlas-1
+      ATLAS_GOSSIP_ADVERTISE_ADDR: atlas-1:7946
+    ports: ["127.0.0.1:8081:8080"]
+
+  atlas-2:
+    <<: *atlas-node
+    hostname: atlas-2
+    environment:
+      <<: *atlas-env
+      ATLAS_NODE_ID: atlas-2
+      ATLAS_GOSSIP_ADVERTISE_ADDR: atlas-2:7946
+    ports: ["127.0.0.1:8082:8080"]
+
+  atlas-3:
+    <<: *atlas-node
+    hostname: atlas-3
+    environment:
+      <<: *atlas-env
+      ATLAS_NODE_ID: atlas-3
+      ATLAS_GOSSIP_ADVERTISE_ADDR: atlas-3:7946
+    ports: ["127.0.0.1:8083:8080"]
+
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.5.0}
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"]
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 512M }
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:${GRAFANA_VERSION:-12.1.1}
+    user: "472:0"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run scripts/gen-secrets.sh}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_COOKIE_SECURE: "false" # true once served over HTTPS
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    tmpfs: ["/tmp:size=64m", "/var/log/grafana:size=16m,uid=472"]
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+    depends_on: [prometheus]
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 256M }
+
+networks:
+  atlas:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

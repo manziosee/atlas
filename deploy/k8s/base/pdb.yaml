@@ -1,0 +1,10 @@
+# Never voluntarily evict more than one member at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: atlas
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: atlas

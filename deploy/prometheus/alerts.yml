@@ -1,0 +1,62 @@
+groups:
+  - name: atlas.membership
+    rules:
+      - alert: AtlasNodeDown
+        expr: up{job="atlas"} == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "Atlas node {{ $labels.node }} is not being scraped"
+
+      - alert: AtlasMembersDead
+        expr: max(atlas_membership_members{state="dead"}) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Cluster reports {{ $value }} dead member(s)"
+
+      - alert: AtlasMembershipDisagreement
+        expr: max(atlas_membership_members{state="alive"}) - min(atlas_membership_members{state="alive"}) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Nodes disagree on cluster size for 2m (partition or slow convergence)"
+
+      - alert: AtlasHighProbeTimeoutRate
+        expr: |
+          sum(rate(atlas_membership_probes_total{result="timeout"}[5m]))
+            / sum(rate(atlas_membership_probes_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 5% of failure-detector probes are timing out"
+
+  - name: atlas.security
+    rules:
+      - alert: AtlasUnauthenticatedGossip
+        expr: sum by (node) (rate(atlas_transport_packets_rejected_total{reason="decrypt"}[5m])) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.node }} is receiving gossip packets that fail authentication (wrong key or attack)"
+
+      - alert: AtlasReplayOrClockSkew
+        expr: sum by (node) (rate(atlas_transport_packets_rejected_total{reason="clock_skew"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.node }} drops packets outside the clock-skew window (NTP drift or replay)"
+
+      - alert: AtlasAPIAuthFailures
+        expr: sum by (node) (rate(atlas_http_requests_total{code="401"}[5m])) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Sustained 401s on {{ $labels.node }} — possible credential stuffing"
+
+      - alert: AtlasAPIRateLimited
+        expr: sum by (node) (rate(atlas_http_requests_total{code="429"}[5m])) > 5
+        for: 5m
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $labels.node }} is rate limiting clients"

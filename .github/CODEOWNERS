@@ -1,0 +1,6 @@
+# Security-sensitive paths require owner review.
+*                         @manziosee
+/internal/security/       @manziosee
+/internal/transport/      @manziosee
+/deploy/                  @manziosee
+/.github/                 @manziosee

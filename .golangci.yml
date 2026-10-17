@@ -1,0 +1,41 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - gosec        # security issues
+    - bodyclose
+    - errorlint
+    - noctx
+    - nilerr
+    - misspell
+    - unconvert
+    - gocritic
+    - revive
+    - copyloopvar
+    - durationcheck
+    - contextcheck
+  settings:
+    gosec:
+      excludes:
+        - G104 # unhandled errors: errcheck covers this
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    presets: [std-error-handling]
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/manziosee/atlas]

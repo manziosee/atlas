@@ -1,0 +1,53 @@
+# Zero-trust networking: deny everything in the namespace, then allow only
+# what Atlas needs. Requires a CNI that enforces NetworkPolicy (Calico,
+# Cilium, ...).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: atlas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: atlas
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Gossip: only from other Atlas members.
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: atlas }
+      ports:
+        - { protocol: UDP, port: 7946 }
+    # API: from this namespace or namespaces explicitly opted in.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels: { atlas.io/api-access: "true" }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # Metrics: only from the monitoring namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports:
+        - { protocol: TCP, port: 9090 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: atlas }
+      ports:
+        - { protocol: UDP, port: 7946 }
+    # DNS (seed resolution).
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="Atlas logo">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00ADD8"/>
+      <stop offset="1" stop-color="#5B5BD6"/>
+    </linearGradient>
+  </defs>
+  <circle cx="80" cy="80" r="70" fill="none" stroke="url(#g)" stroke-width="6"/>
+  <ellipse cx="80" cy="80" rx="30" ry="70" fill="none" stroke="url(#g)" stroke-width="3" opacity=".55"/>
+  <line x1="10" y1="80" x2="150" y2="80" stroke="url(#g)" stroke-width="3" opacity=".55"/>
+  <g stroke="#00ADD8" stroke-width="2.5" opacity=".9">
+    <line x1="48" y1="44" x2="112" y2="58"/>
+    <line x1="112" y1="58" x2="104" y2="114"/>
+    <line x1="104" y1="114" x2="52" y2="108"/>
+    <line x1="52" y1="108" x2="48" y2="44"/>
+    <line x1="48" y1="44" x2="104" y2="114"/>
+    <line x1="112" y1="58" x2="52" y2="108"/>
+  </g>
+  <g fill="#5B5BD6" stroke="#fff" stroke-width="2">
+    <circle cx="48" cy="44" r="8"/>
+    <circle cx="112" cy="58" r="8"/>
+    <circle cx="104" cy="114" r="8"/>
+    <circle cx="52" cy="108" r="8"/>
+  </g>
+</svg>
