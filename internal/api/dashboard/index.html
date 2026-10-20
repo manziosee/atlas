@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Atlas · Cluster</title>
+    <link rel="stylesheet" href="/dashboard/app.css">
+    <script src="/dashboard/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/dashboard/" aria-label="Atlas dashboard home"><span class="mark">A</span><span>ATLAS <small>CLUSTER</small></span></a>
+      <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-label">Disconnected</span><span class="divider"></span><span id="last-update">—</span></div>
+    </header>
+    <main>
+      <section class="intro">
+        <div><p class="eyebrow">DISTRIBUTED SERVICE DISCOVERY</p><h1>Cluster overview</h1><p class="subhead">Membership, service health, and live gossip activity.</p></div>
+        <form id="connect-form" class="connect-form"><label for="token">API bearer token</label><div class="token-row"><input id="token" type="password" autocomplete="off" placeholder="Paste node API token" required><button type="submit">Connect</button></div></form>
+      </section>
+      <p id="error" class="error" role="alert" hidden></p>
+      <section class="stats" aria-label="Cluster summary">
+        <article><span>KNOWN NODES</span><strong id="stat-total">—</strong><small>Including this node</small></article>
+        <article><span>ALIVE</span><strong id="stat-alive">—</strong><small>Ready for probes</small></article>
+        <article><span>NEEDS ATTENTION</span><strong id="stat-attention">—</strong><small>Suspect or dead</small></article>
+        <article><span>SERVICE INSTANCES</span><strong id="stat-services">—</strong><small>Replicated registry view</small></article>
+      </section>
+      <div class="columns">
+        <section class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">MEMBERSHIP</p><h2>Nodes</h2></div><span id="member-count" class="count">—</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Node</th><th>Region</th><th>Address</th><th>State</th><th>Incarnation</th></tr></thead><tbody id="members"><tr><td colspan="5" class="empty">Connect to a node to load membership.</td></tr></tbody></table></div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">DISCOVERY</p><h2>Service instances</h2></div><span id="service-count" class="count">—</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Service</th><th>Region</th><th>Address</th><th>Health</th></tr></thead><tbody id="services"><tr><td colspan="4" class="empty">No registry data loaded.</td></tr></tbody></table></div>
+        </section>
+      </div>
+      <section class="panel events-panel">
+        <div class="panel-heading"><div><p class="eyebrow">GOSSIP STREAM</p><h2>Recent membership events</h2></div><span class="live-label"><span class="dot live"></span> LIVE</span></div>
+        <ol id="events" class="events"><li class="empty">Events appear here after connecting.</li></ol>
+      </section>
+      <footer>Atlas node dashboard <span>·</span> Data is read from the node you connected to.</footer>
+    </main>
+  </body>
+</html>

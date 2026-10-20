@@ -88,6 +88,30 @@ func TestRotation(t *testing.T) {
 	}
 }
 
+func TestReplaceIsAtomicAndDropsRetiredKeys(t *testing.T) {
+	oldKey, newKey := key(t), key(t)
+	ring, _ := NewKeyring(oldKey)
+	oldCipher, _ := ring.Seal([]byte("old"), nil)
+	if err := ring.Replace([]byte("invalid")); err == nil {
+		t.Fatal("invalid replacement was accepted")
+	}
+	if _, err := ring.Open(oldCipher, nil); err != nil {
+		t.Fatalf("failed replacement changed active ring: %v", err)
+	}
+	if err := ring.Replace(newKey, oldKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ring.Open(oldCipher, nil); err != nil {
+		t.Fatalf("secondary key not retained: %v", err)
+	}
+	if err := ring.Replace(newKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ring.Open(oldCipher, nil); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("retired key still accepted: %v", err)
+	}
+}
+
 func TestNewKeyringValidation(t *testing.T) {
 	if _, err := NewKeyring(); err == nil {
 		t.Fatal("empty keyring accepted")

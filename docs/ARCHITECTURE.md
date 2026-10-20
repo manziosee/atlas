@@ -22,6 +22,7 @@ flowchart TB
       api["api handlers<br/><sub>/healthz /readyz /v1/*</sub>"]
     end
     met["metrics registry<br/><sub>:9090 /metrics</sub>"]
+    prof["pprof<br/><sub>loopback only :6060</sub>"]
     cfg --> tr & mw
     tr <--> ml
     mw --> auth --> api
@@ -36,14 +37,14 @@ flowchart TB
 | Package | Responsibility |
 |---------|----------------|
 | `cmd/atlas-node` | Wiring, lifecycle, graceful shutdown (SIGTERM → leave → close). |
-| `cmd/atlas-cli` | Operator CLI: `members`, `node`, `health`, `keygen`, `tokengen`. |
+| `cmd/atlas-cli` | Operator CLI: membership, service lookup, event streaming, health, and key generation. |
 | `internal/config` | Env parsing; reports **all** errors at once; production guards. |
 | `internal/security` | Keyring, TLS/mTLS + cert hot reload, token auth, rate limiter, headers. |
 | `internal/transport` | Encrypted UDP, DNS cache, advertise-address detection. |
 | `internal/membership` | SWIM failure detector and member state machine. |
 | `internal/api` | HTTP routes and middleware. |
 | `internal/metrics` | Prometheus collectors on a private registry. |
-| `internal/gossip`, `routing`, `storage` | Upcoming phases (registry, routing, SQLite). |
+| `internal/gossip`, `routing`, `storage` | Registry replication, deterministic service merge, SQLite persistence, and health-aware routing. |
 
 ## 2. Membership protocol
 
@@ -77,19 +78,26 @@ sequenceDiagram
   participant C as Nodes C,D,E (fanout)
   loop every ProbeInterval
     A->>B: ping(seq) + piggyback[B's entry, …]
-    alt ack within ProbeTimeout
+    alt direct ack within half local-health-adjusted timeout
       B-->>A: ack(seq) + piggyback
-    else timeout
-      Note over A: mark B suspect
+    else direct timeout
+      A->>C: ping-req(seq, target B)
+      C->>B: ping(seq)
+      B-->>C: ack(seq) + piggyback
+      C-->>A: relayed ack(seq)
+    else direct and indirect timeout
+      Note over A: increase local health score; mark B suspect at deadline
     end
   end
   loop every GossipInterval
     A->>C: sync + piggyback (≤32 records)
   end
-  Note over A,C: every 10th round: push-pull (full state, ≤160 records)
+  Note over A,C: every 10th round: encrypted TCP push-pull (full membership snapshot)
 ```
 
-The target's own record always rides along with a ping. A suspected node
+Local health scores increase after missed probes and decay after successful
+probes. The score lengthens later deadlines up to 9× `ProbeTimeout`, reducing
+false suspicions while this node is delayed or overloaded. The target's own record always rides along with a ping. A suspected node
 therefore learns about the suspicion at the next probe and refutes it right
 away.
 
@@ -113,19 +121,32 @@ independently.
 ```
 UDP datagram
 ┌─────────┬──────────────┬──────────────────────────────┬─────────┐
-│ ver (1) │ nonce (12)   │ ciphertext (JSON message)    │ tag (16)│
+│ ver (1) │ nonce (12)   │ ciphertext (protobuf message)│ tag (16)│
 └─────────┴──────────────┴──────────────────────────────┴─────────┘
             AES-256-GCM, AAD = "atlas/gossip/v1"
 
-message (JSON, inside ciphertext)
-{ "t": "ping|ack|sync|pull", "seq": 42, "ts": 1792277220551,
-  "from": {id, addr, region, state, incarnation},
-  "m":    [ …piggybacked member records… ] }
+message (inside ciphertext)
+"ATPB\\x01" || GossipMessage protobuf bytes (schema: `api/v1/gossip.proto`)
 ```
 
-Receive pipeline: `read → size check → AEAD open (drop on failure) → JSON
-decode → validate (lengths, states, ≤512 members) → clock-skew check →
+Receive pipeline: `read → size check → AEAD open (drop on failure) → protobuf
+decode (legacy JSON accepted) → validate (lengths, states, ≤512 members) → clock-skew check →
 merge`.
+
+Every tenth gossip round uses TCP push-pull for full membership repair. TCP
+frames are `uint32_be(length) || version || nonce || ciphertext || tag`, use
+the same AES-256-GCM keyring and AAD, and have a 16 MiB plaintext cap. The
+receiver accepts at most 64 simultaneous stream connections and permits up to
+100,000 member records within that frame cap. Both transports use the versioned
+protobuf message format. New nodes accept legacy JSON packets, but old nodes do
+not understand protobuf packets; mixed-version clusters therefore need a
+coordinated upgrade.
+
+TCP push-pull includes a SHA-256 registry digest. A mismatch transfers a full
+registry snapshot (including tombstones), bounded to 100,000 rows and the same
+16 MiB frame limit. The requester returns its snapshot once so records present
+only on either side converge. Local health-check timestamps are excluded from
+the digest because they are not replicated state.
 
 ## 4. Deployment topologies
 
@@ -158,7 +179,7 @@ flowchart LR
 
 | Phase | Where it lands |
 |-------|----------------|
-| 2 — indirect probes, broadcast queue | `membership.probe`, `internal/gossip` |
+| 2 — indirect probes, bounded broadcast queue, TCP push-pull, protobuf gossip | `membership.probe`, `Memberlist.queueBroadcast`, `sendFullState`, `api/v1/gossip.proto` |
 | 3 — service registry + SQLite + gRPC | `internal/storage`, `ATLAS_GRPC_ADDR` |
-| 4 — consistent hashing, latency routing | `internal/routing` (RTTs from `ProbeRTT`) |
-| 5 — dashboard | `web/`, SSE from `Memberlist.Events()` |
+| 4 — health-aware selection, region affinity, per-peer EWMA RTT, consistent hashing | `internal/routing`, membership probe latency |
+| 5 — dashboard | embedded assets in `internal/api/dashboard`, authenticated SSE from `Memberlist.Subscribe()` |

@@ -1,8 +1,7 @@
-// Package gossip will carry application-level state (service registrations,
-// routing data) over the epidemic broadcast layer, separate from membership.
+// Package gossip documents application-level state replication over the
+// membership protocol's epidemic transport.
 //
-// Phase 2 roadmap:
-//   - Bounded broadcast queue with retransmit limit λ·log(n) per update
-//   - Push-pull anti-entropy over TCP for large state
-//   - CRDT merge (LWW-register / OR-set) for conflict-free replication
+// Service records use a revisioned LWW-register merge with a deterministic
+// total order. TCP push-pull compares bounded registry digests and repairs
+// mismatches with snapshots that include tombstones.
 package gossip

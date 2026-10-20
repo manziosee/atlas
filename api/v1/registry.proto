@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package atlas.v1;
+
+option go_package = "github.com/manziosee/atlas/api/v1;atlasv1";
+
+import "google/protobuf/struct.proto";
+
+// Registry exposes the same replicated service instances as the HTTP API.
+// RegisterService accepts name, address, version, health_check, and tags.
+// ListServices accepts optional name, region, and health filters.
+// GetService and DeleteService accept an id field.
+// LookupService accepts name and optional region and key fields.
+service Registry {
+  rpc RegisterService(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc ListServices(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc GetService(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc DeleteService(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc LookupService(google.protobuf.Struct) returns (google.protobuf.Struct);
+}

@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package atlas.gossip.v1;
+
+option go_package = "github.com/manziosee/atlas/api/v1;atlasv1";
+
+// The encrypted gossip plaintext starts with the five-byte ASCII/version
+// prefix "ATPB\x01", followed by an encoded GossipMessage. This schema is
+// kept in sync with the manual protowire codec in internal/membership/codec.go.
+message GossipMessage {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    PING = 1;
+    ACK = 2;
+    SYNC = 3;
+    PULL = 4;
+    PING_REQ = 5;
+    PUSH_PULL_REQUEST = 6;
+    PUSH_PULL_STATE = 7;
+  }
+  Type type = 1;
+  uint64 sequence = 2;
+  Member from = 3;
+  repeated Member members = 4;
+  repeated Service services = 5;
+  Member target = 6;
+  int64 sent_at_unix_ms = 7;
+  bytes registry_digest = 8;
+  bool push_pull_reply = 9;
+}
+
+message Member {
+  string id = 1;
+  string address = 2;
+  string region = 3;
+  uint32 state = 4;
+  uint64 incarnation = 5;
+}
+
+message Service {
+  enum Health {
+    HEALTH_UNSPECIFIED = 0;
+    UNKNOWN = 1;
+    HEALTHY = 2;
+    UNHEALTHY = 3;
+  }
+  string id = 1;
+  string name = 2;
+  string node_id = 3;
+  string address = 4;
+  string region = 5;
+  string version = 6;
+  repeated string tags = 7;
+  string health_check = 8;
+  Health health = 9;
+  uint64 revision = 10;
+  bool deleted = 11;
+  int64 updated_at_unix_nano = 12;
+  int64 checked_at_unix_nano = 13;
+}

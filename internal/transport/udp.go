@@ -1,13 +1,16 @@
-// Package transport moves encrypted gossip packets over UDP.
+// Package transport moves encrypted membership packets over MTU-bounded UDP
+// and encrypted full-state snapshots over length-bounded TCP.
 //
-// Every datagram is sealed with the cluster keyring (AES-256-GCM). Packets
-// that fail authentication are dropped before any parsing happens, so an
-// attacker without the key cannot reach the membership state machine.
+// Both transports use the cluster keyring (AES-256-GCM). Packets that fail
+// authentication are dropped before any parsing happens, so an attacker
+// without the key cannot reach the membership state machine.
 package transport
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -17,8 +20,9 @@ import (
 	"github.com/manziosee/atlas/internal/security"
 )
 
-// MaxPayload is the largest plaintext payload accepted for sending.
-const MaxPayload = 32 * 1024
+// MaxPayload is sized to fit a 1280-byte IPv6 MTU after IPv6, UDP and the
+// versioned AES-GCM envelope headers (40 + 8 + 29 bytes).
+const MaxPayload = 1200
 
 // maxDatagram bounds the receive buffer (largest possible UDP payload).
 const maxDatagram = 65507
@@ -30,19 +34,22 @@ var aad = []byte("atlas/gossip/v1")
 // ErrPayloadTooLarge is returned by Send for payloads over MaxPayload.
 var ErrPayloadTooLarge = errors.New("transport: payload too large")
 
-// Packet is a decrypted, authenticated datagram.
+// Packet is an authenticated, decrypted datagram or TCP stream frame.
 type Packet struct {
 	From       *net.UDPAddr
 	Payload    []byte
 	ReceivedAt time.Time
+	Stream     bool
 }
 
 // UDP is an encrypted UDP transport.
 type UDP struct {
-	conn    *net.UDPConn
-	keyring *security.Keyring
-	log     *slog.Logger
-	packets chan Packet
+	conn        *net.UDPConn
+	tcp         *net.TCPListener
+	keyring     *security.Keyring
+	log         *slog.Logger
+	packets     chan Packet
+	streamSlots chan struct{}
 
 	resolveMu sync.Mutex
 	resolved  map[string]resolvedAddr
@@ -58,6 +65,11 @@ type resolvedAddr struct {
 
 const resolveTTL = 30 * time.Second
 
+// MaxStreamPayload bounds a decrypted TCP full-state frame.
+const MaxStreamPayload = 16 << 20
+
+const maxStreamFrame = MaxStreamPayload + 64
+
 // Listen binds a UDP socket on addr and starts the receive loop.
 func Listen(addr string, kr *security.Keyring, log *slog.Logger) (*UDP, error) {
 	ua, err := net.ResolveUDPAddr("udp", addr)
@@ -68,20 +80,145 @@ func Listen(addr string, kr *security.Keyring, log *slog.Logger) (*UDP, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transport: listen %q: %w", addr, err)
 	}
+	ta, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("transport: resolve TCP %q: %w", addr, err)
+	}
+	if ta.Port == 0 {
+		udpAddr := conn.LocalAddr().(*net.UDPAddr)
+		ta = &net.TCPAddr{IP: udpAddr.IP, Port: udpAddr.Port, Zone: udpAddr.Zone}
+	}
+	tcp, err := net.ListenTCP("tcp", ta)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("transport: listen TCP %q: %w", addr, err)
+	}
 	// Larger kernel buffers absorb bursts during gossip storms.
 	_ = conn.SetReadBuffer(4 << 20)
 	_ = conn.SetWriteBuffer(4 << 20)
 
 	t := &UDP{
-		conn:     conn,
-		keyring:  kr,
-		log:      log.With("component", "transport"),
-		packets:  make(chan Packet, 1024),
-		resolved: make(map[string]resolvedAddr),
-		done:     make(chan struct{}),
+		conn:        conn,
+		tcp:         tcp,
+		keyring:     kr,
+		log:         log.With("component", "transport"),
+		packets:     make(chan Packet, 1024),
+		streamSlots: make(chan struct{}, 64),
+		resolved:    make(map[string]resolvedAddr),
+		done:        make(chan struct{}),
 	}
 	go t.readLoop()
+	go t.acceptStreamLoop()
 	return t, nil
+}
+
+// SendStream sends one authenticated, length-prefixed message over TCP. It is
+// used for bounded full-state push-pull, where UDP would require fragmentation.
+func (t *UDP) SendStream(addr string, payload []byte) error {
+	if len(payload) == 0 || len(payload) > MaxStreamPayload {
+		return fmt.Errorf("transport: TCP payload length %d is outside limits", len(payload))
+	}
+	remote, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("transport: resolve TCP peer %q: %w", addr, err)
+	}
+	conn, err := net.DialTimeout("tcp", remote.String(), 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("transport: connect TCP peer %q: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	sealed, err := t.keyring.Seal(payload, aad)
+	if err != nil {
+		return err
+	}
+	if len(sealed) > maxStreamFrame {
+		return errors.New("transport: sealed TCP frame exceeds limit")
+	}
+	frame := make([]byte, 4+len(sealed))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(sealed)))
+	copy(frame[4:], sealed)
+	if err := writeAll(conn, frame); err != nil {
+		return fmt.Errorf("transport: send TCP frame to %s: %w", addr, err)
+	}
+	metrics.PacketsSent.Inc()
+	metrics.BytesSent.Add(float64(len(frame)))
+	return nil
+}
+
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		payload = payload[written:]
+	}
+	return nil
+}
+
+func (t *UDP) acceptStreamLoop() {
+	for {
+		conn, err := t.tcp.AcceptTCP()
+		if err != nil {
+			select {
+			case <-t.done:
+				return
+			default:
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			t.log.Warn("TCP accept failed", "err", err)
+			continue
+		}
+		select {
+		case t.streamSlots <- struct{}{}:
+			go func() {
+				defer func() { <-t.streamSlots }()
+				t.handleStreamConn(conn)
+			}()
+		default:
+			_ = conn.Close()
+		}
+	}
+}
+
+func (t *UDP) handleStreamConn(conn *net.TCPConn) {
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	var prefix [4]byte
+	if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+		return
+	}
+	length := binary.BigEndian.Uint32(prefix[:])
+	if length == 0 || length > maxStreamFrame {
+		return
+	}
+	sealed := make([]byte, int(length))
+	if _, err := io.ReadFull(conn, sealed); err != nil {
+		return
+	}
+	metrics.BytesReceived.Add(float64(length + 4))
+	plaintext, err := t.keyring.Open(sealed, aad)
+	if err != nil {
+		metrics.PacketsRejected.WithLabelValues("decrypt").Inc()
+		return
+	}
+	metrics.PacketsReceived.Inc()
+	remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return
+	}
+	select {
+	case t.packets <- Packet{From: &net.UDPAddr{IP: remote.IP, Port: remote.Port, Zone: remote.Zone}, Payload: plaintext, ReceivedAt: time.Now(), Stream: true}:
+	default:
+		metrics.PacketsRejected.WithLabelValues("backpressure").Inc()
+	}
 }
 
 // LocalAddr returns the bound address.
@@ -152,6 +289,10 @@ func (t *UDP) readLoop() {
 			t.log.Debug("dropped unauthenticated packet", "from", from)
 			continue
 		}
+		if len(pt) > MaxPayload {
+			metrics.PacketsRejected.WithLabelValues("oversize").Inc()
+			continue
+		}
 		metrics.PacketsReceived.Inc()
 
 		select {
@@ -168,6 +309,9 @@ func (t *UDP) Close() error {
 	t.closeOnce.Do(func() {
 		close(t.done)
 		err = t.conn.Close()
+		if closeErr := t.tcp.Close(); err == nil {
+			err = closeErr
+		}
 	})
 	return err
 }

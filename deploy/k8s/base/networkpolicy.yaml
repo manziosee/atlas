@@ -25,6 +25,7 @@ spec:
             matchLabels: { app.kubernetes.io/name: atlas }
       ports:
         - { protocol: UDP, port: 7946 }
+        - { protocol: TCP, port: 7946 }
     # API: from this namespace or namespaces explicitly opted in.
     - from:
         - podSelector: {}
@@ -32,6 +33,7 @@ spec:
             matchLabels: { atlas.io/api-access: "true" }
       ports:
         - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8082 }
     # Metrics: only from the monitoring namespace.
     - from:
         - namespaceSelector:
@@ -44,6 +46,7 @@ spec:
             matchLabels: { app.kubernetes.io/name: atlas }
       ports:
         - { protocol: UDP, port: 7946 }
+        - { protocol: TCP, port: 7946 }
     # DNS (seed resolution).
     - to:
         - namespaceSelector:

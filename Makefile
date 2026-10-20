@@ -27,6 +27,10 @@ cover: ## Run tests with coverage report
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -func=coverage.out | tail -1
 
+.PHONY: bench-scale
+bench-scale: ## Measure membership convergence at 100, 500, and 1000 in-process nodes
+	go test -run '^$$' -bench '^BenchmarkClusterConvergence$$' -benchtime=1x -timeout=15m ./internal/membership
+
 .PHONY: lint
 lint: ## Run golangci-lint
 	golangci-lint run

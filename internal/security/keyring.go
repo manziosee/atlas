@@ -90,6 +90,19 @@ func (k *Keyring) Rotate(key []byte) error {
 	return nil
 }
 
+// Replace atomically installs a configured primary key and decrypt-only
+// secondary keys. A malformed replacement leaves the current ring intact.
+func (k *Keyring) Replace(keys ...[]byte) error {
+	next, err := NewKeyring(keys...)
+	if err != nil {
+		return err
+	}
+	k.mu.Lock()
+	k.aeads = next.aeads
+	k.mu.Unlock()
+	return nil
+}
+
 // Overhead is the number of bytes Seal adds to a plaintext.
 func (k *Keyring) Overhead() int {
 	k.mu.RLock()

@@ -1,4 +1,31 @@
 groups:
+  - name: atlas.slo
+    rules:
+      - record: atlas:http_availability:ratio5m
+        expr: |
+          1 - (
+            sum by (node) (rate(atlas_http_requests_total{code=~"5.."}[5m]))
+            / clamp_min(sum by (node) (rate(atlas_http_requests_total[5m])), 0.001)
+          )
+      - record: atlas:http_latency_p95_seconds:route5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (node, route, le) (rate(atlas_http_request_duration_seconds_bucket[5m]))
+          )
+      - alert: AtlasAPIAvailabilitySLOBurn
+        expr: atlas:http_availability:ratio5m < 0.99
+        for: 5m
+        labels: { severity: warning, slo: api-availability }
+        annotations:
+          summary: "{{ $labels.node }} API availability is below the 99% short-window objective"
+          runbook: "docs/runbooks/atlas-api-availability.md"
+      - alert: AtlasAPILatencySLOBurn
+        expr: atlas:http_latency_p95_seconds:route5m{route!="/metrics"} > 0.5
+        for: 10m
+        labels: { severity: warning, slo: api-latency }
+        annotations:
+          summary: "{{ $labels.node }} route {{ $labels.route }} p95 exceeds 500ms"
+          runbook: "docs/runbooks/atlas-api-latency.md"
   - name: atlas.membership
     rules:
       - alert: AtlasNodeDown
@@ -14,6 +41,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Cluster reports {{ $value }} dead member(s)"
+          runbook: "docs/runbooks/atlas-membership.md"
 
       - alert: AtlasMembershipDisagreement
         expr: max(atlas_membership_members{state="alive"}) - min(atlas_membership_members{state="alive"}) > 0
@@ -21,6 +49,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Nodes disagree on cluster size for 2m (partition or slow convergence)"
+          runbook: "docs/runbooks/atlas-membership.md"
 
       - alert: AtlasHighProbeTimeoutRate
         expr: |
@@ -30,6 +59,29 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "More than 5% of failure-detector probes are timing out"
+          runbook: "docs/runbooks/atlas-membership.md"
+
+      - alert: AtlasLifeguardLocalHealthPressure
+        expr: max(atlas_membership_local_health_score) >= 5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "A node has sustained local probe delays; Lifeguard is extending its failure-detection deadlines"
+
+      - alert: AtlasBroadcastQueuePressure
+        expr: max by (node) (atlas_membership_broadcast_queue) > 1024
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.node }} has more than 1024 pending membership broadcasts"
+
+      - alert: AtlasBroadcastEvictions
+        expr: sum by (node) (rate(atlas_membership_broadcasts_dropped_total[5m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.node }} is dropping membership updates because its bounded queue is full"
+          runbook: "docs/runbooks/atlas-membership.md"
 
   - name: atlas.security
     rules:
@@ -60,3 +112,4 @@ groups:
         labels: { severity: info }
         annotations:
           summary: "{{ $labels.node }} is rate limiting clients"
+          runbook: "docs/runbooks/atlas-api-availability.md"

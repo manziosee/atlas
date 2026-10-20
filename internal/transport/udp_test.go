@@ -50,6 +50,22 @@ func TestSendReceive(t *testing.T) {
 	}
 }
 
+func TestSendStreamReceive(t *testing.T) {
+	kr := newKeyring(t)
+	a, b := listen(t, kr), listen(t, kr)
+	if err := a.SendStream(b.LocalAddr().String(), []byte("full state")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case packet := <-b.Packets():
+		if !packet.Stream || !bytes.Equal(packet.Payload, []byte("full state")) {
+			t.Fatalf("stream packet = %+v, want authenticated full-state payload", packet)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TCP stream packet")
+	}
+}
+
 func TestDropsPacketsFromForeignCluster(t *testing.T) {
 	a, b := listen(t, newKeyring(t)), listen(t, newKeyring(t))
 	if err := a.Send(b.LocalAddr().String(), []byte("intruder")); err != nil {
@@ -66,5 +82,22 @@ func TestRejectsOversizePayload(t *testing.T) {
 	a := listen(t, newKeyring(t))
 	if err := a.Send("127.0.0.1:1", make([]byte, MaxPayload+1)); !errors.Is(err, ErrPayloadTooLarge) {
 		t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
+	}
+}
+
+func TestDropsOversizeAuthenticatedDatagram(t *testing.T) {
+	kr := newKeyring(t)
+	sender, receiver := listen(t, kr), listen(t, kr)
+	sealed, err := kr.Seal(make([]byte, MaxPayload+1), aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sender.conn.WriteToUDP(sealed, receiver.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case packet := <-receiver.Packets():
+		t.Fatalf("received oversized authenticated payload (%d bytes)", len(packet.Payload))
+	case <-time.After(100 * time.Millisecond):
 	}
 }
