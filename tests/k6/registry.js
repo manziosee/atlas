@@ -30,5 +30,7 @@ export default function () {
 
   // Keep the default profile under Atlas's per-client API rate limit while
   // still creating concurrent read traffic from multiple virtual users.
-  sleep(0.5);
+  // Two API calls per iteration across eight VUs stay below the default
+  // 20-request/second per-client token bucket.
+  sleep(1);
 }
