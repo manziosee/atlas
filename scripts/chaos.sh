@@ -14,13 +14,13 @@ export ATLAS_TOKEN
 
 members() { # port
   curl -fsS -H "Authorization: Bearer ${ATLAS_TOKEN}" "http://127.0.0.1:$1/v1/members" \
-    | grep -o '"state":"[a-z]*"' | sort | uniq -c | tr '\n' ' '
+    | grep -o '"state":"[a-z]*"' | sort | uniq -c
 }
 
 state_count() { # port state
   local output
   output="$(members "$1" 2>/dev/null || true)"
-  grep -o "\"state\":\"$2\"" <<<"$output" | wc -l | tr -d ' ' || true
+  awk -v state="\"state\":\"$2\"" '$2 == state { count += $1 } END { print count + 0 }' <<<"$output"
 }
 
 wait_for_count() { # port state minimum
