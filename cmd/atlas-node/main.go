@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/manziosee/atlas/internal/api"
 	"github.com/manziosee/atlas/internal/config"
 	"github.com/manziosee/atlas/internal/logging"
@@ -27,7 +29,6 @@ import (
 	"github.com/manziosee/atlas/internal/storage"
 	"github.com/manziosee/atlas/internal/transport"
 	"github.com/manziosee/atlas/internal/version"
-	"google.golang.org/grpc"
 )
 
 const shutdownTimeout = 15 * time.Second
@@ -122,7 +123,7 @@ func run() error {
 		apiSrv.TLSConfig = tlsConfig
 	}
 	grpcSrv := api.NewGRPCServer(apiDeps, tlsConfig)
-	grpcListener, err := net.Listen("tcp", cfg.GRPCAddr)
+	grpcListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.GRPCAddr)
 	if err != nil {
 		return fmt.Errorf("listen for gRPC API: %w", err)
 	}

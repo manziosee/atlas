@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -53,7 +54,7 @@ func TestSendReceive(t *testing.T) {
 func TestSendStreamReceive(t *testing.T) {
 	kr := newKeyring(t)
 	a, b := listen(t, kr), listen(t, kr)
-	if err := a.SendStream(b.LocalAddr().String(), []byte("full state")); err != nil {
+	if err := a.SendStream(context.Background(), b.LocalAddr().String(), []byte("full state")); err != nil {
 		t.Fatal(err)
 	}
 	select {

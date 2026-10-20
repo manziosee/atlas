@@ -209,14 +209,15 @@ func (s *Store) Register(ctx context.Context, service Service) (Service, error) 
 		return Service{}, fmt.Errorf("storage: invalid health %q", service.Health)
 	}
 	current, err := scanService(s.db.QueryRowContext(ctx, serviceSelect+` WHERE id = ?`, service.ID))
-	if err == nil {
+	switch {
+	case err == nil:
 		if current.NodeID != service.NodeID {
 			return Service{}, errors.New("storage: service belongs to another node")
 		}
 		service.Revision = current.Revision + 1
-	} else if errors.Is(err, sql.ErrNoRows) {
+	case errors.Is(err, sql.ErrNoRows):
 		service.Revision = 1
-	} else {
+	default:
 		return Service{}, err
 	}
 	service.Deleted = false
@@ -376,8 +377,11 @@ func (s *Store) RegistryDigest(ctx context.Context) ([sha256.Size]byte, error) {
 		if err != nil {
 			return digest, err
 		}
+		if uint64(len(encoded)) > uint64(^uint32(0)) {
+			return digest, ErrRegistryTooLarge
+		}
 		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(encoded)))
+		binary.BigEndian.PutUint32(length[:], uint32(len(encoded))) // #nosec G115 -- length is bounded by the uint32 guard above.
 		_, _ = h.Write(length[:])
 		_, _ = h.Write(encoded)
 		count++
@@ -444,6 +448,9 @@ func (s *Store) Merge(ctx context.Context, incoming Service) error {
 	if incoming.UpdatedAt.IsZero() {
 		// Older peers may omit the timestamp. Use a stable fallback rather than
 		// letting each receiver assign its own wall-clock time.
+		if incoming.Revision > 1<<63-1 {
+			return errors.New("storage: replicated service revision is too large")
+		}
 		incoming.UpdatedAt = time.Unix(0, int64(incoming.Revision)).UTC()
 	}
 	incoming.CheckedAt = time.Time{}

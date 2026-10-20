@@ -57,13 +57,13 @@ func simulateConvergence(b *testing.B, size int) time.Duration {
 		if round%antiEntropyEvery == antiEntropyEvery-1 {
 			for _, node := range nodes {
 				if peer, ok := node.randomMember(func(member *Member) bool { return member.State == StateAlive }); ok {
-					_ = node.sendFullState(peer.Addr, msgPushPullRequest, nil, false)
+					_ = node.sendFullState(context.Background(), peer.Addr, msgPushPullRequest, nil, false)
 				}
 			}
 		} else {
 			for _, node := range nodes {
 				for _, peer := range node.randomMembers(3, func(member *Member) bool { return member.State == StateAlive }) {
-					_ = node.send(peer.Addr, msgSync, 0, node.sample(maxPiggyback, peer.ID))
+					_ = node.send(context.Background(), peer.Addr, msgSync, 0, node.sample(maxPiggyback, peer.ID))
 				}
 			}
 		}

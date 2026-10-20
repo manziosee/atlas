@@ -79,7 +79,7 @@ func Restore(ctx context.Context, backupPath, destination string) error {
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
-	in, err := os.Open(source)
+	in, err := os.Open(source) // #nosec G304 -- source is the operator-supplied backup path.
 	if err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("storage: open backup: %w", err)

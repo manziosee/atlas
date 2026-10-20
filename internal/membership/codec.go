@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/manziosee/atlas/internal/storage"
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"github.com/manziosee/atlas/internal/storage"
 )
 
 var protobufMagic = [...]byte{'A', 'T', 'P', 'B', 1}
@@ -18,7 +19,7 @@ var protobufMagic = [...]byte{'A', 'T', 'P', 'B', 1}
 // JSON packets during an upgrade.
 func marshalMessage(msg message) ([]byte, error) {
 	b := append([]byte(nil), protobufMagic[:]...)
-	b = appendVarintField(b, 1, uint64(messageTypeCode(msg.Type)))
+	b = appendVarintField(b, 1, messageTypeCode(msg.Type))
 	if msg.Seq != 0 {
 		b = appendVarintField(b, 2, msg.Seq)
 	}
@@ -33,6 +34,9 @@ func marshalMessage(msg message) ([]byte, error) {
 		b = appendBytesField(b, 6, marshalMember(*msg.Target))
 	}
 	if msg.SentAt != 0 {
+		if msg.SentAt < 0 {
+			return nil, errors.New("membership: negative message timestamp")
+		}
 		b = appendVarintField(b, 7, uint64(msg.SentAt))
 	}
 	if len(msg.RegistryDigest) > 0 {
@@ -54,7 +58,7 @@ func unmarshalMessage(data []byte, msg *message) error {
 	return json.Unmarshal(data, msg)
 }
 
-func messageTypeCode(t msgType) int {
+func messageTypeCode(t msgType) uint64 {
 	switch t {
 	case msgPing:
 		return 1
@@ -123,7 +127,10 @@ func unmarshalProtoMessage(data []byte, msg *message) error {
 			case 2:
 				msg.Seq = value
 			case 7:
-				msg.SentAt = int64(value)
+				if value > 1<<63-1 {
+					return errors.New("membership: message timestamp is out of range")
+				}
+				msg.SentAt = signedInt64FromVarint(value)
 			case 9:
 				if value != 1 {
 					return errors.New("membership: invalid protobuf push-pull reply flag")
@@ -347,9 +354,9 @@ func unmarshalService(data []byte, service *storage.Service) error {
 				}
 				service.Deleted = value == 1
 			case 12:
-				service.UpdatedAt = time.Unix(0, int64(value)).UTC()
+				service.UpdatedAt = time.Unix(0, signedInt64FromVarint(value)).UTC()
 			case 13:
-				service.CheckedAt = time.Unix(0, int64(value)).UTC()
+				service.CheckedAt = time.Unix(0, signedInt64FromVarint(value)).UTC()
 			}
 			continue
 		}
@@ -360,6 +367,12 @@ func unmarshalService(data []byte, service *storage.Service) error {
 		data = data[n:]
 	}
 	return nil
+}
+
+// signedInt64FromVarint preserves the two's-complement bit pattern used by
+// protobuf int64 timestamp fields.
+func signedInt64FromVarint(value uint64) int64 {
+	return int64(value) // #nosec G115 -- protobuf int64 uses two's-complement varints.
 }
 
 func healthCode(health storage.Health) uint64 {

@@ -64,7 +64,7 @@ type Transport interface {
 }
 
 type streamTransport interface {
-	SendStream(addr string, payload []byte) error
+	SendStream(ctx context.Context, addr string, payload []byte) error
 }
 
 // Memberlist maintains this node's view of the cluster.
@@ -241,7 +241,7 @@ func (m *Memberlist) Run(ctx context.Context) {
 	wg.Go(func() { m.gossipLoop(ctx) })
 	wg.Go(func() { every(ctx, 250*time.Millisecond, func(context.Context) { m.tick() }) })
 	wg.Wait()
-	m.leave()
+	m.leave(ctx)
 }
 
 // Join contacts seed addresses ("host:port"; hostnames may resolve to many
@@ -267,7 +267,7 @@ func (m *Memberlist) Join(ctx context.Context, seeds []string) (int, error) {
 			if addr == self {
 				continue
 			}
-			if err := m.send(addr, msgPull, 0, m.sample(maxPiggyback, "")); err != nil {
+			if err := m.send(ctx, addr, msgPull, 0, m.sample(maxPiggyback, "")); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -304,7 +304,7 @@ func (m *Memberlist) receiveLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			m.handle(p)
+			m.handle(ctx, p)
 		}
 	}
 }
@@ -335,7 +335,7 @@ func (m *Memberlist) probeMember(ctx context.Context, target Member) {
 
 	start := time.Now()
 	probeTimeout := m.localProbeTimeout()
-	if err := m.send(target.Addr, msgPing, seq, m.sample(maxPiggyback, target.ID)); err != nil {
+	if err := m.send(ctx, target.Addr, msgPing, seq, m.sample(maxPiggyback, target.ID)); err != nil {
 		m.log.Debug("probe send failed", "target", target.ID, "err", err)
 	}
 
@@ -436,17 +436,17 @@ func (m *Memberlist) gossipLoop(ctx context.Context) {
 		if round%antiEntropyEvery == 0 {
 			if peer, ok := m.randomMember(live); ok {
 				if _, supportsStream := m.tr.(streamTransport); supportsStream {
-					if err := m.sendFullState(peer.Addr, msgPushPullRequest, nil, false); err != nil {
+					if err := m.sendFullState(ctx, peer.Addr, msgPushPullRequest, nil, false); err != nil {
 						m.log.Warn("TCP push-pull failed", "peer", peer.ID, "err", err)
 					}
 				} else {
-					_ = m.send(peer.Addr, msgPull, 0, m.sample(maxFullSync, ""))
+					_ = m.send(ctx, peer.Addr, msgPull, 0, m.sample(maxFullSync, ""))
 				}
 			}
 			continue
 		}
 		for _, peer := range m.randomMembers(m.cfg.Fanout, live) {
-			_ = m.send(peer.Addr, msgSync, 0, m.sample(maxPiggyback, ""))
+			_ = m.send(ctx, peer.Addr, msgSync, 0, m.sample(maxPiggyback, ""))
 		}
 	}
 }
@@ -490,7 +490,7 @@ func (m *Memberlist) tick() {
 	}
 }
 
-func (m *Memberlist) leave() {
+func (m *Memberlist) leave(ctx context.Context) {
 	m.mu.Lock()
 	m.self.State = StateLeft
 	m.self.Incarnation++
@@ -502,15 +502,17 @@ func (m *Memberlist) leave() {
 	}
 	m.mu.Unlock()
 
+	leaveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
 	for _, addr := range peers {
-		_ = m.send(addr, msgSync, 0, nil)
+		_ = m.send(leaveCtx, addr, msgSync, 0, nil)
 	}
 	m.log.Info("left cluster", "notified", len(peers))
 }
 
 // --- message handling -----------------------------------------------------
 
-func (m *Memberlist) handle(p transport.Packet) {
+func (m *Memberlist) handle(ctx context.Context, p transport.Packet) {
 	var msg message
 	if err := unmarshalMessage(p.Payload, &msg); err != nil || msg.validate() != nil {
 		metrics.PacketsRejected.WithLabelValues("decode").Inc()
@@ -541,7 +543,7 @@ func (m *Memberlist) handle(p transport.Packet) {
 	}
 	if m.services != nil {
 		for _, service := range msg.Services {
-			if err := m.services.Merge(context.Background(), service); err != nil {
+			if err := m.services.Merge(ctx, service); err != nil {
 				m.log.Warn("could not merge service record", "service", service.ID, "err", err)
 			}
 		}
@@ -549,7 +551,7 @@ func (m *Memberlist) handle(p transport.Packet) {
 
 	switch msg.Type {
 	case msgPing:
-		_ = m.send(msg.From.Addr, msgAck, msg.Seq, m.sample(maxPiggyback, msg.From.ID))
+		_ = m.send(ctx, msg.From.Addr, msgAck, msg.Seq, m.sample(maxPiggyback, msg.From.ID))
 	case msgAck:
 		m.ackMu.Lock()
 		ch := m.acks[msg.Seq]
@@ -568,10 +570,10 @@ func (m *Memberlist) handle(p transport.Packet) {
 		}
 		m.relayMu.Unlock()
 		if ok {
-			_ = m.send(r.addr, msgAck, r.seq, m.sample(maxPiggyback, r.requester))
+			_ = m.send(ctx, r.addr, msgAck, r.seq, m.sample(maxPiggyback, r.requester))
 		}
 	case msgPull:
-		_ = m.sendWithServiceLimit(msg.From.Addr, msgSync, 0, m.sample(maxFullSync, msg.From.ID), maxServiceSync)
+		_ = m.sendWithServiceLimit(ctx, msg.From.Addr, msgSync, 0, m.sample(maxFullSync, msg.From.ID), maxServiceSync)
 	case msgPingReq:
 		if msg.Target != nil {
 			probeSeq := m.seq.Add(1)
@@ -583,23 +585,23 @@ func (m *Memberlist) handle(p transport.Packet) {
 			}
 			m.relays[key] = relay{addr: msg.From.Addr, requester: msg.From.ID, seq: msg.Seq, expires: time.Now().Add(m.cfg.ProbeTimeout)}
 			m.relayMu.Unlock()
-			if err := m.send(msg.Target.Addr, msgPing, probeSeq, m.sample(maxPiggyback, msg.Target.ID)); err != nil {
+			if err := m.send(ctx, msg.Target.Addr, msgPing, probeSeq, m.sample(maxPiggyback, msg.Target.ID)); err != nil {
 				m.relayMu.Lock()
 				delete(m.relays, key)
 				m.relayMu.Unlock()
 			}
 		}
 	case msgPushPullRequest:
-		if err := m.sendFullState(msg.From.Addr, msgPushPullState, msg.RegistryDigest, true); err != nil {
+		if err := m.sendFullState(ctx, msg.From.Addr, msgPushPullState, msg.RegistryDigest, true); err != nil {
 			m.log.Warn("TCP push-pull response failed", "peer", msg.From.ID, "err", err)
 		}
 	case msgPushPullState:
 		if msg.PushPullReply && m.services != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			localDigest, err := m.services.RegistryDigest(ctx)
+			digestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			localDigest, err := m.services.RegistryDigest(digestCtx)
 			cancel()
 			if err == nil && !bytes.Equal(localDigest[:], msg.RegistryDigest) {
-				if err := m.sendFullState(msg.From.Addr, msgPushPullState, msg.RegistryDigest, false); err != nil {
+				if err := m.sendFullState(ctx, msg.From.Addr, msgPushPullState, msg.RegistryDigest, false); err != nil {
 					m.log.Warn("TCP push-pull registry repair failed", "peer", msg.From.ID, "err", err)
 				}
 			} else if err != nil {
@@ -612,7 +614,7 @@ func (m *Memberlist) handle(p transport.Packet) {
 
 // sendFullState exchanges a complete bounded membership snapshot over the
 // authenticated TCP stream transport. UDP remains the fast path for gossip.
-func (m *Memberlist) sendFullState(addr string, kind msgType, peerDigest []byte, reply bool) error {
+func (m *Memberlist) sendFullState(ctx context.Context, addr string, kind msgType, peerDigest []byte, reply bool) error {
 	stream, ok := m.tr.(streamTransport)
 	if !ok {
 		return errors.New("membership: transport does not support TCP push-pull")
@@ -624,11 +626,11 @@ func (m *Memberlist) sendFullState(addr string, kind msgType, peerDigest []byte,
 	var digest [32]byte
 	var services []storage.Service
 	if m.services != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		snapshotCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		var err error
-		digest, err = m.services.RegistryDigest(ctx)
+		digest, err = m.services.RegistryDigest(snapshotCtx)
 		if err == nil && kind == msgPushPullState && !bytes.Equal(peerDigest, digest[:]) {
-			services, err = m.services.ReplicationSnapshot(ctx)
+			services, err = m.services.ReplicationSnapshot(snapshotCtx)
 		}
 		cancel()
 		if err != nil {
@@ -642,7 +644,7 @@ func (m *Memberlist) sendFullState(addr string, kind msgType, peerDigest []byte,
 	if len(payload) > transport.MaxStreamPayload {
 		return errors.New("membership: full state exceeds TCP sync limit")
 	}
-	if err := stream.SendStream(addr, payload); err != nil {
+	if err := stream.SendStream(ctx, addr, payload); err != nil {
 		return err
 	}
 	m.markBroadcastsSent(members)
@@ -755,22 +757,22 @@ func (m *Memberlist) emit(t EventType, mb Member) {
 
 // --- helpers --------------------------------------------------------------
 
-func (m *Memberlist) send(addr string, t msgType, seq uint64, members []Member) error {
+func (m *Memberlist) send(ctx context.Context, addr string, t msgType, seq uint64, members []Member) error {
 	serviceLimit := maxServicePiggyback
 	if t == msgPull {
 		serviceLimit = maxServiceSync
 	}
-	return m.sendWithServiceLimit(addr, t, seq, members, serviceLimit)
+	return m.sendWithServiceLimit(ctx, addr, t, seq, members, serviceLimit)
 }
 
-func (m *Memberlist) sendWithServiceLimit(addr string, t msgType, seq uint64, members []Member, serviceLimit int) error {
+func (m *Memberlist) sendWithServiceLimit(ctx context.Context, addr string, t msgType, seq uint64, members []Member, serviceLimit int) error {
 	self := m.LocalNode()
 	self.Since = time.Time{}
 	var services []storage.Service
 	if m.services != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		snapshotCtx, cancel := context.WithTimeout(ctx, time.Second)
 		var err error
-		services, err = m.services.Snapshot(ctx, serviceLimit)
+		services, err = m.services.Snapshot(snapshotCtx, serviceLimit)
 		cancel()
 		if err != nil {
 			m.log.Warn("could not snapshot service records", "err", err)

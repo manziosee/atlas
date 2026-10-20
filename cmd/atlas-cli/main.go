@@ -170,7 +170,7 @@ func readCLIConfig() (cliConfigFile, error) {
 	if path == "" {
 		return cliConfigFile{}, nil
 	}
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304,G703 -- path is explicitly selected by the operator.
 	if err != nil {
 		return cliConfigFile{}, fmt.Errorf("open ATLAS_CLI_CONFIG: %w", err)
 	}

@@ -79,7 +79,7 @@ func TestLoadConfigFileAndEnvironmentPrecedence(t *testing.T) {
 		t.Fatalf("config file/env precedence = node %q region %q", cfg.NodeID, cfg.Region)
 	}
 
-	if err := os.WriteFile(path, []byte("ATLAS_UNKOWN_OPTION=value\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("ATLAS_UNKNOWN_OPTION=value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(env(values)); err == nil || !strings.Contains(err.Error(), "unknown setting") {

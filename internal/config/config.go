@@ -202,7 +202,7 @@ func readConfigFile(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ATLAS_CONFIG_FILE: resolve path: %w", err)
 	}
-	file, err := os.Open(absolute)
+	file, err := os.Open(absolute) // #nosec G304 -- path is explicitly selected by the operator.
 	if err != nil {
 		return nil, fmt.Errorf("ATLAS_CONFIG_FILE: open %q: %w", absolute, err)
 	}

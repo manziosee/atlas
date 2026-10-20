@@ -7,6 +7,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -115,7 +116,7 @@ func Listen(addr string, kr *security.Keyring, log *slog.Logger) (*UDP, error) {
 
 // SendStream sends one authenticated, length-prefixed message over TCP. It is
 // used for bounded full-state push-pull, where UDP would require fragmentation.
-func (t *UDP) SendStream(addr string, payload []byte) error {
+func (t *UDP) SendStream(ctx context.Context, addr string, payload []byte) error {
 	if len(payload) == 0 || len(payload) > MaxStreamPayload {
 		return fmt.Errorf("transport: TCP payload length %d is outside limits", len(payload))
 	}
@@ -123,7 +124,8 @@ func (t *UDP) SendStream(addr string, payload []byte) error {
 	if err != nil {
 		return fmt.Errorf("transport: resolve TCP peer %q: %w", addr, err)
 	}
-	conn, err := net.DialTimeout("tcp", remote.String(), 5*time.Second)
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", remote.String())
 	if err != nil {
 		return fmt.Errorf("transport: connect TCP peer %q: %w", addr, err)
 	}
@@ -136,8 +138,11 @@ func (t *UDP) SendStream(addr string, payload []byte) error {
 	if len(sealed) > maxStreamFrame {
 		return errors.New("transport: sealed TCP frame exceeds limit")
 	}
+	if uint64(len(sealed)) > uint64(^uint32(0)) {
+		return errors.New("transport: sealed TCP frame length overflows its header")
+	}
 	frame := make([]byte, 4+len(sealed))
-	binary.BigEndian.PutUint32(frame[:4], uint32(len(sealed)))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(sealed))) // #nosec G115 -- length is bounded by checks above.
 	copy(frame[4:], sealed)
 	if err := writeAll(conn, frame); err != nil {
 		return fmt.Errorf("transport: send TCP frame to %s: %w", addr, err)

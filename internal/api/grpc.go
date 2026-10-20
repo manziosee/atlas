@@ -10,9 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/manziosee/atlas/internal/routing"
-	"github.com/manziosee/atlas/internal/security"
-	"github.com/manziosee/atlas/internal/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -21,6 +18,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/manziosee/atlas/internal/routing"
+	"github.com/manziosee/atlas/internal/security"
+	"github.com/manziosee/atlas/internal/storage"
 )
 
 const registryServiceName = "atlas.v1.Registry"

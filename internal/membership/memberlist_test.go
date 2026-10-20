@@ -80,7 +80,7 @@ func (t *fakeTransport) Send(addr string, p []byte) error {
 	return nil
 }
 
-func (t *fakeTransport) SendStream(addr string, p []byte) error {
+func (t *fakeTransport) SendStream(_ context.Context, addr string, p []byte) error {
 	t.net.mu.Lock()
 	dst, drop := t.net.nodes[addr], t.net.down[addr] || t.net.down[t.addr] || t.net.blocked[t.addr+"->"+addr]
 	t.net.mu.Unlock()
@@ -282,7 +282,7 @@ func TestTCPPushPullRepairsFullMembershipView(t *testing.T) {
 	second.merge(Member{ID: "sync-3", Addr: "127.0.0.1:7253", State: StateAlive, Incarnation: 1})
 	wg.Go(func() { first.receiveLoop(ctx) })
 	wg.Go(func() { second.receiveLoop(ctx) })
-	if err := first.sendFullState(second.LocalNode().Addr, msgPushPullRequest, nil, false); err != nil {
+	if err := first.sendFullState(context.Background(), second.LocalNode().Addr, msgPushPullRequest, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, time.Second, func() bool { return targetState(first, "sync-3") == StateAlive }, "TCP push-pull did not repair the missing member")
@@ -323,7 +323,7 @@ func TestTCPPushPullRepairsRegistryDigestMismatch(t *testing.T) {
 	second.merge(Member{ID: firstConfig.NodeID, Addr: firstConfig.AdvertiseAddr, State: StateAlive, Incarnation: 1})
 	wg.Go(func() { first.receiveLoop(ctx) })
 	wg.Go(func() { second.receiveLoop(ctx) })
-	if err := first.sendFullState(secondConfig.AdvertiseAddr, msgPushPullRequest, nil, false); err != nil {
+	if err := first.sendFullState(context.Background(), secondConfig.AdvertiseAddr, msgPushPullRequest, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
@@ -450,11 +450,11 @@ func TestAdmissionRejectsUnknownNodesAndFiltersPiggyback(t *testing.T) {
 	}
 	trusted := Member{ID: "trusted", Addr: "127.0.0.1:2", State: StateAlive, Incarnation: 1}
 	unknown := Member{ID: "unknown", Addr: "127.0.0.1:3", State: StateAlive, Incarnation: 1}
-	m.handle(packetFor(trusted, []Member{unknown}))
+	m.handle(context.Background(), packetFor(trusted, []Member{unknown}))
 	if len(m.Members()) != 2 || targetState(m, "unknown") != StateDead {
 		t.Fatalf("allowlisted sender admitted unexpected members: %+v", m.Members())
 	}
-	m.handle(packetFor(unknown, nil))
+	m.handle(context.Background(), packetFor(unknown, nil))
 	if len(m.Members()) != 2 {
 		t.Fatalf("unallowlisted sender changed membership: %+v", m.Members())
 	}
@@ -521,7 +521,7 @@ func TestSendTrimsGossipToIPv6MTUPayload(t *testing.T) {
 	for i := range members {
 		members[i] = Member{ID: fmt.Sprintf("peer-%03d-%0128s", i, "x"), Addr: "127.0.0.1:7946", State: StateAlive, Incarnation: uint64(i + 1)}
 	}
-	if err := m.sendWithServiceLimit(receiver.addr, msgSync, 1, members, 0); err != nil {
+	if err := m.sendWithServiceLimit(context.Background(), receiver.addr, msgSync, 1, members, 0); err != nil {
 		t.Fatal(err)
 	}
 	select {

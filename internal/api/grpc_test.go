@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/manziosee/atlas/internal/security"
-	"github.com/manziosee/atlas/internal/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -16,6 +14,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/manziosee/atlas/internal/security"
+	"github.com/manziosee/atlas/internal/storage"
 )
 
 func TestGRPCRegistryAuthAndLifecycle(t *testing.T) {
