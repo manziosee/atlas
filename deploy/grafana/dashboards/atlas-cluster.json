@@ -77,6 +77,42 @@
       "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{ "expr": "sum by (reason) (rate(atlas_transport_packets_rejected_total[1m]))", "legendFormat": "{{reason}}" }]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Membership broadcast backlog",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "atlas_membership_broadcast_queue", "legendFormat": "queued {{node}}" },
+        { "expr": "sum by (node) (rate(atlas_membership_broadcasts_dropped_total[1m]))", "legendFormat": "dropped/s {{node}}" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Per-peer EWMA probe RTT",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "expr": "atlas_membership_peer_rtt_seconds", "legendFormat": "{{node}} → {{member}}" }]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Lifeguard local health score",
+      "gridPos": { "x": 0, "y": 35, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "atlas_membership_local_health_score", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "API availability (5m)",
+      "gridPos": { "x": 12, "y": 35, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [{ "expr": "atlas:http_availability:ratio5m", "legendFormat": "{{node}}" }]
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "API p95 latency by route (5m)",
+      "gridPos": { "x": 0, "y": 42, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "expr": "atlas:http_latency_p95_seconds:route5m", "legendFormat": "{{node}} {{route}}" }]
     }
   ]
 }

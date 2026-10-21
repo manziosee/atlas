@@ -14,6 +14,10 @@ spec:
       port: 7946
       targetPort: gossip
       protocol: UDP
+    - name: gossip-stream
+      port: 7946
+      targetPort: gossip-stream
+      protocol: TCP
 ---
 # API service: load-balanced across ready pods.
 apiVersion: v1
@@ -27,4 +31,12 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: 8082
+      targetPort: grpc
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
       protocol: TCP

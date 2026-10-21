@@ -4,12 +4,15 @@
 //	GET /readyz      readiness (unauthenticated)
 //	GET /v1/node     this node's record          (bearer token)
 //	GET /v1/members  this node's cluster view    (bearer token)
+//	GET /v1/services replicated service instances (bearer token)
 package api
 
 import (
 	"crypto/rand"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -17,12 +20,16 @@ import (
 
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/metrics"
+	"github.com/manziosee/atlas/internal/routing"
 	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/version"
 )
 
-// maxBodyBytes caps request bodies; the API is read-only today.
+// maxBodyBytes caps request bodies accepted by the control API.
 const maxBodyBytes = 1 << 20
+
+//go:embed dashboard/*
+var dashboardFiles embed.FS
 
 // Cluster is the subset of membership.Memberlist the API needs.
 type Cluster interface {
@@ -33,6 +40,8 @@ type Cluster interface {
 // Deps wires the handler to the rest of the node.
 type Deps struct {
 	Cluster     Cluster
+	Registry    ServiceRegistry
+	Selector    *routing.Selector
 	Auth        *security.TokenAuthenticator
 	RateLimiter *security.RateLimiter
 	Log         *slog.Logger
@@ -41,7 +50,19 @@ type Deps struct {
 
 // NewHandler builds the full middleware chain and routes.
 func NewHandler(d Deps) http.Handler {
+	if d.Selector == nil {
+		d.Selector = routing.NewSelector()
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/dashboard/", http.StatusPermanentRedirect)
+	})
+	assets, _ := fs.Sub(dashboardFiles, "dashboard")
+	static := http.StripPrefix("/dashboard/", http.FileServer(http.FS(assets)))
+	mux.Handle("GET /dashboard/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		static.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -65,6 +86,12 @@ func NewHandler(d Deps) http.Handler {
 		members := d.Cluster.Members()
 		writeJSON(w, http.StatusOK, map[string]any{"count": len(members), "members": members})
 	})
+	v1.HandleFunc("POST /v1/services", d.registerService)
+	v1.HandleFunc("GET /v1/services", d.listServices)
+	v1.HandleFunc("GET /v1/lookup/{name}", d.lookupService)
+	v1.HandleFunc("GET /v1/services/{id}", d.getService)
+	v1.HandleFunc("DELETE /v1/services/{id}", d.deleteService)
+	v1.HandleFunc("GET /v1/events", d.streamEvents)
 	mux.Handle("/v1/", d.Auth.Middleware(v1))
 
 	var h http.Handler = mux
@@ -101,6 +128,8 @@ type statusRecorder struct {
 	code int
 }
 
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
 	r.code = code
 	r.ResponseWriter.WriteHeader(code)
@@ -127,7 +156,8 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		metrics.HTTPDuration.WithLabelValues(route).Observe(elapsed.Seconds())
 		log.Info("http request",
 			"request_id", id, "method", r.Method, "path", r.URL.Path,
-			"status", rec.code, "duration_ms", elapsed.Milliseconds(), "remote", r.RemoteAddr)
+			"status", rec.code, "duration_ms", elapsed.Milliseconds(), "remote", r.RemoteAddr,
+			"token_id", security.AuthenticatedTokenID(r.Context()))
 	})
 }
 

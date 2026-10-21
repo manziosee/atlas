@@ -1,0 +1,31 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: atlas
+  labels:
+    app.kubernetes.io/name: atlas
+spec:
+  groups:
+    - name: atlas.availability
+      rules:
+        - alert: AtlasNodeDown
+          expr: up{service="atlas"} == 0
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "Atlas node {{ $labels.node }} is not being scraped"
+        - alert: AtlasDeadMembers
+          expr: max by (namespace) (atlas_membership_members{state="dead"}) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Atlas cluster reports dead members"
+        - alert: AtlasHighProbeTimeoutRate
+          expr: sum(rate(atlas_membership_probes_total{result="timeout"}[5m])) / clamp_min(sum(rate(atlas_membership_probes_total[5m])), 0.001) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 5% of Atlas failure detector probes are timing out"

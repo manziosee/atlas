@@ -7,14 +7,20 @@
 package config
 
 import (
+	"bufio"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/manziosee/atlas/internal/security"
 )
 
 // Environment selects how strict validation is.
@@ -27,6 +33,9 @@ const (
 
 // GossipKeySize is the required length of a decoded gossip key (AES-256).
 const GossipKeySize = 32
+
+// MaxGossipKeys must stay aligned with security.MaxKeys.
+const MaxGossipKeys = 4
 
 // MinTokenLength is the minimum accepted API token length in characters.
 const MinTokenLength = 32
@@ -46,14 +55,16 @@ type TLS struct {
 
 // Config is the fully parsed node configuration.
 type Config struct {
-	Env    Environment
-	NodeID string
-	Region string
+	Env          Environment
+	NodeID       string
+	Region       string
+	DatabasePath string
 
 	// Gossip / membership
 	GossipBindAddr      string
 	GossipAdvertiseAddr string
 	Seeds               []string
+	AllowedNodeIDs      []string
 	GossipKeys          [][]byte // [0] is the primary (encrypting) key
 	ProbeInterval       time.Duration
 	ProbeTimeout        time.Duration
@@ -64,12 +75,18 @@ type Config struct {
 	MaxClockSkew        time.Duration
 
 	// API
-	HTTPAddr       string
-	MetricsAddr    string
-	TLS            TLS
-	APITokens      []string
-	RateLimitRPS   float64
-	RateLimitBurst int
+	HTTPAddr            string
+	GRPCAddr            string
+	MetricsAddr         string
+	PprofAddr           string
+	TLS                 TLS
+	APITokens           []string
+	APICredentials      []security.Credential
+	RateLimitRPS        float64
+	RateLimitBurst      int
+	TrustedProxies      []*net.IPNet
+	HealthCheckInterval time.Duration
+	HealthCheckTimeout  time.Duration
 
 	// Logging
 	LogLevel  string
@@ -84,17 +101,36 @@ func FromEnv() (*Config, error) { return Load(os.LookupEnv) }
 
 // Load parses and validates configuration using lookup.
 func Load(lookup LookupFunc) (*Config, error) {
-	p := parser{lookup: lookup}
+	fileValues := map[string]string{}
+	if filePath, ok := lookup("ATLAS_CONFIG_FILE"); ok && strings.TrimSpace(filePath) != "" {
+		var err error
+		fileValues, err = readConfigFile(strings.TrimSpace(filePath))
+		if err != nil {
+			return nil, err
+		}
+	}
+	mergedLookup := func(key string) (string, bool) {
+		if value, ok := lookup(key); ok && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+		if value, ok := fileValues[key]; ok {
+			return value, true
+		}
+		return lookup(key)
+	}
+	p := parser{lookup: mergedLookup}
 
 	hostname, _ := os.Hostname()
 	cfg := &Config{
-		Env:    Environment(strings.ToLower(p.str("ATLAS_ENV", string(EnvDevelopment)))),
-		NodeID: p.str("ATLAS_NODE_ID", hostname),
-		Region: p.str("ATLAS_REGION", p.str("FLY_REGION", "local")),
+		Env:          Environment(strings.ToLower(p.str("ATLAS_ENV", string(EnvDevelopment)))),
+		NodeID:       p.str("ATLAS_NODE_ID", hostname),
+		Region:       p.str("ATLAS_REGION", p.str("FLY_REGION", "local")),
+		DatabasePath: p.str("ATLAS_DB_PATH", "data/atlas.db"),
 
 		GossipBindAddr:      p.str("ATLAS_GOSSIP_BIND_ADDR", "0.0.0.0:7946"),
 		GossipAdvertiseAddr: p.str("ATLAS_GOSSIP_ADVERTISE_ADDR", ""),
 		Seeds:               p.list("ATLAS_SEEDS"),
+		AllowedNodeIDs:      p.list("ATLAS_ALLOWED_NODE_IDS"),
 		ProbeInterval:       p.duration("ATLAS_PROBE_INTERVAL", time.Second),
 		ProbeTimeout:        p.duration("ATLAS_PROBE_TIMEOUT", 500*time.Millisecond),
 		SuspicionTimeout:    p.duration("ATLAS_SUSPICION_TIMEOUT", 5*time.Second),
@@ -104,7 +140,9 @@ func Load(lookup LookupFunc) (*Config, error) {
 		MaxClockSkew:        p.duration("ATLAS_MAX_CLOCK_SKEW", 30*time.Second),
 
 		HTTPAddr:    p.str("ATLAS_HTTP_ADDR", "0.0.0.0:8080"),
+		GRPCAddr:    p.str("ATLAS_GRPC_ADDR", "0.0.0.0:8082"),
 		MetricsAddr: p.str("ATLAS_METRICS_ADDR", "0.0.0.0:9090"),
+		PprofAddr:   p.str("ATLAS_PPROF_ADDR", "127.0.0.1:6060"),
 		TLS: TLS{
 			Enabled:            p.bool("ATLAS_TLS_ENABLED", false),
 			CertFile:           p.str("ATLAS_TLS_CERT_FILE", ""),
@@ -113,9 +151,12 @@ func Load(lookup LookupFunc) (*Config, error) {
 			RequireClientCert:  p.bool("ATLAS_TLS_CLIENT_AUTH", false),
 			TerminatedUpstream: p.bool("ATLAS_TLS_TERMINATED_UPSTREAM", false),
 		},
-		APITokens:      p.list("ATLAS_API_TOKENS"),
-		RateLimitRPS:   p.float("ATLAS_RATE_LIMIT_RPS", 20),
-		RateLimitBurst: p.int("ATLAS_RATE_LIMIT_BURST", 40),
+		APITokens:           p.list("ATLAS_API_TOKENS"),
+		APICredentials:      p.credentials("ATLAS_API_CREDENTIALS"),
+		RateLimitRPS:        p.float("ATLAS_RATE_LIMIT_RPS", 20),
+		RateLimitBurst:      p.int("ATLAS_RATE_LIMIT_BURST", 40),
+		HealthCheckInterval: p.duration("ATLAS_HEALTH_CHECK_INTERVAL", 5*time.Second),
+		HealthCheckTimeout:  p.duration("ATLAS_HEALTH_CHECK_TIMEOUT", time.Second),
 
 		LogLevel:  p.str("ATLAS_LOG_LEVEL", "info"),
 		LogFormat: p.str("ATLAS_LOG_FORMAT", "json"),
@@ -127,6 +168,14 @@ func Load(lookup LookupFunc) (*Config, error) {
 	for i, k := range p.list("ATLAS_GOSSIP_KEYS_SECONDARY") {
 		cfg.GossipKeys = append(cfg.GossipKeys, p.key(fmt.Sprintf("ATLAS_GOSSIP_KEYS_SECONDARY[%d]", i), k))
 	}
+	for i, cidr := range p.list("ATLAS_TRUSTED_PROXIES") {
+		_, subnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			p.errs = append(p.errs, fmt.Errorf("ATLAS_TRUSTED_PROXIES[%d]: invalid CIDR %q", i, cidr))
+			continue
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, subnet)
+	}
 
 	if err := errors.Join(p.errs...); err != nil {
 		return nil, err
@@ -135,6 +184,61 @@ func Load(lookup LookupFunc) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+var knownConfigKeys = map[string]struct{}{
+	"ATLAS_ENV": {}, "ATLAS_NODE_ID": {}, "ATLAS_REGION": {}, "FLY_REGION": {}, "ATLAS_DB_PATH": {},
+	"ATLAS_GOSSIP_BIND_ADDR": {}, "ATLAS_GOSSIP_ADVERTISE_ADDR": {}, "ATLAS_SEEDS": {}, "ATLAS_ALLOWED_NODE_IDS": {},
+	"ATLAS_GOSSIP_KEY": {}, "ATLAS_GOSSIP_KEYS_SECONDARY": {}, "ATLAS_PROBE_INTERVAL": {}, "ATLAS_PROBE_TIMEOUT": {},
+	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
+	"ATLAS_HTTP_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
+	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
+	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
+	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
+}
+
+func readConfigFile(path string) (map[string]string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("ATLAS_CONFIG_FILE: resolve path: %w", err)
+	}
+	file, err := os.Open(absolute) // #nosec G304 -- path is explicitly selected by the operator.
+	if err != nil {
+		return nil, fmt.Errorf("ATLAS_CONFIG_FILE: open %q: %w", absolute, err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("ATLAS_CONFIG_FILE: inspect %q: %w", absolute, err)
+	}
+	if info.Size() > 1<<20 {
+		return nil, errors.New("ATLAS_CONFIG_FILE exceeds 1 MiB")
+	}
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	for lineNumber := 1; scanner.Scan(); lineNumber++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("ATLAS_CONFIG_FILE:%d: expected KEY=value", lineNumber)
+		}
+		if _, known := knownConfigKeys[key]; !known {
+			return nil, fmt.Errorf("ATLAS_CONFIG_FILE:%d: unknown setting %q", lineNumber, key)
+		}
+		if _, duplicate := values[key]; duplicate {
+			return nil, fmt.Errorf("ATLAS_CONFIG_FILE:%d: duplicate setting %q", lineNumber, key)
+		}
+		values[key] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("ATLAS_CONFIG_FILE: read %q: %w", absolute, err)
+	}
+	return values, nil
 }
 
 // Validate checks semantic constraints. It is called by Load.
@@ -150,13 +254,30 @@ func (c *Config) Validate() error {
 	if c.NodeID == "" {
 		add("ATLAS_NODE_ID must not be empty")
 	}
+	if c.DatabasePath == "" {
+		add("ATLAS_DB_PATH must not be empty")
+	}
 	for name, addr := range map[string]string{
 		"ATLAS_GOSSIP_BIND_ADDR": c.GossipBindAddr,
 		"ATLAS_HTTP_ADDR":        c.HTTPAddr,
+		"ATLAS_GRPC_ADDR":        c.GRPCAddr,
 		"ATLAS_METRICS_ADDR":     c.MetricsAddr,
 	} {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			add("%s: invalid host:port %q", name, addr)
+		}
+	}
+	if host, port, err := net.SplitHostPort(c.PprofAddr); err != nil {
+		add("ATLAS_PPROF_ADDR: invalid host:port %q", c.PprofAddr)
+	} else {
+		ipHost := strings.SplitN(host, "%", 2)[0]
+		ip := net.ParseIP(ipHost)
+		portNumber, portErr := strconv.Atoi(port)
+		if ip == nil || !ip.IsLoopback() {
+			add("ATLAS_PPROF_ADDR must bind to a loopback IP, got %q", c.PprofAddr)
+		}
+		if portErr != nil || portNumber < 1 || portNumber > 65535 {
+			add("ATLAS_PPROF_ADDR must use a port from 1 to 65535, got %q", c.PprofAddr)
 		}
 	}
 	if c.GossipAdvertiseAddr != "" {
@@ -169,9 +290,33 @@ func (c *Config) Validate() error {
 			add("ATLAS_SEEDS: invalid host:port %q", s)
 		}
 	}
+	if len(c.AllowedNodeIDs) > 10000 {
+		add("ATLAS_ALLOWED_NODE_IDS may contain at most 10000 node IDs")
+	}
+	allowed := make(map[string]struct{}, len(c.AllowedNodeIDs))
+	selfAllowed := len(c.AllowedNodeIDs) == 0
+	for _, id := range c.AllowedNodeIDs {
+		if id == "" || len(id) > 128 {
+			add("ATLAS_ALLOWED_NODE_IDS contains an invalid node ID")
+			continue
+		}
+		if _, duplicate := allowed[id]; duplicate {
+			add("ATLAS_ALLOWED_NODE_IDS contains duplicate node ID %q", id)
+		}
+		allowed[id] = struct{}{}
+		if id == c.NodeID {
+			selfAllowed = true
+		}
+	}
+	if !selfAllowed {
+		add("ATLAS_ALLOWED_NODE_IDS must include this node %q", c.NodeID)
+	}
 
 	if len(c.GossipKeys) == 0 {
 		add("ATLAS_GOSSIP_KEY is required (generate one with `atlas-cli keygen`)")
+	}
+	if len(c.GossipKeys) > MaxGossipKeys {
+		add("ATLAS_GOSSIP_KEYS_SECONDARY may contain at most %d keys", MaxGossipKeys-1)
 	}
 	if c.ProbeTimeout <= 0 || c.ProbeTimeout >= c.ProbeInterval {
 		add("ATLAS_PROBE_TIMEOUT (%s) must be > 0 and < ATLAS_PROBE_INTERVAL (%s)", c.ProbeTimeout, c.ProbeInterval)
@@ -192,16 +337,25 @@ func (c *Config) Validate() error {
 		add("ATLAS_MAX_CLOCK_SKEW must be > 0")
 	}
 
-	if len(c.APITokens) == 0 {
-		add("ATLAS_API_TOKENS is required (generate one with `atlas-cli tokengen`)")
+	if len(c.APITokens) == 0 && len(c.APICredentials) == 0 {
+		add("ATLAS_API_TOKENS or ATLAS_API_CREDENTIALS is required")
+	}
+	if len(c.APITokens) > 0 && len(c.APICredentials) > 0 {
+		add("configure either ATLAS_API_TOKENS or ATLAS_API_CREDENTIALS, not both")
 	}
 	for i, t := range c.APITokens {
 		if len(t) < MinTokenLength {
 			add("ATLAS_API_TOKENS[%d] is too short (%d chars, minimum %d)", i, len(t), MinTokenLength)
 		}
 	}
+	if err := security.ValidateCredentials(c.APICredentials); err != nil {
+		add("ATLAS_API_CREDENTIALS: %v", err)
+	}
 	if c.RateLimitRPS <= 0 || c.RateLimitBurst < 1 {
 		add("ATLAS_RATE_LIMIT_RPS must be > 0 and ATLAS_RATE_LIMIT_BURST >= 1")
+	}
+	if c.HealthCheckInterval <= 0 || c.HealthCheckTimeout <= 0 || c.HealthCheckTimeout > c.HealthCheckInterval {
+		add("ATLAS_HEALTH_CHECK_TIMEOUT must be > 0 and <= ATLAS_HEALTH_CHECK_INTERVAL")
 	}
 
 	if c.TLS.Enabled {
@@ -246,6 +400,26 @@ func (p *parser) list(key string) []string {
 		}
 	}
 	return out
+}
+
+func (p *parser) credentials(key string) []security.Credential {
+	raw := p.str(key, "")
+	if raw == "" {
+		return nil
+	}
+	var credentials []security.Credential
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&credentials); err != nil {
+		p.errs = append(p.errs, fmt.Errorf("%s: invalid JSON credentials", key))
+		return nil
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		p.errs = append(p.errs, fmt.Errorf("%s: multiple JSON values", key))
+		return nil
+	}
+	return credentials
 }
 
 func (p *parser) bool(key string, def bool) bool {

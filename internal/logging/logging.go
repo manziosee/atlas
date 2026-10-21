@@ -11,18 +11,27 @@ import (
 // New returns a slog.Logger writing to w at the given level ("debug", "info",
 // "warn", "error") in the given format ("json" or "text").
 func New(w io.Writer, level, format string) (*slog.Logger, error) {
+	logger, _, err := NewDynamic(w, level, format)
+	return logger, err
+}
+
+// NewDynamic returns a logger and its mutable level. The LevelVar can be
+// updated safely at runtime after configuration reload.
+func NewDynamic(w io.Writer, level, format string) (*slog.Logger, *slog.LevelVar, error) {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(strings.ToUpper(level))); err != nil {
-		return nil, fmt.Errorf("logging: invalid level %q", level)
+		return nil, nil, fmt.Errorf("logging: invalid level %q", level)
 	}
-	opts := &slog.HandlerOptions{Level: lvl}
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(lvl)
+	opts := &slog.HandlerOptions{Level: levelVar}
 
 	switch strings.ToLower(format) {
 	case "json", "":
-		return slog.New(slog.NewJSONHandler(w, opts)), nil
+		return slog.New(slog.NewJSONHandler(w, opts)), levelVar, nil
 	case "text":
-		return slog.New(slog.NewTextHandler(w, opts)), nil
+		return slog.New(slog.NewTextHandler(w, opts)), levelVar, nil
 	default:
-		return nil, fmt.Errorf("logging: invalid format %q (want json|text)", format)
+		return nil, nil, fmt.Errorf("logging: invalid format %q (want json|text)", format)
 	}
 }

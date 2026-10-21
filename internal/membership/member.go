@@ -59,14 +59,15 @@ type Member struct {
 const (
 	maxIDLen     = 128
 	maxRegionLen = 64
+	maxAddrLen   = 256
 )
 
 func (m Member) validate() error {
 	if m.ID == "" || len(m.ID) > maxIDLen {
 		return errors.New("membership: invalid member id")
 	}
-	if len(m.Region) > maxRegionLen {
-		return errors.New("membership: region too long")
+	if len(m.Region) > maxRegionLen || len(m.Addr) > maxAddrLen {
+		return errors.New("membership: region or address too long")
 	}
 	if _, _, err := net.SplitHostPort(m.Addr); err != nil {
 		return fmt.Errorf("membership: invalid member addr %q", m.Addr)

@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: atlas
+  labels:
+    app.kubernetes.io/name: atlas
+spec:
+  namespaceSelector:
+    matchNames: [atlas]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: atlas
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: node

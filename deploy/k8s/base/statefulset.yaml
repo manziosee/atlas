@@ -50,7 +50,9 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - { name: gossip, containerPort: 7946, protocol: UDP }
+            - { name: gossip-stream, containerPort: 7946, protocol: TCP }
             - { name: http, containerPort: 8080, protocol: TCP }
+            - { name: grpc, containerPort: 8082, protocol: TCP }
             - { name: metrics, containerPort: 9090, protocol: TCP }
           env:
             - name: ATLAS_NODE_ID
@@ -88,6 +90,15 @@ spec:
             timeoutSeconds: 2
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: atlas-data, mountPath: /data }
       volumes:
         - name: tmp
           emptyDir: { sizeLimit: 16Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: atlas-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi

@@ -27,6 +27,7 @@ kill_timeout = "20s"
   ATLAS_SEEDS = "atlas-edge.internal:7946"
   ATLAS_HTTP_ADDR = "[::]:8080"
   ATLAS_METRICS_ADDR = "[::]:9090"
+  ATLAS_DB_PATH = "/data/atlas.db"
   # Cross-continent RTTs are 150-300ms: give probes more room than on a LAN.
   ATLAS_PROBE_INTERVAL = "2s"
   ATLAS_PROBE_TIMEOUT = "1s"
@@ -59,3 +60,7 @@ kill_timeout = "20s"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"
+
+[[mounts]]
+  source = "atlas_data"
+  destination = "/data"

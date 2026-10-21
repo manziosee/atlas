@@ -1,0 +1,124 @@
+openapi: 3.1.0
+info:
+  title: Atlas Node API
+  version: 1.0.0
+  description: Authenticated HTTP API for membership and the replicated service registry.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Check process liveness
+      responses:
+        '200':
+          description: The node is running.
+  /readyz:
+    get:
+      security: []
+      summary: Check node readiness
+      responses:
+        '200':
+          description: The node is ready.
+        '503':
+          description: The node is not ready.
+  /v1/node:
+    get:
+      summary: Get this node's identity and version
+      responses:
+        '200':
+          description: Node details.
+  /v1/members:
+    get:
+      summary: List members known to this node
+      responses:
+        '200':
+          description: Current local membership view.
+  /v1/services:
+    get:
+      summary: Find registered service instances
+      parameters:
+        - { in: query, name: name, schema: { type: string } }
+        - { in: query, name: region, schema: { type: string } }
+        - { in: query, name: health, schema: { type: string, enum: [unknown, healthy, unhealthy] } }
+      responses:
+        '200':
+          description: Matching active instances.
+    post:
+      summary: Register a service instance on this node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterService'
+      responses:
+        '201':
+          description: The created instance.
+        '400':
+          description: Invalid request.
+  /v1/services/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      summary: Get a service instance
+      responses:
+        '200':
+          description: The requested instance.
+        '404':
+          description: Instance not found.
+    delete:
+      summary: Delete an instance owned by this node
+      responses:
+        '204':
+          description: Instance deleted.
+        '404':
+          description: Instance not found.
+        '409':
+          description: The instance belongs to another node.
+  /v1/lookup/{name}:
+    get:
+      summary: Select a healthy service instance
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: query, name: region, schema: { type: string, maxLength: 64 } }
+        - { in: query, name: key, description: Stable consistent-hash key, schema: { type: string, maxLength: 256 } }
+      responses:
+        '200':
+          description: Selected instance.
+        '503':
+          description: No eligible instance is available.
+  /v1/events:
+    get:
+      summary: Stream membership events
+      responses:
+        '200':
+          description: Server-Sent Events stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Use a credential with read scope for reads, write scope for registry
+        changes, or admin scope for both. Expired credentials receive 401 and
+        credentials missing the required scope receive 403.
+  schemas:
+    RegisterService:
+      type: object
+      required: [name, address]
+      properties:
+        name: { type: string, maxLength: 128 }
+        address: { type: string, description: Host and port, for example 10.0.0.8:8080 }
+        version: { type: string, maxLength: 128 }
+        tags:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 64 }
+        health_check: { type: string, format: uri }

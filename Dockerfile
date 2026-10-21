@@ -34,6 +34,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/manziosee/atlas/internal/version.Date=${BUILD_DATE}" \
       -o /out/ ./cmd/...
 
+RUN mkdir -p /data && chmod 0750 /data
+
 # ---- runtime ----------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 
@@ -47,11 +49,12 @@ LABEL org.opencontainers.image.title="atlas" \
       org.opencontainers.image.revision="${COMMIT}"
 
 COPY --from=build /out/atlas-node /out/atlas-cli /usr/local/bin/
+COPY --from=build --chown=65532:65532 /data /data
 
 USER 65532:65532
 
-# 7946/udp gossip · 8080/tcp API · 9090/tcp metrics
-EXPOSE 7946/udp 8080/tcp 9090/tcp
+# 7946/udp gossip + 7946/tcp full-state sync · 8080/tcp HTTP API · 8082/tcp gRPC · 9090/tcp metrics
+EXPOSE 7946/udp 7946/tcp 8080/tcp 8082/tcp 9090/tcp
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD ["/usr/local/bin/atlas-cli", "health"]

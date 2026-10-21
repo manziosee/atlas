@@ -1,6 +1,9 @@
 # Binaries & build output
 /bin/
 /dist/
+.go-build-cache/
+.go-mod-cache/
+.go-workspace/
 *.exe
 *.test
 *.out

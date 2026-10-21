@@ -31,7 +31,7 @@ var (
 	})
 	PacketsRejected = factory.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "transport", Name: "packets_rejected_total",
-		Help: "Gossip packets dropped, by reason (decrypt, decode, clock_skew, backpressure).",
+		Help: "Gossip packets dropped, by reason (decrypt, decode, clock_skew, backpressure, admission, oversize).",
 	}, []string{"reason"})
 	BytesSent = factory.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "transport", Name: "bytes_sent_total",
@@ -49,13 +49,17 @@ var (
 	}, []string{"state"})
 	Probes = factory.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "membership", Name: "probes_total",
-		Help: "Failure-detector probes by result (ack, timeout).",
+		Help: "Failure-detector probes by result (ack, indirect_ack, timeout).",
 	}, []string{"result"})
 	ProbeRTT = factory.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace, Subsystem: "membership", Name: "probe_rtt_seconds",
 		Help:    "Round-trip time of successful probes.",
 		Buckets: prometheus.ExponentialBuckets(0.0005, 2, 14), // 0.5ms .. ~4s
 	})
+	PeerRTT = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace, Subsystem: "membership", Name: "peer_rtt_seconds",
+		Help: "Per-peer exponentially weighted moving average of successful probe round-trip time.",
+	}, []string{"member"})
 	StateTransitions = factory.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "membership", Name: "state_transitions_total",
 		Help: "Member state transitions observed, by new state.",
@@ -63,6 +67,18 @@ var (
 	Refutations = factory.NewCounter(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "membership", Name: "refutations_total",
 		Help: "Times this node refuted a suspicion about itself.",
+	})
+	BroadcastQueue = factory.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Subsystem: "membership", Name: "broadcast_queue",
+		Help: "Pending member-state broadcasts awaiting epidemic retransmission.",
+	})
+	BroadcastsDropped = factory.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "membership", Name: "broadcasts_dropped_total",
+		Help: "Member-state broadcasts discarded because the bounded queue was full.",
+	})
+	LocalHealthScore = factory.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Subsystem: "membership", Name: "local_health_score",
+		Help: "Lifeguard local health score; higher values lengthen this node's probe deadline.",
 	})
 
 	// HTTP API
