@@ -79,6 +79,9 @@ type Config struct {
 	GRPCAddr            string
 	MetricsAddr         string
 	PprofAddr           string
+	DNSAddr             string
+	DNSZone             string
+	DNSTTL              time.Duration
 	TLS                 TLS
 	APITokens           []string
 	APICredentials      []security.Credential
@@ -143,6 +146,9 @@ func Load(lookup LookupFunc) (*Config, error) {
 		GRPCAddr:    p.str("ATLAS_GRPC_ADDR", "0.0.0.0:8082"),
 		MetricsAddr: p.str("ATLAS_METRICS_ADDR", "0.0.0.0:9090"),
 		PprofAddr:   p.str("ATLAS_PPROF_ADDR", "127.0.0.1:6060"),
+		DNSAddr:     p.str("ATLAS_DNS_ADDR", ""),
+		DNSZone:     p.str("ATLAS_DNS_ZONE", "atlas"),
+		DNSTTL:      p.duration("ATLAS_DNS_TTL", 5*time.Second),
 		TLS: TLS{
 			Enabled:            p.bool("ATLAS_TLS_ENABLED", false),
 			CertFile:           p.str("ATLAS_TLS_CERT_FILE", ""),
@@ -191,7 +197,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_GOSSIP_BIND_ADDR": {}, "ATLAS_GOSSIP_ADVERTISE_ADDR": {}, "ATLAS_SEEDS": {}, "ATLAS_ALLOWED_NODE_IDS": {},
 	"ATLAS_GOSSIP_KEY": {}, "ATLAS_GOSSIP_KEYS_SECONDARY": {}, "ATLAS_PROBE_INTERVAL": {}, "ATLAS_PROBE_TIMEOUT": {},
 	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
-	"ATLAS_HTTP_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
+	"ATLAS_HTTP_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
 	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
@@ -266,6 +272,16 @@ func (c *Config) Validate() error {
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			add("%s: invalid host:port %q", name, addr)
 		}
+	}
+	if c.DNSAddr != "" {
+		if _, portText, err := net.SplitHostPort(c.DNSAddr); err != nil {
+			add("ATLAS_DNS_ADDR: invalid host:port %q", c.DNSAddr)
+		} else if port, err := strconv.Atoi(portText); err != nil || port < 1 || port > 65535 {
+			add("ATLAS_DNS_ADDR must use a port from 1 to 65535, got %q", c.DNSAddr)
+		}
+	}
+	if c.DNSTTL < time.Second || c.DNSTTL > time.Hour {
+		add("ATLAS_DNS_TTL must be between 1s and 1h")
 	}
 	if host, port, err := net.SplitHostPort(c.PprofAddr); err != nil {
 		add("ATLAS_PPROF_ADDR: invalid host:port %q", c.PprofAddr)

@@ -22,6 +22,7 @@ import (
 
 	"github.com/manziosee/atlas/internal/api"
 	"github.com/manziosee/atlas/internal/config"
+	"github.com/manziosee/atlas/internal/dnsdiscovery"
 	"github.com/manziosee/atlas/internal/logging"
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/metrics"
@@ -89,6 +90,13 @@ func run() error {
 		AllowedNodeIDs:   cfg.AllowedNodeIDs,
 		Services:         registry,
 	}, tr, log)
+	var dnsServer *dnsdiscovery.Server
+	if cfg.DNSAddr != "" {
+		dnsServer, err = dnsdiscovery.New(registry, cfg.DNSZone, cfg.DNSTTL)
+		if err != nil {
+			return err
+		}
+	}
 
 	var wg sync.WaitGroup
 	wg.Go(func() { ml.Run(ctx) })
@@ -138,7 +146,7 @@ func run() error {
 		MaxHeaderBytes: 16 << 10,
 	}
 
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
 	go func() { errCh <- serve(apiSrv, cfg.TLS.Enabled) }()
 	go func() { errCh <- serve(metricsSrv, false) }()
 	go func() { errCh <- serve(pprofSrv, false) }()
@@ -149,6 +157,13 @@ func run() error {
 		}
 		errCh <- err
 	}()
+	if cfg.DNSAddr != "" {
+		wg.Go(func() {
+			if err := dnsServer.Serve(ctx, cfg.DNSAddr); err != nil {
+				errCh <- err
+			}
+		})
+	}
 
 	log.Info("atlas node started",
 		"version", version.String(),
@@ -159,6 +174,7 @@ func run() error {
 		"grpc", cfg.GRPCAddr,
 		"metrics", cfg.MetricsAddr,
 		"pprof", cfg.PprofAddr,
+		"dns", cfg.DNSAddr,
 		"tls", cfg.TLS.Enabled,
 		"mtls", cfg.TLS.Enabled && cfg.TLS.RequireClientCert,
 		"seeds", cfg.Seeds,
@@ -259,7 +275,8 @@ func restartRequired(old, next *config.Config) bool {
 		old.ProbeInterval != next.ProbeInterval || old.ProbeTimeout != next.ProbeTimeout || old.SuspicionTimeout != next.SuspicionTimeout ||
 		old.GossipInterval != next.GossipInterval || old.GossipFanout != next.GossipFanout || old.DeadNodeReap != next.DeadNodeReap ||
 		old.MaxClockSkew != next.MaxClockSkew || old.HTTPAddr != next.HTTPAddr || old.GRPCAddr != next.GRPCAddr ||
-		old.MetricsAddr != next.MetricsAddr || old.PprofAddr != next.PprofAddr || old.TLS != next.TLS || old.HealthCheckInterval != next.HealthCheckInterval ||
+		old.MetricsAddr != next.MetricsAddr || old.PprofAddr != next.PprofAddr || old.DNSAddr != next.DNSAddr || old.DNSZone != next.DNSZone || old.DNSTTL != next.DNSTTL ||
+		old.TLS != next.TLS || old.HealthCheckInterval != next.HealthCheckInterval ||
 		old.HealthCheckTimeout != next.HealthCheckTimeout || old.LogFormat != next.LogFormat
 }
 

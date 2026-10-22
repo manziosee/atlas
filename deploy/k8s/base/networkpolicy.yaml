@@ -34,6 +34,8 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
         - { protocol: TCP, port: 8082 }
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
     # Metrics: only from the monitoring namespace.
     - from:
         - namespaceSelector:

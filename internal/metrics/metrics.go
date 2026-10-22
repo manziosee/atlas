@@ -91,6 +91,14 @@ var (
 		Help:    "HTTP request latency by route.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"route"})
+	DNSQueries = factory.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "dns", Name: "queries_total",
+		Help: "DNS queries served by query type and response code.",
+	}, []string{"type", "rcode"})
+	DNSMalformedQueries = factory.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "dns", Name: "malformed_queries_total",
+		Help: "DNS packets that could not be decoded as a DNS message.",
+	})
 
 	// Build info
 	BuildInfo = factory.NewGaugeVec(prometheus.GaugeOpts{
