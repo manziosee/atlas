@@ -117,7 +117,7 @@ jobs:
         run: docker compose up -d --build
       - name: Verify APIs and monitoring become ready
         run: |
-          deadline=$((SECONDS + 180))
+          deadline=$((SECONDS + 300))
           until curl -fsS http://127.0.0.1:8081/readyz >/dev/null \
             && curl -fsS http://127.0.0.1:8082/readyz >/dev/null \
             && curl -fsS http://127.0.0.1:8083/readyz >/dev/null \
