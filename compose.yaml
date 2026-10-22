@@ -47,6 +47,9 @@ x-atlas-node: &atlas-node
     ATLAS_MAX_CLOCK_SKEW: ${ATLAS_MAX_CLOCK_SKEW:-30s}
     ATLAS_HTTP_ADDR: 0.0.0.0:8080
     ATLAS_GRPC_ADDR: 0.0.0.0:8082
+    ATLAS_DNS_ADDR: ${ATLAS_DNS_ADDR:-0.0.0.0:5353}
+    ATLAS_DNS_ZONE: ${ATLAS_DNS_ZONE:-atlas}
+    ATLAS_DNS_TTL: ${ATLAS_DNS_TTL:-5s}
     ATLAS_DB_PATH: /data/atlas.db
     ATLAS_HEALTH_CHECK_INTERVAL: ${ATLAS_HEALTH_CHECK_INTERVAL:-5s}
     ATLAS_HEALTH_CHECK_TIMEOUT: ${ATLAS_HEALTH_CHECK_TIMEOUT:-1s}
@@ -77,6 +80,8 @@ services:
     ports:
       - "127.0.0.1:8081:8080"
       - "127.0.0.1:8084:8082"
+      - "127.0.0.1:5353:5353/udp"
+      - "127.0.0.1:5353:5353/tcp"
     volumes:
       - ./deploy/certs:/etc/atlas/tls:ro
       - atlas-1-data:/data

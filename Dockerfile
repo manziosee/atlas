@@ -53,8 +53,8 @@ COPY --from=build --chown=65532:65532 /data /data
 
 USER 65532:65532
 
-# 7946/udp gossip + 7946/tcp full-state sync · 8080/tcp HTTP API · 8082/tcp gRPC · 9090/tcp metrics
-EXPOSE 7946/udp 7946/tcp 8080/tcp 8082/tcp 9090/tcp
+# 7946 gossip · 8080 HTTP API · 8082 gRPC · 5353 DNS · 9090 metrics
+EXPOSE 7946/udp 7946/tcp 8080/tcp 8082/tcp 5353/udp 5353/tcp 9090/tcp
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD ["/usr/local/bin/atlas-cli", "health"]

@@ -197,6 +197,14 @@ atlas-3  atlas-3:7946  local   alive  1792277220550  41s
 
 # 5. Run the authenticated API load profile (30 seconds by default)
 docker compose --profile loadtest run --rm k6
+
+# 6. Register a demo instance and query it through DNS (requires `dig`)
+curl -fsS -H "Authorization: Bearer $ATLAS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"demo","address":"10.0.0.25:8080"}' \
+  http://127.0.0.1:8081/v1/services
+dig @127.0.0.1 -p 5353 demo.atlas A
+dig @127.0.0.1 -p 5353 _demo._tcp.atlas SRV
 ```
 
 | Service | URL |
@@ -249,6 +257,52 @@ Use `atlas-cli services --output json` or `atlas-cli lookup NAME --key customer-
 registrations, and `atlas-cli watch` to stream membership events. SQLite
 snapshots can be created and restored with the storage package's
 `Store.Backup` and `storage.Restore` APIs.
+
+### DNS discovery
+
+The node can optionally serve DNS over UDP and TCP. Compose enables it on
+`127.0.0.1:5353`; standalone deployments leave it disabled unless
+`ATLAS_DNS_ADDR` is set. DNS has no authentication, so bind it only to a
+private network or put an access-controlled DNS forwarder in front of it.
+Queries return up to eight healthy instances, rotating the answer set across
+larger pools. If none are healthy, unknown-health instances are returned.
+Unhealthy and deleted instances are never returned. The default TTL is five
+seconds. DNS carries no record freshness timestamp; the TTL only controls DNS
+caching. Use `GET /v1/services` to inspect each record's `updated_at` value.
+
+| Query | Result |
+|-------|--------|
+| `payments.atlas. A` / `AAAA` | Matching eligible IPv4 / IPv6 addresses |
+| `_payments._tcp.atlas. SRV` | Instance targets and registered ports |
+| `payments.eu.atlas. A` | Instances in the `eu` region |
+| `_payments._tcp.eu.atlas. SRV` | SRV instances in the `eu` region |
+
+SRV answers for IP-addressed instances include stable Atlas target names and
+address glue; those target names also resolve back to the instance address.
+Hostname-addressed instances use their registered hostname as the target. DNS
+service names and regions must each fit one DNS label (1-63 characters); names
+containing dots remain available through the HTTP API. DNS reads each node's
+local registry replica; answers converge through Atlas gossip. Set
+`ATLAS_DNS_ADDR=0.0.0.0:5353`,
+`ATLAS_DNS_ZONE=atlas`, and `ATLAS_DNS_TTL=5s` to enable it. Applications can
+use a custom DNS port by pointing a resolver or CoreDNS forward rule at Atlas.
+
+### Python client
+
+The standard-library-only client supports bearer auth, custom CA roots, and
+optional mTLS:
+
+```bash
+python -m pip install ./clients/python
+```
+
+```python
+from atlas import AtlasClient
+
+client = AtlasClient("https://atlas.example:8080", token="...", ca_file="ca.crt")
+instance = client.lookup("payments", region="eu", key="customer-17")
+print(instance["address"])
+```
 
 The CLI accepts connection defaults from `ATLAS_CLI_CONFIG`, a JSON file with
 `addr`, `token`, `ca_file`, `client_cert`, and `client_key` fields. Environment
@@ -360,6 +414,13 @@ The `production` overlay adds cert-manager TLS, 5 replicas, a pinned image
 and HTTPS probes. It needs cert-manager and a `ClusterIssuer` named
 `atlas-ca-issuer`.
 
+The `atlas` ClusterIP service exposes Atlas DNS on port 5353 over UDP and TCP.
+It serves registry records under `atlas.`; clients can query it directly or
+configure a private CoreDNS forward rule. The NetworkPolicy limits DNS access
+to the Atlas namespace and namespaces labeled `atlas.io/api-access: "true"`.
+This publishes Atlas registrations to Kubernetes clients; it does not import
+Kubernetes Services into Atlas.
+
 Clusters using Prometheus Operator can install the optional scrape and alert
 resources after its CRDs are available:
 
@@ -376,6 +437,12 @@ database plus any `-wal`/`-shm` files aside before restoring to the original
 path.
 
 ### Fly.io (multi-region)
+
+The root `fly.toml` is a single-region starting point for an app created with
+`fly launch` (the current `atlas-edge` app is in `cdg`). Create a region-local
+`atlas_data` volume and configure the two required secrets before deploying.
+Scale to one Machine for this initial setup; add a volume for every additional
+Machine. The multi-region example below uses `deploy/fly/fly.toml` instead.
 
 ```bash
 fly apps create atlas-edge
@@ -403,7 +470,8 @@ that region beyond one Machine, and keep independent database backups.
   per-peer EWMA RTT gauges, probe
   timeouts, state transitions, refutations, packets and bytes, rejected
   packets by reason (`decrypt`, `decode`, `clock_skew`, `backpressure`, `admission`, `oversize`),
-  HTTP requests and latency, Go runtime.
+  HTTP requests and latency, DNS query counts by type/response code, malformed
+  DNS messages, Go runtime.
 - **Alerts** ([deploy/prometheus/alerts.yml](deploy/prometheus/alerts.yml)):
   node down, dead members, membership disagreement, a high probe-timeout
   rate, **forged gossip packets**, replay/clock skew, API auth failures.
@@ -467,6 +535,15 @@ atlas/
 - [ ] **Phase 3 follow-up:** typed generated protobuf SDK.
 - [x] **Phase 3 follow-up:** bounded registry digest repair over authenticated
   TCP push-pull, including tombstones and full snapshots capped at 100,000 rows.
+- [x] **Adoption:** optional private-network DNS listener for healthy service
+  A/AAAA and SRV records, with region-specific names, rotating answer sets,
+  query metrics, and short configurable TTLs.
+- [x] **Adoption:** standard-library-only Python client for registry CRUD and
+  routing lookup (`clients/python`).
+- [x] **Kubernetes integration:** Kustomize deploys expose Atlas DNS to opted-in
+  namespaces; importing native Kubernetes Services still needs a controller.
+- [ ] **Adoption follow-up:** Java/Node clients, service-history API, and
+  configurable stale-record and latency-routing policies.
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
   per-peer EWMA probe latency, nearest measured instance, consistent hashing,
   and round-robin fallback.
@@ -477,8 +554,9 @@ atlas/
 - [x] **Security operations:** optional node-ID admission allowlist, trusted
   proxy handling, TLS certificate reload, and non-secret bearer fingerprints
   in access logs.
-- [ ] **Security follow-up:** cryptographic per-node identity, scoped and
-  expiring API credentials, Vault integration, and signed update commits.
+- [x] **Security follow-up:** scoped and expiring API credentials.
+- [ ] **Security follow-up:** cryptographic per-node identity, Vault integration,
+  and signed update commits.
 - [x] **API and SDK:** OpenAPI description, HTTP/gRPC registry endpoints,
   command-line lookup/watch, JSON output, configuration file, and public Go
   HTTP client.
@@ -496,7 +574,7 @@ atlas/
 - [x] **Deployment foundation:** Compose, Kustomize dev/production overlays,
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
 - [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,
-  automated database backup/restore, and public staging.
+  scheduled off-node database backups with restore drills, and public staging.
 - [x] **Documentation:** architecture, API spec, run instructions, dashboard,
   backup/restore steps, and operator runbooks for API and membership alerts.
 - [x] **Observability:** API availability and latency recording rules, SLO

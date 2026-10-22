@@ -53,6 +53,8 @@ spec:
             - { name: gossip-stream, containerPort: 7946, protocol: TCP }
             - { name: http, containerPort: 8080, protocol: TCP }
             - { name: grpc, containerPort: 8082, protocol: TCP }
+            - { name: dns-udp, containerPort: 5353, protocol: UDP }
+            - { name: dns-tcp, containerPort: 5353, protocol: TCP }
             - { name: metrics, containerPort: 9090, protocol: TCP }
           env:
             - name: ATLAS_NODE_ID

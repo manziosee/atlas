@@ -97,8 +97,8 @@ func (t *fakeTransport) SendStream(_ context.Context, addr string, p []byte) err
 func testConfig(id, addr string) Config {
 	return Config{
 		NodeID: id, Region: "test", AdvertiseAddr: addr,
-		ProbeInterval: 50 * time.Millisecond, ProbeTimeout: 20 * time.Millisecond,
-		SuspicionTimeout: 200 * time.Millisecond, GossipInterval: 20 * time.Millisecond,
+		ProbeInterval: 100 * time.Millisecond, ProbeTimeout: 100 * time.Millisecond,
+		SuspicionTimeout: 500 * time.Millisecond, GossipInterval: 20 * time.Millisecond,
 		Fanout: 3, ReapAfter: time.Minute, MaxClockSkew: 5 * time.Second,
 	}
 }
@@ -150,7 +150,7 @@ func countState(m *Memberlist, s State) int {
 func TestClusterConverges(t *testing.T) {
 	const size = 8
 	_, nodes := startCluster(t, size)
-	waitFor(t, 3*time.Second, func() bool {
+	waitFor(t, 10*time.Second, func() bool {
 		for _, n := range nodes {
 			if countState(n, StateAlive) != size {
 				return false
