@@ -438,6 +438,12 @@ path.
 
 ### Fly.io (multi-region)
 
+The root `fly.toml` is a single-region starting point for an app created with
+`fly launch` (the current `atlas-edge` app is in `cdg`). Create a region-local
+`atlas_data` volume and configure the two required secrets before deploying.
+Scale to one Machine for this initial setup; add a volume for every additional
+Machine. The multi-region example below uses `deploy/fly/fly.toml` instead.
+
 ```bash
 fly apps create atlas-edge
 fly secrets set -a atlas-edge ATLAS_GOSSIP_KEY="$(atlas-cli keygen)" ATLAS_API_TOKENS="$(atlas-cli tokengen)"

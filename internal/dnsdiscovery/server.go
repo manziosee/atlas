@@ -204,10 +204,10 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 		return nil
 	}
 	response := dnsmessage.Message{Header: dnsmessage.Header{
-		ID: req.Header.ID, Response: true, Authoritative: true,
-		RecursionDesired: req.Header.RecursionDesired,
+		ID: req.ID, Response: true, Authoritative: true,
+		RecursionDesired: req.RecursionDesired,
 	}}
-	if len(req.Questions) != 1 || req.Header.OpCode != 0 || req.Header.Response {
+	if len(req.Questions) != 1 || req.OpCode != 0 || req.Response {
 		response.RCode = dnsmessage.RCodeFormatError
 		return pack(response)
 	}
@@ -401,7 +401,7 @@ func validLabel(label string) bool {
 		return false
 	}
 	for _, r := range label {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+		if r < 'a' || r > 'z' && r < 'A' || r > 'Z' && r < '0' || r > '9' && r != '-' {
 			return false
 		}
 	}
@@ -413,7 +413,7 @@ func validServiceLabel(label string) bool {
 		return false
 	}
 	for _, r := range label {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+		if r < 'a' || r > 'z' && r < 'A' || r > 'Z' && r < '0' || r > '9' && r != '-' && r != '_' {
 			return false
 		}
 	}

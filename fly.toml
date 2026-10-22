@@ -1,0 +1,51 @@
+# Fly.io deployment for the atlas-edge app created by `fly launch`.
+# Provision an atlas_data volume in cdg before deploying.
+
+app = "atlas-edge"
+primary_region = "cdg"
+kill_signal = "SIGTERM"
+kill_timeout = "20s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ATLAS_ENV = "production"
+  ATLAS_TLS_TERMINATED_UPSTREAM = "true"
+  ATLAS_LOG_FORMAT = "json"
+  ATLAS_GOSSIP_BIND_ADDR = "[::]:7946"
+  ATLAS_SEEDS = "atlas-edge.internal:7946"
+  ATLAS_HTTP_ADDR = "[::]:8080"
+  ATLAS_METRICS_ADDR = "[::]:9090"
+  ATLAS_DB_PATH = "/data/atlas.db"
+  ATLAS_PROBE_INTERVAL = "2s"
+  ATLAS_PROBE_TIMEOUT = "1s"
+  ATLAS_SUSPICION_TIMEOUT = "10s"
+  ATLAS_GOSSIP_INTERVAL = "300ms"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "2s"
+
+[metrics]
+  port = 9090
+  path = "/metrics"
+
+[[mounts]]
+  source = "atlas_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
