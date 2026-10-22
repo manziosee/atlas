@@ -14,9 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
+
 	"github.com/manziosee/atlas/internal/metrics"
 	"github.com/manziosee/atlas/internal/storage"
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 const (
@@ -66,11 +67,12 @@ func New(registry Registry, zone string, ttl time.Duration) (*Server, error) {
 // Serve runs UDP and TCP DNS on addr. The caller should use an explicit,
 // private-network bind address because DNS intentionally has no auth layer.
 func (s *Server) Serve(ctx context.Context, addr string) error {
-	udp, err := net.ListenPacket("udp", addr)
+	listenConfig := net.ListenConfig{}
+	udp, err := listenConfig.ListenPacket(ctx, "udp", addr)
 	if err != nil {
 		return fmt.Errorf("dns discovery: listen UDP: %w", err)
 	}
-	tcp, err := net.Listen("tcp", addr)
+	tcp, err := listenConfig.Listen(ctx, "tcp", addr)
 	if err != nil {
 		_ = udp.Close()
 		return fmt.Errorf("dns discovery: listen TCP: %w", err)
@@ -105,9 +107,10 @@ func (s *Server) serveUDP(ctx context.Context, conn net.PacketConn) error {
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return nil
+				return err
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			return fmt.Errorf("dns discovery: read UDP: %w", err)
@@ -130,9 +133,10 @@ func (s *Server) serveTCP(ctx context.Context, listener net.Listener) error {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				return nil
+				return err
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			return fmt.Errorf("dns discovery: accept TCP: %w", err)
@@ -171,7 +175,8 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 		if len(response) == 0 || len(response) > 65535 {
 			return
 		}
-		binary.BigEndian.PutUint16(prefix[:], uint16(len(response)))
+		// The DNS TCP payload length was checked above to fit in 16 bits.
+		binary.BigEndian.PutUint16(prefix[:], uint16(len(response))) //nolint:gosec // guarded by the 65535-byte check
 		if writeAll(conn, prefix[:]) != nil || writeAll(conn, response) != nil {
 			return
 		}
@@ -203,23 +208,23 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 		RecursionDesired: req.Header.RecursionDesired,
 	}}
 	if len(req.Questions) != 1 || req.Header.OpCode != 0 || req.Header.Response {
-		response.Header.RCode = dnsmessage.RCodeFormatError
+		response.RCode = dnsmessage.RCodeFormatError
 		return pack(response)
 	}
 	q := req.Questions[0]
 	response.Questions = req.Questions
 	if q.Class != dnsmessage.ClassINET {
-		response.Header.RCode = dnsmessage.RCodeRefused
+		response.RCode = dnsmessage.RCodeRefused
 		return pack(response)
 	}
 	if q.Type != dnsmessage.TypeA && q.Type != dnsmessage.TypeAAAA && q.Type != dnsmessage.TypeSRV {
-		response.Header.RCode = dnsmessage.RCodeNotImplemented
+		response.RCode = dnsmessage.RCodeNotImplemented
 		return pack(response)
 	}
 	if id, ok := s.parseInstanceName(q.Name.String()); ok {
 		service, err := s.registry.Get(ctx, id)
 		if err != nil || service.Health == storage.HealthUnhealthy {
-			response.Header.RCode = dnsmessage.RCodeNameError
+			response.RCode = dnsmessage.RCodeNameError
 			return pack(response)
 		}
 		host, _, err := net.SplitHostPort(service.Address)
@@ -239,12 +244,12 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 	}
 	name, region, ok := s.parseName(q.Name.String())
 	if !ok {
-		response.Header.RCode = dnsmessage.RCodeNameError
+		response.RCode = dnsmessage.RCodeNameError
 		return pack(response)
 	}
 	services, err := s.registry.List(ctx, storage.Filter{Name: name, Region: region})
 	if err != nil {
-		response.Header.RCode = dnsmessage.RCodeServerFailure
+		response.RCode = dnsmessage.RCodeServerFailure
 		return pack(response)
 	}
 	filtered := make([]storage.Service, 0, len(services))
@@ -261,11 +266,11 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 		}
 	}
 	if len(filtered) == 0 {
-		response.Header.RCode = dnsmessage.RCodeNameError
+		response.RCode = dnsmessage.RCodeNameError
 		return pack(response)
 	}
 	if len(filtered) > maxInstances {
-		start := int((s.next.Add(1) - 1) % uint64(len(filtered)))
+		start := int((s.next.Add(1) - 1) % uint64(len(filtered))) //nolint:gosec // modulo bounds the result to len(filtered)
 		rotated := make([]storage.Service, 0, maxInstances)
 		for i := 0; i < maxInstances; i++ {
 			rotated = append(rotated, filtered[(start+i)%len(filtered)])
@@ -312,7 +317,7 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 			if err != nil {
 				continue
 			}
-			response.Answers = append(response.Answers, dnsmessage.Resource{Header: s.header(q.Name, dnsmessage.TypeSRV), Body: &dnsmessage.SRVResource{Port: uint16(port), Target: target}})
+			response.Answers = append(response.Answers, dnsmessage.Resource{Header: s.header(q.Name, dnsmessage.TypeSRV), Body: &dnsmessage.SRVResource{Port: uint16(port), Target: target}}) //nolint:gosec // port is checked to be in [1, 65535]
 			if ip != nil {
 				if v4 := ip.To4(); v4 != nil {
 					var address [4]byte
@@ -343,7 +348,7 @@ func pack(msg dnsmessage.Message) []byte {
 			queryType = "other"
 		}
 	}
-	metrics.DNSQueries.WithLabelValues(queryType, strconv.Itoa(int(msg.Header.RCode))).Inc()
+	metrics.DNSQueries.WithLabelValues(queryType, strconv.Itoa(int(msg.RCode))).Inc()
 	packet, err := msg.Pack()
 	if err != nil {
 		return nil
