@@ -183,6 +183,16 @@ function showError(error) {
   errorBox.hidden = false;
 }
 
+// A shared link may carry a token in the fragment (#token=...). Fragments are
+// never sent to the server; the token is removed from the address bar at once.
+function connectFromFragment() {
+  const fragmentToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  if (!fragmentToken) return;
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  tokenInput.value = fragmentToken;
+  form.requestSubmit();
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   token = tokenInput.value.trim();
@@ -198,3 +208,5 @@ form.addEventListener("submit", async (event) => {
     showError(error);
   }
 });
+
+connectFromFragment();

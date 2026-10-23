@@ -69,6 +69,9 @@ func NewHandler(d Deps) http.Handler {
 		d.Selector = routing.NewSelector()
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/dashboard/", http.StatusFound)
+	})
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard/", http.StatusPermanentRedirect)
 	})

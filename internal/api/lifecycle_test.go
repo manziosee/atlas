@@ -373,6 +373,9 @@ func TestErrorsUseStableJSONCodes(t *testing.T) {
 	if rec := h.do(http.MethodGet, "/dashboard", "", ""); rec.Code != http.StatusPermanentRedirect {
 		t.Errorf("dashboard redirect = %d", rec.Code)
 	}
+	if rec := h.do(http.MethodGet, "/", "", ""); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard/" {
+		t.Errorf("root redirect = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
 }
 
 func TestAdminEndpoints(t *testing.T) {

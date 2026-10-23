@@ -19,13 +19,65 @@ seconds.
 
 ---
 
+## Live demo
+
+A two-node Atlas cluster runs on Fly.io in Paris (`cdg`). It is a public
+demo, not a production service, and its demo data may be reset at any time.
+
+| What | Link |
+|------|------|
+| **Live dashboard** (connects on its own with the read-only demo token) | **[atlas-edge.fly.dev/dashboard](https://atlas-edge.fly.dev/dashboard/#token=atlas-demo-read-only-public-token-2027)** |
+| Liveness | [atlas-edge.fly.dev/healthz](https://atlas-edge.fly.dev/healthz) |
+| Readiness | [atlas-edge.fly.dev/readyz](https://atlas-edge.fly.dev/readyz) |
+| API reference | [`api/v1/openapi.yaml`](api/v1/openapi.yaml) |
+
+The demo token `atlas-demo-read-only-public-token-2027` is published on
+purpose. It has the `read` scope only and expires on 2027-10-23, so any write
+returns `403 insufficient_scope`. The dashboard keeps the token in page
+memory; the link passes it in the URL fragment, which browsers never send to
+the server.
+
+Query the live cluster from a terminal:
+
+```bash
+export ATLAS=https://atlas-edge.fly.dev
+export TOKEN=atlas-demo-read-only-public-token-2027
+
+curl -s -H "Authorization: Bearer $TOKEN" $ATLAS/v1/members            # both nodes, alive
+curl -s -H "Authorization: Bearer $TOKEN" "$ATLAS/v1/services?tag=demo&limit=2"
+curl -s -H "Authorization: Bearer $TOKEN" "$ATLAS/v1/lookup/payments?tag=primary"
+curl -sN -H "Authorization: Bearer $TOKEN" "$ATLAS/v1/events"           # live event stream; Ctrl-C to stop
+```
+
+```json
+{
+  "id": "demo-payments-1",
+  "name": "payments",
+  "node_id": "80727dc6495528",
+  "address": "10.20.0.11:8443",
+  "region": "cdg",
+  "version": "2.3.1",
+  "tags": ["demo", "primary"],
+  "health": "unknown",
+  "revision": 1
+}
+```
+
+The `atlas-api` services are the two nodes' own HTTP APIs, registered with
+real health checks, so they show as `healthy`. The `payments` and `catalog`
+entries are sample records with no health check, so they stay `unknown`.
+To try registration, updates and failure handling, run your own cluster with
+the [walkthrough](#walkthrough-a-service-from-registration-to-failover) below.
+
 ## Table of contents
 
+- [Live demo](#live-demo)
 - [Why Atlas](#why-atlas)
 - [Tech stack](#tech-stack)
 - [Architecture](#architecture)
 - [Security](#security)
 - [Quick start](#quick-start)
+- [Walkthrough: a service from registration to failover](#walkthrough-a-service-from-registration-to-failover)
 - [Configuration](#configuration)
 - [Deploy](#deploy)
 - [Observability](#observability)
@@ -225,38 +277,118 @@ atlas-cli members --addr https://127.0.0.1:8081 --ca deploy/certs/ca.crt
 
 ### Service registry API
 
-All `/v1/*` endpoints require a bearer credential. Read endpoints require the
-`read` scope; registration and deletion require `write`; `admin` grants both.
-Scoped credentials may have an RFC3339 `expires_at`; expired credentials are
-rejected. The compatibility `ATLAS_API_TOKENS` setting grants unexpired admin
-credentials, so use `ATLAS_API_CREDENTIALS` for least privilege. Each node
-persists its own registrations in SQLite and replicates service records over
-membership gossip. A registration belongs to the node that accepted it;
-health checks and deletion are performed by that owner.
+All `/v1/*` endpoints require a bearer credential. Reads need the `read`
+scope, registry changes need `write`, and `/v1/admin/*` needs `admin`, which
+also grants the other two. Scoped credentials have a required RFC3339
+`expires_at`, and expired credentials are rejected. The compatibility
+`ATLAS_API_TOKENS` setting grants unexpiring admin credentials, so use
+`ATLAS_API_CREDENTIALS` for least privilege. The full reference is
+[`api/v1/openapi.yaml`](api/v1/openapi.yaml).
+
+Each node persists its registrations in SQLite and replicates them to every
+other node over gossip, so any node can answer reads. A registration belongs
+to the node that accepted it: that node runs its health checks and accepts its
+updates. On Fly.io, a write that reaches the wrong machine is replayed to the
+owner automatically. Elsewhere, the response is `409 not_owner` with an
+`owner_node` field.
 
 | Method and path | Purpose |
 |-----------------|---------|
-| `POST /v1/services` | Register an instance (`name`, `address`, optional `version`, `tags`, `health_check`). |
-| `GET /v1/services?name=&region=&health=` | Find active instances, optionally filtered. |
-| `GET /v1/services/{id}` | Read an instance. |
-| `DELETE /v1/services/{id}` | Delete an instance through its owner node. |
-| `GET /v1/events` | Stream membership events as Server-Sent Events. |
+| `POST /v1/services` | Register an instance: `name`, `address`, and optionally `id`, `version`, `tags`, plus either `health_check` or `ttl_seconds`. Send an `Idempotency-Key` header or a stable `id` to make retries safe. |
+| `GET /v1/services` | List instances, 100 per page by default (`limit` up to 1000). Filter by `name`, `region`, `health`, `version`, `node_id`, and repeated `tag`. Follow `next_cursor` for more. |
+| `GET /v1/services/{id}` | Read an instance. The `ETag` header is its revision. |
+| `PUT /v1/services/{id}` | Create or fully replace an instance with that ID. |
+| `PATCH /v1/services/{id}` | Change some fields. Send `If-Match: "<revision>"` to reject the change if someone else updated it first (`412 precondition_failed`). |
+| `POST /v1/services/{id}/heartbeat` | Keep a TTL instance healthy. |
+| `DELETE /v1/services/{id}` | Deregister. |
+| `GET /v1/lookup/{name}` | Select one instance by routing rules (`region`, `key`, `tag`). |
+| `GET /v1/node`, `GET /v1/members` | This node, and the cluster as this node sees it. |
+| `GET /v1/events` | Membership and registry events as Server-Sent Events, resumable with `Last-Event-ID`. |
+| `GET /v1/admin/credentials` | Configured credentials by fingerprint, scopes and expiry, never the secrets. |
+| `POST /v1/admin/backup` | Download a consistent SQLite snapshot of this node's registry. |
+| `DELETE /v1/admin/nodes/{id}` | Evict a failed node and delete its services. |
+
+**Service lifecycle.** A service is kept honest in one of two ways:
+- **Health check:** with `health_check`, the owner probes that URL every
+  `ATLAS_HEALTH_CHECK_INTERVAL`.
+- **TTL:** with `ttl_seconds`, the service calls the heartbeat endpoint itself.
+  After one missed TTL period it is marked `unhealthy`; after three it is
+  removed, and the next heartbeat returns `404`, telling the client to
+  register again.
+
+If the owning node itself disappears:
+- Any node accepts a `DELETE` for its services.
+- The lowest-ID live node deletes them on its own after
+  `ATLAS_ORPHAN_SERVICE_REAP` (10 minutes by default).
+- An admin can act at once with `DELETE /v1/admin/nodes/{id}`.
+
+A registration that reuses the ID of a departed node's service moves it to
+the new node.
+
+**Errors.** Every error response is JSON with a stable `code`, a readable
+message and the `request_id` that appears in the access log:
+
+```json
+{"error":"service revision does not match If-Match","code":"precondition_failed","request_id":"3aca60719acee38e"}
+```
+
+Branch on `code`: `not_found`, `not_owner`, `owner_alive`,
+`precondition_failed`, `no_ttl`, `validation_failed`, `invalid_json`,
+`unauthorized`, `insufficient_scope`, `rate_limited`, `no_healthy_instance`,
+and the others listed in the OpenAPI `Error` schema.
+
+**Events.** `GET /v1/events` streams:
+- membership events: `join`, `update`, `reap`
+- registry events: `service.registered`, `service.updated`, `service.health`,
+  `service.deregistered`
+
+Filter with `kinds=member,service` and `service=<name>`. Every event has an
+`id:` line. A client that reconnects with `Last-Event-ID` receives what it
+missed from the node's recent backlog. If the gap can't be filled, it gets
+`event: reset` and should re-read current state.
 
 Open `http://127.0.0.1:8081/dashboard/` for the embedded live cluster view.
 The dashboard asks for a bearer token and holds it in page memory while it
-loads members and services and listens for membership events.
+loads members and services and follows the event stream. It also accepts the
+token in the link fragment (`/dashboard/#token=...`), which browsers never
+send to the server.
 
-`GET /v1/lookup/{name}?region=...&key=...` selects a healthy instance, preferring
-the requested region. Unknown-health instances are fallback candidates only
-when no healthy instance exists. A key enables consistent hashing; without a
-key, candidates are selected round-robin. Unhealthy instances are never returned.
+`GET /v1/lookup/{name}?region=...&key=...` selects a healthy instance,
+preferring the requested region:
+- Unknown-health instances are used only when no healthy instance exists.
+- With a `key`, selection uses consistent hashing; without one, it's
+  round-robin.
+- Unhealthy instances are never returned.
 
-The same registry operations are available on the gRPC listener configured by
-`ATLAS_GRPC_ADDR`; the service definition is in [`api/v1/registry.proto`](api/v1/registry.proto).
-Use `atlas-cli services --output json` or `atlas-cli lookup NAME --key customer-17` to query
-registrations, and `atlas-cli watch` to stream membership events. SQLite
-snapshots can be created and restored with the storage package's
-`Store.Backup` and `storage.Restore` APIs.
+**gRPC.** The typed `atlas.registry.v1.RegistryService` in
+[`api/v1/registry_service.proto`](api/v1/registry_service.proto) mirrors the
+HTTP API, including a streaming `Watch`. It's served on `ATLAS_GRPC_ADDR` with
+the same credentials and scopes. Generated Go stubs are checked in as package
+`github.com/manziosee/atlas/api/v1` (`make proto` regenerates them). Generate
+clients for other languages from the same file. The older Struct-based
+`atlas.v1.Registry` service ([`api/v1/registry.proto`](api/v1/registry.proto))
+still works for existing callers.
+
+```go
+conn, _ := grpc.NewClient("atlas:8082", grpc.WithTransportCredentials(creds))
+registry := atlasv1.NewRegistryServiceClient(conn)
+ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+resp, err := registry.RegisterService(ctx, &atlasv1.RegisterServiceRequest{
+	IdempotencyKey: "orders-" + hostname,
+	Spec: &atlasv1.ServiceSpec{Name: "orders", Address: "10.0.0.8:8080", TtlSeconds: 15},
+})
+```
+
+**CLI.** The main commands:
+- `atlas-cli services --tag primary --output json` lists every page.
+- `atlas-cli lookup NAME --key customer-17` selects an instance.
+- `atlas-cli watch --kinds service --service payments` streams events.
+- `atlas-cli heartbeat ID` and `atlas-cli deregister ID` manage one instance.
+
+Admin commands:
+- `atlas-cli credentials` lists credentials.
+- `atlas-cli backup -output node.db` downloads a node's registry snapshot.
+- `atlas-cli evict NODE` removes a failed node and its services.
 
 ### DNS discovery
 
@@ -289,20 +421,49 @@ use a custom DNS port by pointing a resolver or CoreDNS forward rule at Atlas.
 
 ### Python client
 
-The standard-library-only client supports bearer auth, custom CA roots, and
-optional mTLS:
+The client needs only the standard library and supports bearer auth, custom
+CA roots, optional mTLS, and the whole API, including watch streams, admin
+calls and an asyncio variant:
 
 ```bash
 python -m pip install ./clients/python
 ```
 
 ```python
-from atlas import AtlasClient
+from atlas import AtlasClient, AtlasError
 
 client = AtlasClient("https://atlas.example:8080", token="...", ca_file="ca.crt")
+
+# Safe to retry: the same idempotency key always maps to the same record.
+me = client.register("payments", "10.0.0.7:8443", ttl_seconds=15, idempotency_key="payments-host-7")
+client.heartbeat(me["id"])                       # call every ~5 s from your service
+
 instance = client.lookup("payments", region="eu", key="customer-17")
 print(instance["address"])
+
+try:
+    client.update(me["id"], version="2.0.0", if_revision=me["revision"])
+except AtlasError as err:
+    if err.code == "precondition_failed":
+        ...                                      # someone changed it first; re-read and retry
+
+for event in client.watch(kinds=["service"], service="payments"):   # reconnects and resumes
+    print(event["type"], event["service"]["address"])
 ```
+
+```python
+from atlas import AsyncAtlasClient
+
+client = AsyncAtlasClient("https://atlas.example:8080", token="...")
+instance = await client.lookup("payments")
+async for event in client.watch(kinds=["member"]):
+    print(event["type"], event["member"]["id"], event["member"]["state"])
+```
+
+`client.list_services(...)` returns every page, and `iter_services` /
+`list_page` give you control over paging. Run the tests against a node with
+`make test-python` (set `ATLAS_TEST_ENDPOINT` and an admin `ATLAS_TEST_TOKEN`);
+CI runs them against a freshly started node.
 
 The CLI accepts connection defaults from `ATLAS_CLI_CONFIG`, a JSON file with
 `addr`, `token`, `ca_file`, `client_cert`, and `client_key` fields. Environment
@@ -315,8 +476,22 @@ The public Go client lives at `github.com/manziosee/atlas/pkg/atlas`:
 ```go
 client, err := atlas.NewClient("https://atlas.example", token, httpClient)
 if err != nil { return err }
+
+me, err := client.RegisterIdempotent(ctx, "payments-"+hostname, atlas.RegisterRequest{
+	Name: "payments", Address: "10.0.0.7:8443", TTLSeconds: 15,
+})
+_, err = client.Heartbeat(ctx, me.ID)
 instance, err := client.Lookup(ctx, "payments", "jnb", "customer-17")
+if atlas.IsCode(err, "no_healthy_instance") { /* fall back */ }
+
+err = client.WatchWithOptions(ctx, atlas.WatchOptions{Kinds: []string{"service"}, Reconnect: true},
+	func(e atlas.Event) error { log.Println(e.Type, e.Service.Address); return nil })
 ```
+
+`List` follows every page; `ListPage` returns one. `Update`, `Replace`,
+`Delete`, `Node`, `Members`, `Credentials`, `Backup` and `EvictNode` cover the
+rest of the API, and `*atlas.APIError` carries the server's `Code`,
+`RequestID` and `OwnerNode`.
 
 Generate command completion with `atlas-cli completion bash`, `zsh`, `fish`,
 or `powershell`, then load the printed script in the matching shell.
@@ -354,6 +529,94 @@ socket framing, AEAD CPU, network latency, packet loss, or cross-region links.
 The 1,000-node run reached approximately 1.2 GiB peak process memory on this
 host.
 
+## Walkthrough: a service from registration to failover
+
+This walkthrough uses the three-node Compose cluster from
+[Quick start](#quick-start), where your `.env` token has full access. Node
+APIs are on ports 8081, 8082 and 8083.
+
+```bash
+export ATLAS_TOKEN=$(grep -E '^ATLAS_TOKEN=' .env | cut -d= -f2-)
+auth=(-H "Authorization: Bearer $ATLAS_TOKEN" -H "Content-Type: application/json")
+```
+
+**1. Watch the registry from node 2** (in a second terminal). Writes to any
+node show up here as they replicate:
+
+```bash
+curl -sN "${auth[@]}" "http://127.0.0.1:8082/v1/events?kinds=service"
+```
+
+**2. Register a service on node 1** with a 15-second heartbeat TTL. Run the
+command twice: the first call returns `201 Created`, and the retry returns
+`200` with the same `id` and `revision: 1`, because the idempotency key
+identifies the record:
+
+```bash
+curl -si "${auth[@]}" -H 'Idempotency-Key: payments-host-7' \
+  -d '{"name":"payments","address":"10.0.0.7:8443","version":"2.3.1","tags":["primary"],"ttl_seconds":15}' \
+  http://127.0.0.1:8081/v1/services
+ID=<id from the response>
+```
+
+**3. Send a heartbeat.** The service turns `healthy`, and the watcher prints
+`service.registered` followed by `service.health`:
+
+```bash
+curl -s "${auth[@]}" -X POST http://127.0.0.1:8081/v1/services/$ID/heartbeat
+```
+
+**4. Look it up from node 3.** Every node holds a replica, so any of them can
+answer:
+
+```bash
+curl -s "${auth[@]}" "http://127.0.0.1:8083/v1/lookup/payments?tag=primary"
+```
+
+**5. Update it safely.** The service is owned by node 1, so node 2 refuses
+the change and names the owner (on Fly.io the request is replayed to the
+owner instead):
+
+```bash
+curl -s "${auth[@]}" -X PATCH -d '{"version":"2.4.0"}' http://127.0.0.1:8082/v1/services/$ID
+# {"error":"service is owned by node atlas-1; ...","code":"not_owner","owner_node":"atlas-1",...}
+```
+
+On the owner, `If-Match` guards against overwriting someone else's change.
+The first call succeeds and moves the revision forward; repeating it with the
+old revision fails:
+
+```bash
+curl -s "${auth[@]}" -X PATCH -H 'If-Match: "2"' -d '{"version":"2.4.0"}' http://127.0.0.1:8081/v1/services/$ID
+curl -s "${auth[@]}" -X PATCH -H 'If-Match: "2"' -d '{"version":"2.5.0"}' http://127.0.0.1:8081/v1/services/$ID
+# {"error":"service revision does not match If-Match","code":"precondition_failed",...}
+```
+
+**6. Let the process "crash."** Stop sending heartbeats. About 15 seconds
+later the watcher prints `service.health` (now `unhealthy`), and lookups stop
+returning it. After 45 seconds it prints `service.deregistered`.
+
+**7. Lose a whole node.** Register something on node 3, then stop that node:
+
+```bash
+curl -s "${auth[@]}" -d '{"id":"search-1","name":"search","address":"10.0.0.9:9200"}' http://127.0.0.1:8083/v1/services
+docker compose stop atlas-3
+```
+
+Its services are still listed, because nothing has deleted them yet. Clean
+them up in any of these ways:
+- Wait `ATLAS_ORPHAN_SERVICE_REAP` (10 minutes); the cluster deletes them.
+- Delete one from any live node: `curl -X DELETE ... :8081/v1/services/search-1`.
+- Evict the node and everything it owned:
+  `docker compose exec atlas-1 atlas-cli evict atlas-3 --token "$ATLAS_TOKEN"`.
+
+When the node returns (`docker compose start atlas-3`), it rejoins through
+gossip. If its services were already deleted, registering `search-1` again
+from any node creates a fresh record with that ID.
+
+The same flow works from the [Python](#python-client) and Go clients, which
+handle idempotency keys, `If-Match`, paging and event resumption for you.
+
 ## Configuration
 
 All settings are environment variables with the `ATLAS_` prefix. The
@@ -384,6 +647,7 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_TRUSTED_PROXIES` | empty | Comma-separated CIDRs allowed to supply `X-Forwarded-For` client addresses. |
 | `ATLAS_DB_PATH` | `data/atlas.db` | Per-node SQLite file for service registry persistence. |
 | `ATLAS_HEALTH_CHECK_INTERVAL` / `_TIMEOUT` | `5s` / `1s` | Probe interval and deadline for registered HTTP checks. |
+| `ATLAS_ORPHAN_SERVICE_REAP` | `10m` | Delete services whose owning node has been gone this long; `0` disables. Minimum `1m`, so a restarting node keeps its services. |
 | `ATLAS_TLS_CLIENT_AUTH` | `false` | Require client certificates (mTLS). |
 | `ATLAS_PROBE_INTERVAL` / `_TIMEOUT` | `1s` / `500ms` | Failure-detector timing. |
 | `ATLAS_SUSPICION_TIMEOUT` | `5s` | Time a suspect has to refute. |
@@ -438,11 +702,27 @@ path.
 
 ### Fly.io (multi-region)
 
-The root `fly.toml` is a single-region starting point for an app created with
-`fly launch` (the current `atlas-edge` app is in `cdg`). Create a region-local
-`atlas_data` volume and configure the two required secrets before deploying.
-Scale to one Machine for this initial setup; add a volume for every additional
-Machine. The multi-region example below uses `deploy/fly/fly.toml` instead.
+The root `fly.toml` runs the [live demo](#live-demo): two Machines in `cdg`,
+each with its own `atlas_data` volume. A node refuses to start without a
+gossip key and at least one API credential, and Fly will not create volumes
+for an existing app. So set the secrets and create one volume per Machine
+before the first deploy:
+
+```bash
+fly secrets set -a atlas-edge ATLAS_GOSSIP_KEY="$(atlas-cli keygen)" \
+  ATLAS_API_CREDENTIALS='[{"token":"<admin token>","scopes":["admin"],"expires_at":"2027-10-23T00:00:00Z"}]'
+fly volumes create atlas_data -a atlas-edge --region cdg --size 1 --count 2
+fly deploy --build-arg VERSION="$(git describe --tags --always)" --build-arg COMMIT="$(git rev-parse HEAD)"
+```
+
+Machines get their node ID from their hostname, which on Fly is the Machine
+ID. That lets a node answer an owner-only write that reached the wrong
+Machine with a `Fly-Replay` header, so clients behind the public load
+balancer never see `not_owner`. Pushes to `main` deploy through
+`.github/workflows/fly-deploy.yml` once CI passes, which needs a
+`FLY_API_TOKEN` repository secret (`fly tokens create deploy`).
+
+The multi-region example below uses `deploy/fly/fly.toml` instead:
 
 ```bash
 fly apps create atlas-edge
@@ -485,11 +765,16 @@ that region beyond one Machine, and keep independent database backups.
 
 ```
 atlas/
+├── api/v1/                 # OpenAPI spec, gossip + gRPC protos, generated typed gRPC SDK
+├── clients/python/         # Python client (sync + asyncio) and its live-node tests
+├── pkg/atlas/              # public Go HTTP client
 ├── cmd/
-│   ├── atlas-node/         # the node daemon
-│   └── atlas-cli/          # operator CLI (members, health, keygen, tokengen)
+│   ├── atlas-node/         # the node daemon, TTL expiry and orphan reaper loops
+│   └── atlas-cli/          # operator CLI (members, services, watch, evict, backup, ...)
 ├── internal/
-│   ├── api/                # HTTP routes + middleware chain
+│   ├── api/                # HTTP + gRPC handlers, admin routes, middleware chain
+│   ├── events/             # event broker: IDs, backlog, Last-Event-ID resume
+│   ├── httperr/            # JSON error bodies with stable codes
 │   ├── config/             # env config, fail-closed validation
 │   ├── membership/         # SWIM failure detector + state machine
 │   ├── transport/          # encrypted UDP
@@ -532,14 +817,19 @@ atlas/
 - [x] **Phase 3, service registry foundation:** HTTP and gRPC register/list/get/delete,
   SQLite persistence, owner health checks, gossip replication, CLI lookup, SSE events,
   and snapshot backup/restore.
-- [ ] **Phase 3 follow-up:** typed generated protobuf SDK.
+- [x] **Phase 3 follow-up:** typed generated protobuf SDK: `atlas.registry.v1.RegistryService`
+  with generated Go stubs in `api/v1`, field-masked updates, paging and a streaming `Watch`.
+- [x] **Phase 3 follow-up, service lifecycle:** TTL heartbeats, deletion and automatic reaping
+  of services whose owner left the cluster, idempotent registration, `PUT`/`PATCH` with
+  `If-Match` revisions, owner-adopted IDs, and Fly.io replay of owner-only writes.
 - [x] **Phase 3 follow-up:** bounded registry digest repair over authenticated
   TCP push-pull, including tombstones and full snapshots capped at 100,000 rows.
 - [x] **Adoption:** optional private-network DNS listener for healthy service
   A/AAAA and SRV records, with region-specific names, rotating answer sets,
   query metrics, and short configurable TTLs.
-- [x] **Adoption:** standard-library-only Python client for registry CRUD and
-  routing lookup (`clients/python`).
+- [x] **Adoption:** standard-library-only Python client (`clients/python`) covering the
+  whole API: registry CRUD, heartbeats, paging, resumable watch streams, admin calls,
+  structured error codes, and an asyncio client, tested against a live node in CI.
 - [x] **Kubernetes integration:** Kustomize deploys expose Atlas DNS to opted-in
   namespaces; importing native Kubernetes Services still needs a controller.
 - [ ] **Adoption follow-up:** Java/Node clients, service-history API, and
@@ -548,7 +838,7 @@ atlas/
   per-peer EWMA probe latency, nearest measured instance, consistent hashing,
   and round-robin fallback.
 - [x] **Phase 5, dashboard foundation:** embedded live member/service tables
-  and authenticated membership event stream.
+  and an authenticated, resumable stream of membership and registry events.
 - [ ] **Phase 5 follow-up:** cluster graph, geographic visualization and
   latency map.
 - [x] **Security operations:** optional node-ID admission allowlist, trusted
@@ -560,8 +850,9 @@ atlas/
 - [x] **API and SDK:** OpenAPI description, HTTP/gRPC registry endpoints,
   command-line lookup/watch, JSON output, configuration file, and public Go
   HTTP client.
-- [ ] **API follow-up:** generated typed protobuf SDK and richer admin
-  operations.
+- [x] **API follow-up:** generated typed protobuf SDK and admin operations
+  (credential listing, streamed backups, failed-node eviction), keyset pagination with
+  tag/version/node filters, and stable JSON error codes on every response.
 - [x] **Test foundation:** protocol, SQLite, HTTP/gRPC, routing, proxy, fuzz,
   and failure-detection tests run in CI.
 - [x] **Test scale coverage:** 100, 500, and 1,000-node in-process convergence
@@ -570,7 +861,7 @@ atlas/
   recovery plus a running-node network partition and reconnection.
 - [x] **Test follow-up:** authenticated k6 API load profile runs in Compose CI.
 - [ ] **Test follow-up:** TLS rotation end-to-end tests. CI enforces 60% total
-  statement coverage; the current measured total is 63.8%.
+  statement coverage of hand-written code; the current measured total is 64.9%.
 - [x] **Deployment foundation:** Compose, Kustomize dev/production overlays,
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
 - [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,
@@ -584,7 +875,9 @@ atlas/
 - [x] **Stretch:** consistent hashing is implemented in the routing package.
 - [x] **Stretch follow-up:** deterministic revisioned LWW-register merge for
   replicated service records.
-- [ ] **Stretch follow-up:** expanded chaos suite and global Fly.io demo.
+- [x] **Stretch follow-up:** public Fly.io demo: a two-node cluster in `cdg` with a
+  read-only demo token and a one-click live dashboard (see [Live demo](#live-demo)).
+- [ ] **Stretch follow-up:** expanded chaos suite and a multi-region global Fly.io demo.
 
 ## Contributing
 
