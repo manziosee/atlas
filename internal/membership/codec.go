@@ -290,6 +290,9 @@ func marshalService(service storage.Service) []byte {
 	if !service.CheckedAt.IsZero() {
 		b = appendVarintField(b, 13, uint64(service.CheckedAt.UnixNano()))
 	}
+	if service.TTLSeconds > 0 {
+		b = appendVarintField(b, 14, uint64(service.TTLSeconds)) // #nosec G115 -- guarded positive above.
+	}
 	return b
 }
 
@@ -330,7 +333,7 @@ func unmarshalService(data []byte, service *storage.Service) error {
 			}
 			continue
 		}
-		if number >= 9 && number <= 13 {
+		if number >= 9 && number <= 14 {
 			if typ != protowire.VarintType {
 				return errors.New("membership: invalid protobuf service varint")
 			}
@@ -357,6 +360,11 @@ func unmarshalService(data []byte, service *storage.Service) error {
 				service.UpdatedAt = time.Unix(0, signedInt64FromVarint(value)).UTC()
 			case 13:
 				service.CheckedAt = time.Unix(0, signedInt64FromVarint(value)).UTC()
+			case 14:
+				if value > storage.MaxTTLSeconds {
+					return errors.New("membership: invalid protobuf service TTL")
+				}
+				service.TTLSeconds = int64(value) // #nosec G115 -- bounded by MaxTTLSeconds above.
 			}
 			continue
 		}

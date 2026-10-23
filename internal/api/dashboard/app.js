@@ -9,6 +9,7 @@ const eventList = document.querySelector("#events");
 let token = "";
 let refreshTimer;
 let streamController;
+let lastEventId = "";
 
 function cell(row, value, className) {
   const td = document.createElement("td");
@@ -28,8 +29,24 @@ function emptyRow(body, columns, text) {
 
 async function api(path) {
   const response = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
-  if (!response.ok) throw new Error(response.status === 401 ? "Token was rejected. Check the API token and reconnect." : `${path} returned HTTP ${response.status}.`);
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Token was rejected. Check the API token and reconnect.");
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error ? `${body.error} (${body.code})` : `${path} returned HTTP ${response.status}.`);
+  }
   return response.json();
+}
+
+// Service listings are paged; follow next_cursor to show every instance.
+async function allServices() {
+  const services = [];
+  let cursor = "";
+  do {
+    const page = await api(`/v1/services?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    services.push(...(page.services || []));
+    cursor = page.next_cursor || "";
+  } while (cursor);
+  return services;
 }
 
 function renderMembers(members) {
@@ -68,9 +85,9 @@ function renderServices(services) {
 }
 
 async function refresh() {
-  const [membership, registry] = await Promise.all([api("/v1/members"), api("/v1/services")]);
+  const [membership, services] = await Promise.all([api("/v1/members"), allServices()]);
   renderMembers(membership.members || []);
-  renderServices(registry.services || []);
+  renderServices(services);
   document.querySelector("#last-update").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   errorBox.hidden = true;
 }
@@ -89,18 +106,50 @@ function addEvent(event) {
   const detail = document.createElement("span");
   detail.className = "event-detail";
   const name = document.createElement("em");
-  name.textContent = event.member?.id || "node";
-  detail.append(name, document.createTextNode(` ${event.type === "join" ? "joined" : event.type === "reap" ? "left the view" : "changed state to " + event.member?.state} · ${event.member?.region || "unknown region"}`));
+  name.textContent = describeSubject(event);
+  detail.append(name, document.createTextNode(` ${describeChange(event)}`));
   row.append(time, type, detail);
   eventList.prepend(row);
   while (eventList.children.length > 30) eventList.lastElementChild.remove();
-  if (event.type === "join" || event.type === "update" || event.type === "reap") refresh().catch(showError);
+  scheduleRefresh();
 }
 
+// Coalesce bursts of events into one reload.
+let pendingRefresh;
+function scheduleRefresh() {
+  clearTimeout(pendingRefresh);
+  pendingRefresh = setTimeout(() => refresh().catch(showError), 500);
+}
+
+function describeSubject(event) {
+  if (event.service) return `${event.service.name} ${event.service.address}`;
+  if (event.member) return event.member.id;
+  return "cluster";
+}
+
+function describeChange(event) {
+  switch (event.type) {
+    case "join": return `joined · ${event.member?.region || "unknown region"}`;
+    case "reap": return "left the view";
+    case "update": return `changed state to ${event.member?.state}`;
+    case "service.registered": return `registered on ${event.service?.node_id}`;
+    case "service.updated": return "was updated";
+    case "service.health": return `is now ${event.service?.health}`;
+    case "service.deregistered": return "was deregistered";
+    case "reset": return "missed events were not retained; state reloaded";
+    default: return event.type;
+  }
+}
+
+// streamEvents reads the SSE stream and reconnects with Last-Event-ID so no
+// change is missed across brief disconnects.
 async function streamEvents() {
   streamController = new AbortController();
+  const signal = streamController.signal;
+  const headers = { Authorization: `Bearer ${token}`, Accept: "text/event-stream" };
+  if (lastEventId) headers["Last-Event-ID"] = lastEventId;
   try {
-    const response = await fetch("/v1/events", { headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" }, signal: streamController.signal });
+    const response = await fetch("/v1/events", { headers, signal });
     if (!response.ok || !response.body) throw new Error(`Event stream returned HTTP ${response.status}.`);
     connectionDot.classList.add("connected");
     connectionLabel.textContent = "Connected";
@@ -114,6 +163,7 @@ async function streamEvents() {
       const lines = pending.split("\n");
       pending = lines.pop() || "";
       for (const line of lines) {
+        if (line.startsWith("id: ")) lastEventId = line.slice(4);
         if (line.startsWith("data: ")) {
           try { addEvent(JSON.parse(line.slice(6))); } catch { /* Ignore malformed event data. */ }
         }
@@ -125,6 +175,7 @@ async function streamEvents() {
     connectionDot.classList.remove("connected");
     connectionLabel.textContent = "Disconnected";
   }
+  if (!signal.aborted) setTimeout(() => { if (!signal.aborted) streamEvents(); }, 3000);
 }
 
 function showError(error) {
@@ -132,9 +183,20 @@ function showError(error) {
   errorBox.hidden = false;
 }
 
+// A shared link may carry a token in the fragment (#token=...). Fragments are
+// never sent to the server; the token is removed from the address bar at once.
+function connectFromFragment() {
+  const fragmentToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  if (!fragmentToken) return;
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  tokenInput.value = fragmentToken;
+  form.requestSubmit();
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   token = tokenInput.value.trim();
+  lastEventId = "";
   if (streamController) streamController.abort();
   clearInterval(refreshTimer);
   try {
@@ -146,3 +208,5 @@ form.addEventListener("submit", async (event) => {
     showError(error);
   }
 });
+
+connectFromFragment();

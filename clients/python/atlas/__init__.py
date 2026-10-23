@@ -1,5 +1,6 @@
 """Typed Python client for Atlas service discovery."""
 
-from .client import AtlasClient, AtlasError
+from .aio import AsyncAtlasClient
+from .client import AtlasClient, AtlasError, Event, Member, Page, ServiceInstance
 
-__all__ = ["AtlasClient", "AtlasError"]
+__all__ = ["AsyncAtlasClient", "AtlasClient", "AtlasError", "Event", "Member", "Page", "ServiceInstance"]

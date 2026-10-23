@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -19,6 +17,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	atlasv1 "github.com/manziosee/atlas/api/v1"
 	"github.com/manziosee/atlas/internal/routing"
 	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/storage"
@@ -26,74 +25,99 @@ import (
 
 const registryServiceName = "atlas.v1.Registry"
 
-type grpcRegistry struct{ deps Deps }
-
-type grpcRegistryServer interface {
-	RegisterService(context.Context, *structpb.Struct) (*structpb.Struct, error)
-	ListServices(context.Context, *structpb.Struct) (*structpb.Struct, error)
-	GetService(context.Context, *structpb.Struct) (*structpb.Struct, error)
-	DeleteService(context.Context, *structpb.Struct) (*structpb.Struct, error)
-	LookupService(context.Context, *structpb.Struct) (*structpb.Struct, error)
+// writeMethods need the write scope on both gRPC services.
+var writeMethods = map[string]bool{
+	"RegisterService": true, "UpdateService": true, "Heartbeat": true, "DeleteService": true,
 }
 
-// NewGRPCServer creates the protobuf gRPC service with the same token and
-// per-client rate checks as the HTTP control API.
+// NewGRPCServer serves the typed atlas.registry.v1.RegistryService and the
+// legacy Struct-based atlas.v1.Registry with the same bearer-token, scope and
+// per-client rate checks as the HTTP API.
 func NewGRPCServer(deps Deps, tlsConfig *tls.Config) *grpc.Server {
 	if deps.Selector == nil {
 		deps.Selector = routing.NewSelector()
 	}
-	options := []grpc.ServerOption{grpc.UnaryInterceptor(grpcAuth(deps))}
+	options := []grpc.ServerOption{grpc.UnaryInterceptor(grpcAuth(deps)), grpc.StreamInterceptor(grpcStreamAuth(deps))}
 	if tlsConfig != nil {
 		options = append(options, grpc.Creds(credentials.NewTLS(tlsConfig.Clone())))
 	}
 	server := grpc.NewServer(options...)
 	server.RegisterService(&grpcRegistryServiceDesc, &grpcRegistry{deps: deps})
+	atlasv1.RegisterRegistryServiceServer(server, &typedRegistry{deps: deps})
 	return server
 }
 
 func grpcAuth(deps Deps) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		remote, forwarded := "unknown", ""
-		if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-			remote = p.Addr.String()
+		ctx, done, err := authorizeRPC(ctx, deps, info.FullMethod)
+		if err != nil {
+			return nil, err
 		}
-		if md, ok := metadata.FromIncomingContext(ctx); ok {
-			values := md.Get("x-forwarded-for")
-			if len(values) != 0 {
-				forwarded = values[0]
-			}
-		}
-		if deps.RateLimiter != nil && !deps.RateLimiter.AllowClient(remote, forwarded) {
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
-		}
-		token, found := bearerMetadata(ctx)
-		if deps.Auth == nil || !found {
-			return nil, status.Error(codes.Unauthenticated, "valid bearer token required")
-		}
-		scope := security.ScopeRead
-		if strings.HasSuffix(info.FullMethod, "/RegisterService") || strings.HasSuffix(info.FullMethod, "/DeleteService") {
-			scope = security.ScopeWrite
-		}
-		tokenID, ok := deps.Auth.Authorize(token, scope)
-		if !ok {
-			if deps.Auth.AuthenticateTokenOnly(token) {
-				if deps.Log != nil {
-					deps.Log.Warn("grpc request denied", "method", info.FullMethod, "reason", "insufficient_scope", "remote", remote)
-				}
-				return nil, status.Error(codes.PermissionDenied, "credential lacks required scope")
-			}
-			if deps.Log != nil {
-				deps.Log.Warn("grpc request denied", "method", info.FullMethod, "reason", "unauthenticated", "remote", remote)
-			}
-			return nil, status.Error(codes.Unauthenticated, "valid bearer token required")
-		}
-		started := time.Now()
 		response, err := handler(ctx, req)
-		if deps.Log != nil {
-			deps.Log.Info("grpc request", "method", info.FullMethod, "status", status.Code(err).String(), "duration_ms", time.Since(started).Milliseconds(), "remote", remote, "token_id", tokenID)
-		}
+		done(err)
 		return response, err
 	}
+}
+
+func grpcStreamAuth(deps Deps) grpc.StreamServerInterceptor {
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx, done, err := authorizeRPC(stream.Context(), deps, info.FullMethod)
+		if err != nil {
+			return err
+		}
+		err = handler(srv, &authorizedStream{ServerStream: stream, ctx: ctx})
+		done(err)
+		return err
+	}
+}
+
+type authorizedStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *authorizedStream) Context() context.Context { return s.ctx }
+
+// authorizeRPC applies rate limiting and scope checks and returns a context
+// carrying the credential grant, plus a callback that logs the outcome.
+func authorizeRPC(ctx context.Context, deps Deps, method string) (context.Context, func(error), error) {
+	remote, forwarded := "unknown", ""
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		remote = p.Addr.String()
+	}
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if values := md.Get("x-forwarded-for"); len(values) != 0 {
+			forwarded = values[0]
+		}
+	}
+	if deps.RateLimiter != nil && !deps.RateLimiter.AllowClient(remote, forwarded) {
+		return ctx, nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+	}
+	token, found := bearerMetadata(ctx)
+	if deps.Auth == nil || !found {
+		return ctx, nil, status.Error(codes.Unauthenticated, "valid bearer token required")
+	}
+	scope := security.ScopeRead
+	if writeMethods[method[strings.LastIndex(method, "/")+1:]] {
+		scope = security.ScopeWrite
+	}
+	granted, tokenID, ok := deps.Auth.GrantFor(ctx, token, scope)
+	if !ok {
+		reason, code, message := "unauthenticated", codes.Unauthenticated, "valid bearer token required"
+		if deps.Auth.AuthenticateTokenOnly(token) {
+			reason, code, message = "insufficient_scope", codes.PermissionDenied, "credential lacks required scope"
+		}
+		if deps.Log != nil {
+			deps.Log.Warn("grpc request denied", "method", method, "reason", reason, "remote", remote)
+		}
+		return ctx, nil, status.Error(code, message)
+	}
+	started := time.Now()
+	return granted, func(err error) {
+		if deps.Log != nil {
+			deps.Log.Info("grpc request", "method", method, "status", status.Code(err).String(), "duration_ms", time.Since(started).Milliseconds(), "remote", remote, "token_id", tokenID)
+		}
+	}, nil
 }
 
 func bearerMetadata(ctx context.Context) (string, bool) {
@@ -109,99 +133,108 @@ func bearerMetadata(ctx context.Context) (string, bool) {
 	return "", false
 }
 
-func (g *grpcRegistry) RegisterService(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
-	if g.deps.Registry == nil {
-		return nil, status.Error(codes.Unavailable, "service registry unavailable")
+// grpcError maps registry operation errors to gRPC status codes.
+func grpcError(err error) error {
+	if err == nil {
+		return nil
 	}
+	var invalidInput validationError
+	var alive ownerAliveError
+	var notOwner *storage.NotOwnerError
+	switch {
+	case errors.As(err, &invalidInput):
+		return status.Error(codes.InvalidArgument, invalidInput.msg)
+	case errors.Is(err, storage.ErrNotFound):
+		return status.Error(codes.NotFound, "service not found")
+	case errors.As(err, &alive):
+		return status.Error(codes.FailedPrecondition, "owner_alive: node "+alive.owner+" owns this service and is alive; delete through it or use an admin credential")
+	case errors.As(err, &notOwner):
+		return status.Error(codes.FailedPrecondition, "not_owner: service is owned by node "+notOwner.Owner)
+	case errors.Is(err, storage.ErrRevisionMismatch):
+		return status.Error(codes.Aborted, "precondition_failed: service revision does not match")
+	case errors.Is(err, storage.ErrNoTTL):
+		return status.Error(codes.FailedPrecondition, "no_ttl: service was registered without ttl_seconds")
+	case errors.Is(err, routing.ErrNoInstance):
+		return status.Error(codes.Unavailable, "no healthy service instance available")
+	case errors.Is(err, errRegistryUnavailable):
+		return status.Error(codes.Unavailable, "service registry unavailable")
+	default:
+		return status.Error(codes.Internal, "internal error")
+	}
+}
+
+// --- legacy Struct-based atlas.v1.Registry --------------------------------
+
+type grpcRegistry struct{ deps Deps }
+
+type grpcRegistryServer interface {
+	RegisterService(context.Context, *structpb.Struct) (*structpb.Struct, error)
+	ListServices(context.Context, *structpb.Struct) (*structpb.Struct, error)
+	GetService(context.Context, *structpb.Struct) (*structpb.Struct, error)
+	DeleteService(context.Context, *structpb.Struct) (*structpb.Struct, error)
+	LookupService(context.Context, *structpb.Struct) (*structpb.Struct, error)
+}
+
+func (g *grpcRegistry) RegisterService(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
 	body, err := protojson.Marshal(input)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid service request")
 	}
-	var request registerServiceRequest
-	if err := json.Unmarshal(body, &request); err != nil {
+	var spec serviceSpec
+	if err := json.Unmarshal(body, &spec); err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid service request")
 	}
-	if err := validateServiceRequest(request); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	var randomID [16]byte
-	if _, err := rand.Read(randomID[:]); err != nil {
-		return nil, status.Error(codes.Internal, "could not allocate service ID")
-	}
-	node := g.deps.Cluster.LocalNode()
-	service, err := g.deps.Registry.Register(ctx, storage.Service{
-		ID: hex.EncodeToString(randomID[:]), Name: request.Name, NodeID: node.ID,
-		Address: request.Address, Region: node.Region, Version: request.Version,
-		Tags: request.Tags, HealthCheck: request.HealthCheck, Health: storage.HealthUnknown,
-	})
+	service, _, err := g.deps.register(ctx, spec, "")
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not register service")
+		return nil, grpcError(err)
 	}
 	return toProtoStruct(service)
 }
 
 func (g *grpcRegistry) ListServices(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
-	if g.deps.Registry == nil {
-		return nil, status.Error(codes.Unavailable, "service registry unavailable")
-	}
 	values := input.AsMap()
-	filter := storage.Filter{Name: stringField(values, "name"), Region: stringField(values, "region"), Health: storage.Health(stringField(values, "health"))}
-	if filter.Health != "" && filter.Health != storage.HealthHealthy && filter.Health != storage.HealthUnhealthy && filter.Health != storage.HealthUnknown {
-		return nil, status.Error(codes.InvalidArgument, "invalid health filter")
+	limit := 0
+	if raw, ok := values["limit"].(float64); ok {
+		limit = int(raw)
 	}
-	services, err := g.deps.Registry.List(ctx, filter)
+	filter := storage.Filter{
+		Name: stringField(values, "name"), Region: stringField(values, "region"), Health: storage.Health(stringField(values, "health")),
+		Version: stringField(values, "version"), NodeID: stringField(values, "node_id"),
+	}
+	page, err := g.deps.listPage(ctx, filter, stringField(values, "cursor"), limit)
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not list services")
+		return nil, grpcError(err)
 	}
-	return toProtoStruct(map[string]any{"count": len(services), "services": services})
+	response := map[string]any{"count": len(page.Services), "services": page.Services}
+	if page.NextCursor != "" {
+		response["next_cursor"] = page.NextCursor
+	}
+	return toProtoStruct(response)
 }
 
 func (g *grpcRegistry) LookupService(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
-	if g.deps.Registry == nil || g.deps.Selector == nil {
-		return nil, status.Error(codes.Unavailable, "service registry unavailable")
-	}
 	values := input.AsMap()
-	name, region, key := stringField(values, "name"), stringField(values, "region"), stringField(values, "key")
-	if name == "" || len(name) > 128 || len(region) > 64 || len(key) > 256 {
-		return nil, status.Error(codes.InvalidArgument, "invalid lookup parameters")
-	}
-	services, err := g.deps.Registry.List(ctx, storage.Filter{Name: name})
+	service, err := g.deps.lookup(ctx, stringField(values, "name"), stringField(values, "region"), stringField(values, "key"), nil)
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not look up service")
-	}
-	service, err := g.deps.Selector.SelectWithLatency(services, region, key, g.deps.nodeLatency)
-	if errors.Is(err, routing.ErrNoInstance) {
-		return nil, status.Error(codes.Unavailable, "no healthy service instance available")
-	}
-	if err != nil {
-		return nil, status.Error(codes.Internal, "could not select service instance")
+		return nil, grpcError(err)
 	}
 	return toProtoStruct(service)
 }
 
 func (g *grpcRegistry) GetService(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
 	if g.deps.Registry == nil {
-		return nil, status.Error(codes.Unavailable, "service registry unavailable")
+		return nil, grpcError(errRegistryUnavailable)
 	}
 	service, err := g.deps.Registry.Get(ctx, stringField(input.AsMap(), "id"))
-	if errors.Is(err, storage.ErrNotFound) {
-		return nil, status.Error(codes.NotFound, "service not found")
-	}
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not read service")
+		return nil, grpcError(err)
 	}
 	return toProtoStruct(service)
 }
 
 func (g *grpcRegistry) DeleteService(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
-	if g.deps.Registry == nil {
-		return nil, status.Error(codes.Unavailable, "service registry unavailable")
-	}
-	if err := g.deps.Registry.Delete(ctx, stringField(input.AsMap(), "id"), g.deps.Cluster.LocalNode().ID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, status.Error(codes.NotFound, "service not found")
-		}
-		return nil, status.Error(codes.PermissionDenied, "service cannot be removed by this node")
+	if err := g.deps.deregister(ctx, stringField(input.AsMap(), "id")); err != nil {
+		return nil, grpcError(err)
 	}
 	return structpb.NewStruct(map[string]any{"deleted": true})
 }

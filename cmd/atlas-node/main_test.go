@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manziosee/atlas/internal/config"
 	"github.com/manziosee/atlas/internal/membership"
@@ -101,5 +102,49 @@ func TestApplyRuntimeConfigRotatesSecretsAndLoggingLevel(t *testing.T) {
 	}
 	if !auth.Valid(newToken) {
 		t.Fatal("failed key replacement partially updated API tokens")
+	}
+}
+
+func TestOrphanReaperWaitsAndOnlyLeaderReaps(t *testing.T) {
+	start := time.Now()
+	members := []membership.Member{
+		{ID: "b", State: membership.StateAlive},
+		{ID: "c", State: membership.StateDead},
+		{ID: "d", State: membership.StateSuspect},
+	}
+	leader := newOrphanReaper("a", time.Minute)
+	if due := leader.due([]string{"a", "b", "c", "d", "gone"}, members, start); len(due) != 0 {
+		t.Fatalf("first observation reaped %v", due)
+	}
+	due := leader.due([]string{"a", "b", "c", "d", "gone"}, members, start.Add(time.Minute))
+	if len(due) != 2 || due[0] != "c" || due[1] != "gone" {
+		t.Fatalf("due after the grace period = %v, want [c gone]", due)
+	}
+
+	follower := newOrphanReaper("z", time.Minute)
+	follower.due([]string{"c"}, members, start)
+	if due := follower.due([]string{"c"}, members, start.Add(2*time.Minute)); len(due) != 0 {
+		t.Fatalf("non-leader reaped %v", due)
+	}
+
+	returning := newOrphanReaper("a", time.Minute)
+	returning.due([]string{"c"}, members, start)
+	members[1].State = membership.StateAlive
+	if due := returning.due([]string{"c"}, members, start.Add(2*time.Minute)); len(due) != 0 {
+		t.Fatalf("returning owner reaped: %v", due)
+	}
+}
+
+func TestFlyReplayOnlyWhenNodeIDIsMachineID(t *testing.T) {
+	t.Setenv("FLY_MACHINE_ID", "")
+	if flyReplay("n1") != nil {
+		t.Fatal("replay enabled outside Fly")
+	}
+	t.Setenv("FLY_MACHINE_ID", "148e")
+	if flyReplay("custom-id") != nil {
+		t.Fatal("replay enabled for a custom node ID")
+	}
+	if replay := flyReplay("148e"); replay == nil || replay("9a1f") != "instance=9a1f" {
+		t.Fatal("replay header not produced on Fly")
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/manziosee/atlas/internal/api"
 	"github.com/manziosee/atlas/internal/config"
 	"github.com/manziosee/atlas/internal/dnsdiscovery"
+	"github.com/manziosee/atlas/internal/events"
 	"github.com/manziosee/atlas/internal/logging"
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/metrics"
@@ -98,12 +99,16 @@ func run() error {
 		}
 	}
 
+	broker := events.NewBroker(4096)
 	var wg sync.WaitGroup
+	wg.Go(func() { publishEvents(ctx, ml, registry, broker) })
 	wg.Go(func() { ml.Run(ctx) })
 	wg.Go(func() { joinLoop(ctx, ml, cfg.Seeds, log) })
 	wg.Go(func() {
 		runHealthChecks(ctx, registry, cfg.NodeID, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, log)
 	})
+	wg.Go(func() { expireTTLServices(ctx, registry, cfg.NodeID, log) })
+	wg.Go(func() { reapOrphanedServices(ctx, registry, ml, cfg.OrphanServiceReap, log) })
 	// --- HTTP API ------------------------------------------------------
 	limiter := security.NewRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies...)
 	wg.Go(func() { limiter.Run(ctx) })
@@ -119,6 +124,8 @@ func run() error {
 		RateLimiter: limiter,
 		Log:         log.With("component", "api"),
 		Ready:       func() bool { return ctx.Err() == nil },
+		Events:      broker,
+		Replay:      flyReplay(cfg.NodeID),
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -277,7 +284,7 @@ func restartRequired(old, next *config.Config) bool {
 		old.MaxClockSkew != next.MaxClockSkew || old.HTTPAddr != next.HTTPAddr || old.GRPCAddr != next.GRPCAddr ||
 		old.MetricsAddr != next.MetricsAddr || old.PprofAddr != next.PprofAddr || old.DNSAddr != next.DNSAddr || old.DNSZone != next.DNSZone || old.DNSTTL != next.DNSTTL ||
 		old.TLS != next.TLS || old.HealthCheckInterval != next.HealthCheckInterval ||
-		old.HealthCheckTimeout != next.HealthCheckTimeout || old.LogFormat != next.LogFormat
+		old.HealthCheckTimeout != next.HealthCheckTimeout || old.OrphanServiceReap != next.OrphanServiceReap || old.LogFormat != next.LogFormat
 }
 
 func serve(srv *http.Server, tls bool) error {
@@ -293,6 +300,16 @@ func serve(srv *http.Server, tls bool) error {
 	return err
 }
 
+// flyReplay lets a Fly.io machine hand an owner-only request to the machine
+// that owns the service. It is enabled only when node IDs are Fly machine IDs
+// (the default, since a machine's hostname is its ID).
+func flyReplay(nodeID string) func(string) string {
+	if machine := os.Getenv("FLY_MACHINE_ID"); machine == "" || machine != nodeID {
+		return nil
+	}
+	return func(owner string) string { return "instance=" + owner }
+}
+
 // advertiseAddr resolves the address peers should dial: explicit config,
 // then Fly.io's private 6PN address, then interface auto-detection.
 func advertiseAddr(cfg *config.Config) (string, error) {
@@ -306,30 +323,54 @@ func advertiseAddr(cfg *config.Config) (string, error) {
 	return transport.AdvertiseAddr(cfg.GossipBindAddr)
 }
 
-// joinLoop keeps contacting seeds with exponential backoff until at least
-// one peer is known, so nodes may start in any order.
+// seedRefreshInterval is how often a connected node pulls state from one
+// seed, which heals partitions in which both sides still have live peers.
+const seedRefreshInterval = 30 * time.Second
+
+// maxJoinBackoff caps retries while a node has no live peer, so an isolated
+// node rejoins soon after its network returns.
+const maxJoinBackoff = 10 * time.Second
+
+// joinLoop contacts seeds for the life of the node. Without live peers it
+// joins every seed with exponential backoff, so nodes may start in any order
+// and an isolated node finds its way back. Once connected it periodically
+// pulls from one random seed: after a partition each side has marked the
+// other dead, and gossip alone never crosses back.
 func joinLoop(ctx context.Context, ml *membership.Memberlist, seeds []string, log *slog.Logger) {
 	if len(seeds) == 0 {
 		log.Info("no seeds configured; waiting for peers to join us")
 		return
 	}
 	backoff := 500 * time.Millisecond
+	connected := false
 	for {
+		wait := seedRefreshInterval
 		// A peer may have joined *us* (e.g. we are the only seed listed).
 		if hasLivePeer(ml.Members(), ml.LocalNode().ID) {
-			n := len(ml.Members())
-			log.Info("joined cluster", "members", n)
-			return
-		}
-		if _, err := ml.Join(ctx, seeds); err != nil {
-			log.Warn("join attempt failed", "err", err, "retry_in", backoff)
+			if !connected {
+				log.Info("joined cluster", "members", len(ml.Members()))
+				connected = true
+			}
+			backoff = 500 * time.Millisecond
+			if err := ml.Rejoin(ctx, seeds); err != nil {
+				log.Debug("seed refresh failed", "err", err)
+			}
+		} else {
+			if connected {
+				log.Warn("lost contact with every peer; contacting seeds")
+				connected = false
+			}
+			if _, err := ml.Join(ctx, seeds); err != nil {
+				log.Warn("join attempt failed", "err", err, "retry_in", backoff)
+			}
+			wait = backoff
+			backoff = min(backoff*2, maxJoinBackoff)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
-		backoff = min(backoff*2, 30*time.Second)
 	}
 }
 

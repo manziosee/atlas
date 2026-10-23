@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package atlas.registry.v1;
+
+option go_package = "github.com/manziosee/atlas/api/v1;atlasv1";
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+// RegistryService is the typed gRPC API. It mirrors the HTTP API, uses the
+// same bearer credentials ("authorization: Bearer <token>" metadata) and
+// scopes, and is served on ATLAS_GRPC_ADDR next to the legacy Struct-based
+// atlas.v1.Registry service.
+//
+// Generate clients from this file; Go code is checked in under api/v1.
+service RegistryService {
+  // RegisterService creates a service owned by the receiving node. Repeating
+  // a request with the same id or idempotency_key is safe.
+  rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
+  // UpdateService changes fields named in update_mask (all fields when empty).
+  rpc UpdateService(UpdateServiceRequest) returns (Service);
+  // Heartbeat refreshes a TTL service and marks it healthy.
+  rpc Heartbeat(HeartbeatRequest) returns (Service);
+  rpc GetService(GetServiceRequest) returns (Service);
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+  // DeleteService deregisters through the owner; any node may delete when the
+  // owner has left the cluster, and admin credentials may always delete.
+  rpc DeleteService(DeleteServiceRequest) returns (DeleteServiceResponse);
+  // LookupService selects one healthy instance using Atlas routing rules.
+  rpc LookupService(LookupServiceRequest) returns (Service);
+  rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  // Watch streams membership and registry events. Resume with last_event_id;
+  // an event of type "reset" means the gap could not be replayed.
+  rpc Watch(WatchRequest) returns (stream Event);
+}
+
+enum Health {
+  HEALTH_UNSPECIFIED = 0;
+  HEALTH_UNKNOWN = 1;
+  HEALTH_HEALTHY = 2;
+  HEALTH_UNHEALTHY = 3;
+}
+
+enum MemberState {
+  MEMBER_STATE_UNSPECIFIED = 0;
+  MEMBER_STATE_ALIVE = 1;
+  MEMBER_STATE_SUSPECT = 2;
+  MEMBER_STATE_DEAD = 3;
+  MEMBER_STATE_LEFT = 4;
+}
+
+message Service {
+  string id = 1;
+  string name = 2;
+  string node_id = 3;
+  string address = 4;
+  string region = 5;
+  string version = 6;
+  repeated string tags = 7;
+  string health_check = 8;
+  Health health = 9;
+  uint64 revision = 10;
+  int64 ttl_seconds = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  google.protobuf.Timestamp checked_at = 13;
+  google.protobuf.Timestamp heartbeat_at = 14;
+}
+
+// ServiceSpec is the client-owned part of a registration. Use either
+// health_check or ttl_seconds, not both.
+message ServiceSpec {
+  string name = 1;
+  string address = 2;
+  string version = 3;
+  repeated string tags = 4;
+  string health_check = 5;
+  int64 ttl_seconds = 6;
+}
+
+message RegisterServiceRequest {
+  // Optional client-chosen ID; a random ID is assigned when empty.
+  string id = 1;
+  ServiceSpec spec = 2;
+  // Optional key that derives a stable ID per credential. Mutually exclusive
+  // with a different id.
+  string idempotency_key = 3;
+}
+
+message RegisterServiceResponse {
+  Service service = 1;
+  // True when the call created the record rather than matching or updating it.
+  bool created = 2;
+}
+
+message UpdateServiceRequest {
+  string id = 1;
+  ServiceSpec spec = 2;
+  // Paths: name, address, version, tags, health_check, ttl_seconds.
+  google.protobuf.FieldMask update_mask = 3;
+  // When non-zero, the update fails with FAILED_PRECONDITION unless the
+  // stored revision matches.
+  uint64 if_revision = 4;
+}
+
+message HeartbeatRequest {
+  string id = 1;
+}
+
+message GetServiceRequest {
+  string id = 1;
+}
+
+message ListServicesRequest {
+  string name = 1;
+  string region = 2;
+  Health health = 3;
+  string version = 4;
+  string node_id = 5;
+  // A service must carry every listed tag.
+  repeated string tags = 6;
+  // 1-1000; 100 when zero.
+  int32 page_size = 7;
+  string page_token = 8;
+}
+
+message ListServicesResponse {
+  repeated Service services = 1;
+  // Empty on the last page.
+  string next_page_token = 2;
+}
+
+message DeleteServiceRequest {
+  string id = 1;
+}
+
+message DeleteServiceResponse {}
+
+message LookupServiceRequest {
+  string name = 1;
+  string region = 2;
+  // Stable routing key for consistent hashing.
+  string key = 3;
+  repeated string tags = 4;
+}
+
+message Member {
+  string id = 1;
+  string addr = 2;
+  string region = 3;
+  MemberState state = 4;
+  uint64 incarnation = 5;
+  google.protobuf.Timestamp since = 6;
+}
+
+message GetNodeRequest {}
+
+message GetNodeResponse {
+  Member node = 1;
+  string version = 2;
+  string commit = 3;
+}
+
+message ListMembersRequest {}
+
+message ListMembersResponse {
+  repeated Member members = 1;
+}
+
+message WatchRequest {
+  // "member" and/or "service"; both when empty.
+  repeated string kinds = 1;
+  // Only service events for this service name.
+  string service = 2;
+  string last_event_id = 3;
+}
+
+message Event {
+  string id = 1;
+  // join, update, reap, service.registered, service.updated, service.health,
+  // service.deregistered, or reset.
+  string type = 2;
+  string kind = 3;
+  google.protobuf.Timestamp at = 4;
+  oneof subject {
+    Member member = 5;
+    Service service = 6;
+  }
+}

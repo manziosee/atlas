@@ -208,6 +208,34 @@ func (m *Memberlist) Members() []Member {
 	return out
 }
 
+var (
+	ErrUnknownMember = errors.New("membership: unknown member")
+	ErrMemberAlive   = errors.New("membership: member is alive")
+	ErrEvictSelf     = errors.New("membership: a node cannot evict itself")
+)
+
+// Evict marks a failed or departed member as left so peers stop probing it
+// and it is reaped after ReapAfter. Alive members are refused: they would
+// refute the claim by raising their incarnation and rejoin immediately.
+func (m *Memberlist) Evict(id string) (Member, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id == m.self.ID {
+		return Member{}, ErrEvictSelf
+	}
+	mb, ok := m.members[id]
+	if !ok {
+		return Member{}, ErrUnknownMember
+	}
+	if mb.State == StateAlive {
+		return *mb, ErrMemberAlive
+	}
+	if mb.State != StateLeft {
+		m.setState(mb, StateLeft)
+	}
+	return *mb, nil
+}
+
 // Latency returns this node's EWMA observation of the peer's successful probe
 // round-trip time. A zero value means no successful probe has been recorded.
 func (m *Memberlist) Latency(id string) time.Duration {
@@ -248,9 +276,39 @@ func (m *Memberlist) Run(ctx context.Context) {
 // IPs, e.g. a Kubernetes headless service or Fly.io .internal DNS) and
 // requests their state. It returns how many peers were contacted.
 func (m *Memberlist) Join(ctx context.Context, seeds []string) (int, error) {
-	self := m.LocalNode().Addr
-	var errs []error
+	addrs, errs := m.resolveSeeds(ctx, seeds)
 	contacted := 0
+	for _, addr := range addrs {
+		if err := m.send(ctx, addr, msgPull, 0, m.sample(maxPiggyback, "")); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		contacted++
+	}
+	if contacted == 0 {
+		return 0, errors.Join(append(errs, errors.New("membership: no seed reachable"))...)
+	}
+	return contacted, nil
+}
+
+// Rejoin pulls state from one random seed address. Call it periodically:
+// after a partition both sides have marked each other dead, and gossip only
+// targets live members, so nothing else crosses the healed link. The pull
+// carries each side's view of the other, which makes still-running nodes
+// refute their death with a higher incarnation.
+func (m *Memberlist) Rejoin(ctx context.Context, seeds []string) error {
+	addrs, errs := m.resolveSeeds(ctx, seeds)
+	if len(addrs) == 0 {
+		return errors.Join(append(errs, errors.New("membership: no seed reachable"))...)
+	}
+	return m.send(ctx, addrs[rand.IntN(len(addrs))], msgPull, 0, m.sample(maxPiggyback, ""))
+}
+
+// resolveSeeds expands seed host names to addresses, excluding this node.
+func (m *Memberlist) resolveSeeds(ctx context.Context, seeds []string) ([]string, []error) {
+	self := m.LocalNode().Addr
+	var addrs []string
+	var errs []error
 	for _, s := range seeds {
 		host, port, err := net.SplitHostPort(s)
 		if err != nil {
@@ -263,21 +321,12 @@ func (m *Memberlist) Join(ctx context.Context, seeds []string) (int, error) {
 			continue
 		}
 		for _, ip := range ips {
-			addr := net.JoinHostPort(ip, port)
-			if addr == self {
-				continue
+			if addr := net.JoinHostPort(ip, port); addr != self {
+				addrs = append(addrs, addr)
 			}
-			if err := m.send(ctx, addr, msgPull, 0, m.sample(maxPiggyback, "")); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			contacted++
 		}
 	}
-	if contacted == 0 {
-		return 0, errors.Join(append(errs, errors.New("membership: no seed reachable"))...)
-	}
-	return contacted, nil
+	return addrs, errs
 }
 
 // --- protocol loops -------------------------------------------------------

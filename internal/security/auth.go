@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/manziosee/atlas/internal/httperr"
 )
 
 type Scope string
@@ -33,6 +35,17 @@ type credentialRecord struct {
 	digest    [sha256.Size]byte
 	Scopes    []Scope
 	expiresAt time.Time
+	static    bool
+}
+
+// CredentialInfo describes a configured credential without its secret. ID is
+// the same non-secret fingerprint written to access logs as token_id.
+type CredentialInfo struct {
+	ID        string    `json:"id"`
+	Scopes    []Scope   `json:"scopes"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	Source    string    `json:"source"`
+	Expired   bool      `json:"expired"`
 }
 
 // TokenAuthenticator stores SHA-256 digests and applies credential scopes and
@@ -44,6 +57,8 @@ type TokenAuthenticator struct {
 }
 
 type tokenIDKey struct{}
+
+type scopesKey struct{}
 
 func NewTokenAuthenticator(tokens []string) *TokenAuthenticator {
 	a := &TokenAuthenticator{}
@@ -115,7 +130,7 @@ func (a *TokenAuthenticator) ReplaceConfigured(tokens []string, credentials []Cr
 	}
 	records := make([]credentialRecord, 0, len(tokens)+len(credentials))
 	for _, token := range tokens {
-		records = append(records, credentialRecord{digest: sha256.Sum256([]byte(token)), Scopes: []Scope{ScopeAdmin}})
+		records = append(records, credentialRecord{digest: sha256.Sum256([]byte(token)), Scopes: []Scope{ScopeAdmin}, static: true})
 	}
 	for _, credential := range credentials {
 		records = append(records, credentialRecord{digest: sha256.Sum256([]byte(credential.Token)), Scopes: slices.Clone(credential.Scopes), expiresAt: credential.ExpiresAt})
@@ -138,13 +153,21 @@ func (a *TokenAuthenticator) Authenticate(token string) (string, bool) {
 // Authorize validates token expiry and required scope and returns its stable,
 // non-secret fingerprint. Admin credentials grant read and write operations.
 func (a *TokenAuthenticator) Authorize(token string, required Scope) (string, bool) {
+	id, _, ok := a.grant(token, required)
+	return id, ok
+}
+
+// grant compares the digest against every credential in constant time and
+// returns the fingerprint and scopes of the matching, unexpired credential.
+func (a *TokenAuthenticator) grant(token string, required Scope) (string, []Scope, bool) {
 	if token == "" {
-		return "", false
+		return "", nil, false
 	}
 	digest := sha256.Sum256([]byte(token))
 	now := time.Now()
 	a.mu.RLock()
 	match := 0
+	var scopes []Scope
 	for _, credential := range a.credentials {
 		constantMatch := subtle.ConstantTimeCompare(digest[:], credential.digest[:])
 		valid := credential.expiresAt.IsZero() || now.Before(credential.expiresAt)
@@ -152,13 +175,41 @@ func (a *TokenAuthenticator) Authorize(token string, required Scope) (string, bo
 		for _, scope := range credential.Scopes {
 			scoped = scoped || scope == ScopeAdmin || scope == required
 		}
-		match |= constantMatch & boolToInt(valid && scoped)
+		granted := constantMatch & boolToInt(valid && scoped)
+		if granted == 1 {
+			scopes = slices.Clone(credential.Scopes)
+		}
+		match |= granted
 	}
 	a.mu.RUnlock()
 	if match != 1 {
-		return "", false
+		return "", nil, false
 	}
-	return hex.EncodeToString(digest[:12]), true
+	return fingerprint(digest), scopes, true
+}
+
+func fingerprint(digest [sha256.Size]byte) string {
+	return hex.EncodeToString(digest[:12])
+}
+
+// Credentials lists configured credentials by fingerprint, scopes and expiry.
+func (a *TokenAuthenticator) Credentials() []CredentialInfo {
+	now := time.Now()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]CredentialInfo, 0, len(a.credentials))
+	for _, credential := range a.credentials {
+		source := "scoped"
+		if credential.static {
+			source = "static"
+		}
+		out = append(out, CredentialInfo{
+			ID: fingerprint(credential.digest), Scopes: slices.Clone(credential.Scopes),
+			ExpiresAt: credential.expiresAt, Source: source,
+			Expired: !credential.expiresAt.IsZero() && !now.Before(credential.expiresAt),
+		})
+	}
+	return out
 }
 
 func boolToInt(value bool) int {
@@ -173,6 +224,33 @@ func AuthenticatedTokenID(ctx context.Context) string {
 	return id
 }
 
+// WithGrant records an authenticated credential on a request context.
+func WithGrant(ctx context.Context, id string, scopes []Scope) context.Context {
+	return context.WithValue(context.WithValue(ctx, tokenIDKey{}, id), scopesKey{}, scopes)
+}
+
+// Granted reports whether the request's credential holds scope. Admin
+// credentials hold every scope.
+func Granted(ctx context.Context, scope Scope) bool {
+	scopes, _ := ctx.Value(scopesKey{}).([]Scope)
+	for _, held := range scopes {
+		if held == ScopeAdmin || held == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantFor authenticates token for the required scope and returns a context
+// carrying the grant. gRPC interceptors use it; HTTP uses Middleware.
+func (a *TokenAuthenticator) GrantFor(ctx context.Context, token string, required Scope) (context.Context, string, bool) {
+	id, scopes, ok := a.grant(token, required)
+	if !ok {
+		return ctx, "", false
+	}
+	return WithGrant(ctx, id, scopes), id, true
+}
+
 // Middleware rejects invalid, expired, or under-scoped bearer credentials.
 func (a *TokenAuthenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -183,16 +261,16 @@ func (a *TokenAuthenticator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		scope := RequiredScope(r.Method, r.URL.Path)
-		id, ok := a.Authorize(header[len(prefix):], scope)
+		ctx, _, ok := a.GrantFor(r.Context(), header[len(prefix):], scope)
 		if !ok {
 			if a.AuthenticateTokenOnly(header[len(prefix):]) {
-				http.Error(w, `{"error":"insufficient_scope"}`, http.StatusForbidden)
+				httperr.Write(w, http.StatusForbidden, httperr.CodeInsufficientScope, "credential lacks the "+string(scope)+" scope")
 				return
 			}
 			writeUnauthorized(w)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tokenIDKey{}, id)))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -201,7 +279,12 @@ func (a *TokenAuthenticator) AuthenticateTokenOnly(token string) bool {
 	return ok
 }
 
-func RequiredScope(method, _ string) Scope {
+// RequiredScope maps a request to its minimum scope: admin for /v1/admin/,
+// write for mutations, and read otherwise.
+func RequiredScope(method, path string) Scope {
+	if strings.HasPrefix(path, "/v1/admin/") {
+		return ScopeAdmin
+	}
 	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch || method == http.MethodDelete {
 		return ScopeWrite
 	}
@@ -210,5 +293,5 @@ func RequiredScope(method, _ string) Scope {
 
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="atlas"`)
-	http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	httperr.Write(w, http.StatusUnauthorized, httperr.CodeUnauthorized, "a valid bearer token is required")
 }

@@ -4,21 +4,57 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/manziosee/atlas/internal/membership"
+	"github.com/manziosee/atlas/internal/events"
+	"github.com/manziosee/atlas/internal/httperr"
 )
 
-type eventSubscriber interface {
-	Subscribe(int) (<-chan membership.Event, func())
-}
-
+// streamEvents serves membership and registry changes as Server-Sent Events.
+// Query parameters: kinds=member,service limits event kinds; service=<name>
+// limits service events to one service name. Clients resume with the standard
+// Last-Event-ID header (or last_event_id query parameter for clients that
+// cannot set headers). An "event: reset" frame means the gap could not be
+// replayed and the client should re-read current state.
 func (d Deps) streamEvents(w http.ResponseWriter, r *http.Request) {
-	source, ok := d.Cluster.(eventSubscriber)
-	if !ok {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "event stream unavailable"})
+	if d.Events == nil {
+		httperr.Write(w, http.StatusNotImplemented, httperr.CodeUnavailable, "event stream unavailable")
 		return
 	}
+	query := r.URL.Query()
+	kinds := map[string]bool{events.KindMember: true, events.KindService: true}
+	if raw := query.Get("kinds"); raw != "" {
+		kinds = map[string]bool{}
+		for kind := range strings.SplitSeq(raw, ",") {
+			kind = strings.TrimSpace(kind)
+			if kind != events.KindMember && kind != events.KindService {
+				httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "kinds must contain member and/or service")
+				return
+			}
+			kinds[kind] = true
+		}
+	}
+	serviceName := query.Get("service")
+	lastID := r.Header.Get("Last-Event-ID")
+	if lastID == "" {
+		lastID = query.Get("last_event_id")
+	}
+	if len(serviceName) > 128 || len(lastID) > 64 {
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "event stream parameters exceed limits")
+		return
+	}
+	wanted := func(event events.Event) bool {
+		if !kinds[event.Kind] {
+			return false
+		}
+		return serviceName == "" || event.Kind != events.KindService || event.Service.Name == serviceName
+	}
+
+	// Subscribe before the headers go out, so a client that sees the stream
+	// open cannot miss an event published in between.
+	sub, backlog, reset := d.Events.Subscribe(lastID, 256)
+	defer sub.Close()
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -26,13 +62,33 @@ func (d Deps) streamEvents(w http.ResponseWriter, r *http.Request) {
 	if err := controller.Flush(); err != nil {
 		return
 	}
-	events, cancel := source.Subscribe(64)
-	defer cancel()
-	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+	write := func(frame string) bool {
+		_ = controller.SetWriteDeadline(time.Now().Add(20 * time.Second))
+		if _, err := fmt.Fprint(w, frame); err != nil {
+			return false
+		}
+		return controller.Flush() == nil
+	}
+	if !write(": connected\nretry: 3000\n\n") {
 		return
 	}
-	if err := controller.Flush(); err != nil {
+	if reset && !write("event: reset\ndata: {\"type\":\"reset\"}\n\n") {
 		return
+	}
+	send := func(event events.Event) bool {
+		if !wanted(event) {
+			return true
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			return true
+		}
+		return write(fmt.Sprintf("id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, data))
+	}
+	for _, event := range backlog {
+		if !send(event) {
+			return
+		}
 	}
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
@@ -40,27 +96,14 @@ func (d Deps) streamEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case event, ok := <-events:
-			if !ok {
-				return
-			}
-			data, err := json.Marshal(event)
-			if err != nil {
-				continue
-			}
-			_ = controller.SetWriteDeadline(time.Now().Add(20 * time.Second))
-			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data); err != nil {
-				return
-			}
-			if err := controller.Flush(); err != nil {
+		case event, ok := <-sub.C:
+			// A closed channel means this reader lagged; ending the response
+			// makes the client reconnect with Last-Event-ID and catch up.
+			if !ok || !send(event) {
 				return
 			}
 		case <-heartbeat.C:
-			_ = controller.SetWriteDeadline(time.Now().Add(20 * time.Second))
-			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
-				return
-			}
-			if err := controller.Flush(); err != nil {
+			if !write(": keepalive\n\n") {
 				return
 			}
 		}
