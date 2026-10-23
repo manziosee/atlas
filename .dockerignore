@@ -11,6 +11,8 @@ deploy/
 scripts/
 web/node_modules/
 bin/
+.gocache/
+.go-mod-cache/
 dist/
 coverage.*
 *.test
