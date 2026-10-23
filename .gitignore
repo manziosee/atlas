@@ -33,3 +33,7 @@ deploy/k8s/overlays/*/secrets.env
 .DS_Store
 Thumbs.db
 .kombai/
+
+# Python
+__pycache__/
+*.pyc

@@ -57,4 +57,7 @@ message Service {
   bool deleted = 11;
   int64 updated_at_unix_nano = 12;
   int64 checked_at_unix_nano = 13;
+  // Heartbeat TTL in seconds; zero means the service has no TTL. Older nodes
+  // skip this field, so mixed-version clusters keep replicating.
+  uint64 ttl_seconds = 14;
 }

@@ -1,167 +1,248 @@
 package api
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/manziosee/atlas/internal/httperr"
 	"github.com/manziosee/atlas/internal/routing"
 	"github.com/manziosee/atlas/internal/storage"
 )
 
-type ServiceRegistry interface {
-	Register(context.Context, storage.Service) (storage.Service, error)
-	Get(context.Context, string) (storage.Service, error)
-	List(context.Context, storage.Filter) ([]storage.Service, error)
-	Delete(context.Context, string, string) error
+// servicePatch carries the fields a PATCH changes; absent fields are kept.
+type servicePatch struct {
+	Name        *string   `json:"name"`
+	Address     *string   `json:"address"`
+	Version     *string   `json:"version"`
+	Tags        *[]string `json:"tags"`
+	HealthCheck *string   `json:"health_check"`
+	TTLSeconds  *int64    `json:"ttl_seconds"`
 }
-
-type registerServiceRequest struct {
-	Name        string   `json:"name"`
-	Address     string   `json:"address"`
-	Version     string   `json:"version,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	HealthCheck string   `json:"health_check,omitempty"`
-}
-
-var serviceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
 func (d Deps) registerService(w http.ResponseWriter, r *http.Request) {
-	if d.Registry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service registry unavailable"})
+	var spec serviceSpec
+	if !decodeBody(w, r, &spec) {
 		return
 	}
-	var input registerServiceRequest
-	if err := decodeJSON(r, &input); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+	service, outcome, err := d.register(r.Context(), spec, r.Header.Get("Idempotency-Key"))
+	d.writeServiceResult(w, r, service, outcome, err)
+}
+
+// replaceService implements PUT: create or fully replace the service with the
+// path ID. With If-Match, the service must exist at that revision.
+func (d Deps) replaceService(w http.ResponseWriter, r *http.Request) {
+	var spec serviceSpec
+	if !decodeBody(w, r, &spec) {
 		return
 	}
-	if err := validateServiceRequest(input); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	id := r.PathValue("id")
+	if spec.ID != "" && spec.ID != id {
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "body id must match the path")
 		return
 	}
-	var idBytes [16]byte
-	if _, err := rand.Read(idBytes[:]); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not allocate service ID"})
+	spec.ID = id
+	ifRevision, ok := ifMatch(w, r)
+	if !ok {
 		return
 	}
-	node := d.Cluster.LocalNode()
-	service, err := d.Registry.Register(r.Context(), storage.Service{
-		ID:          hex.EncodeToString(idBytes[:]),
-		Name:        input.Name,
-		NodeID:      node.ID,
-		Address:     input.Address,
-		Region:      node.Region,
-		Version:     input.Version,
-		Tags:        input.Tags,
-		HealthCheck: input.HealthCheck,
-		Health:      storage.HealthUnknown,
+	if ifRevision == 0 {
+		service, outcome, err := d.register(r.Context(), spec, "")
+		d.writeServiceResult(w, r, service, outcome, err)
+		return
+	}
+	service, err := d.update(r.Context(), id, ifRevision, func(current *serviceSpec) { *current = spec })
+	d.writeServiceResult(w, r, service, storage.Updated, err)
+}
+
+func (d Deps) patchService(w http.ResponseWriter, r *http.Request) {
+	var patch servicePatch
+	if !decodeBody(w, r, &patch) {
+		return
+	}
+	ifRevision, ok := ifMatch(w, r)
+	if !ok {
+		return
+	}
+	service, err := d.update(r.Context(), r.PathValue("id"), ifRevision, func(s *serviceSpec) {
+		apply(&s.Name, patch.Name)
+		apply(&s.Address, patch.Address)
+		apply(&s.Version, patch.Version)
+		apply(&s.Tags, patch.Tags)
+		apply(&s.HealthCheck, patch.HealthCheck)
+		apply(&s.TTLSeconds, patch.TTLSeconds)
 	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not register service"})
-		return
-	}
-	writeJSON(w, http.StatusCreated, service)
+	d.writeServiceResult(w, r, service, storage.Updated, err)
 }
 
-func (d Deps) listServices(w http.ResponseWriter, r *http.Request) {
-	if d.Registry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service registry unavailable"})
-		return
+func apply[T any](dst *T, value *T) {
+	if value != nil {
+		*dst = *value
 	}
-	query := r.URL.Query()
-	health := storage.Health(query.Get("health"))
-	if health != "" && health != storage.HealthHealthy && health != storage.HealthUnhealthy && health != storage.HealthUnknown {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "health must be healthy, unhealthy, or unknown"})
-		return
-	}
-	services, err := d.Registry.List(r.Context(), storage.Filter{
-		Name: query.Get("name"), Region: query.Get("region"), Health: health,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list services"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": len(services), "services": services})
 }
 
-func (d Deps) lookupService(w http.ResponseWriter, r *http.Request) {
-	if d.Registry == nil || d.Selector == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service registry unavailable"})
-		return
-	}
-	name := r.PathValue("name")
-	region, key := r.URL.Query().Get("region"), r.URL.Query().Get("key")
-	if len(name) > 128 || len(region) > 64 || len(key) > 256 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "lookup parameters exceed limits"})
-		return
-	}
-	services, err := d.Registry.List(r.Context(), storage.Filter{Name: name})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not look up service"})
-		return
-	}
-	service, err := d.Selector.SelectWithLatency(services, region, key, d.nodeLatency)
-	if errors.Is(err, routing.ErrNoInstance) {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no healthy service instance available"})
-		return
-	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not select service instance"})
-		return
-	}
-	writeJSON(w, http.StatusOK, service)
-}
-
-func (d Deps) nodeLatency(nodeID string) time.Duration {
-	if reader, ok := d.Cluster.(interface{ Latency(string) time.Duration }); ok {
-		return reader.Latency(nodeID)
-	}
-	return 0
+func (d Deps) heartbeat(w http.ResponseWriter, r *http.Request) {
+	service, err := d.heartbeatService(r.Context(), r.PathValue("id"))
+	d.writeServiceResult(w, r, service, storage.Updated, err)
 }
 
 func (d Deps) getService(w http.ResponseWriter, r *http.Request) {
 	if d.Registry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service registry unavailable"})
+		d.writeError(w, r, errRegistryUnavailable)
 		return
 	}
 	service, err := d.Registry.Get(r.Context(), r.PathValue("id"))
-	if errors.Is(err, storage.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "service not found"})
-		return
-	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not read service"})
-		return
-	}
-	writeJSON(w, http.StatusOK, service)
+	d.writeServiceResult(w, r, service, storage.Updated, err)
 }
 
 func (d Deps) deleteService(w http.ResponseWriter, r *http.Request) {
-	if d.Registry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "service registry unavailable"})
-		return
-	}
-	if err := d.Registry.Delete(r.Context(), r.PathValue("id"), d.Cluster.LocalNode().ID); err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "service not found"})
-			return
-		}
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "service cannot be removed by this node"})
+	if err := d.deregister(r.Context(), r.PathValue("id")); err != nil {
+		d.writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (d Deps) listServices(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	limit := 0
+	if raw := query.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "limit must be a positive number")
+			return
+		}
+		limit = n
+	}
+	filter := storage.Filter{
+		Name: query.Get("name"), Region: query.Get("region"), Health: storage.Health(query.Get("health")),
+		Version: query.Get("version"), NodeID: query.Get("node_id"), Tags: query["tag"],
+	}
+	page, err := d.listPage(r.Context(), filter, query.Get("cursor"), limit)
+	if err != nil {
+		d.writeError(w, r, err)
+		return
+	}
+	body := map[string]any{"count": len(page.Services), "services": page.Services}
+	if page.NextCursor != "" {
+		body["next_cursor"] = page.NextCursor
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func (d Deps) lookupService(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	service, err := d.lookup(r.Context(), r.PathValue("name"), query.Get("region"), query.Get("key"), query["tag"])
+	d.writeServiceResult(w, r, service, storage.Updated, err)
+}
+
+// writeServiceResult writes one service with its revision ETag, 201 and a
+// Location header for a new record, or the mapped error.
+func (d Deps) writeServiceResult(w http.ResponseWriter, r *http.Request, service storage.Service, outcome storage.Outcome, err error) {
+	if err != nil {
+		d.writeError(w, r, err)
+		return
+	}
+	status := http.StatusOK
+	if outcome == storage.Created {
+		status = http.StatusCreated
+		w.Header().Set("Location", "/v1/services/"+url.PathEscape(service.ID))
+	}
+	w.Header().Set("ETag", strconv.Quote(strconv.FormatUint(service.Revision, 10)))
+	writeJSON(w, status, service)
+}
+
+// writeError maps registry operation errors to HTTP statuses and stable codes.
+func (d Deps) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	var invalidInput validationError
+	var alive ownerAliveError
+	owner, owned := ownerOf(err)
+	switch {
+	case errors.As(err, &invalidInput):
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, invalidInput.msg)
+	case errors.Is(err, storage.ErrNotFound):
+		httperr.Write(w, http.StatusNotFound, httperr.CodeNotFound, "service not found")
+	case errors.As(err, &alive):
+		d.replayToOwner(w, r, owner)
+		httperr.WriteBody(w, http.StatusConflict, httperr.Body{
+			Error: "the owning node is alive; delete through it or use an admin credential",
+			Code:  httperr.CodeOwnerAlive, OwnerNode: owner,
+		})
+	case owned:
+		d.replayToOwner(w, r, owner)
+		httperr.WriteBody(w, http.StatusConflict, httperr.Body{
+			Error: "service is owned by node " + owner + "; send this request to that node",
+			Code:  httperr.CodeNotOwner, OwnerNode: owner,
+		})
+	case errors.Is(err, storage.ErrRevisionMismatch):
+		httperr.Write(w, http.StatusPreconditionFailed, httperr.CodePreconditionFailed, "service revision does not match If-Match")
+	case errors.Is(err, storage.ErrNoTTL):
+		httperr.Write(w, http.StatusConflict, httperr.CodeNoTTL, "service was registered without ttl_seconds")
+	case errors.Is(err, routing.ErrNoInstance):
+		httperr.Write(w, http.StatusServiceUnavailable, httperr.CodeNoHealthyInstance, "no healthy service instance available")
+	case errors.Is(err, errRegistryUnavailable):
+		httperr.Write(w, http.StatusServiceUnavailable, httperr.CodeUnavailable, "service registry unavailable")
+	default:
+		if d.Log != nil {
+			d.Log.Error("registry operation failed", "err", err, "path", r.URL.Path)
+		}
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "internal error")
+	}
+}
+
+// replayToOwner asks Fly.io's proxy to replay the request on the owning
+// machine. Outside Fly the header is absent and the client sees the 409.
+func (d Deps) replayToOwner(w http.ResponseWriter, r *http.Request, owner string) {
+	if d.Replay == nil || r.Header.Get("Fly-Replay-Src") != "" || !d.ownerAlive(owner) {
+		return
+	}
+	if value := d.Replay(owner); value != "" {
+		w.Header().Set("Fly-Replay", value)
+	}
+}
+
+// ifMatch parses an optional If-Match revision ETag.
+func ifMatch(w http.ResponseWriter, r *http.Request) (uint64, bool) {
+	raw := strings.TrimSpace(r.Header.Get("If-Match"))
+	if raw == "" {
+		return 0, true
+	}
+	revision, err := strconv.ParseUint(strings.Trim(strings.TrimPrefix(raw, "W/"), `"`), 10, 64)
+	if err != nil || revision == 0 {
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "If-Match must be a service revision ETag")
+		return 0, false
+	}
+	return revision, true
+}
+
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	err := decodeJSON(r, dst)
+	if err == nil {
+		return true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		httperr.Write(w, http.StatusRequestEntityTooLarge, httperr.CodePayloadTooLarge, "request body is too large")
+		return false
+	}
+	httperr.Write(w, http.StatusBadRequest, httperr.CodeInvalidJSON, "invalid JSON body: "+jsonProblem(err))
+	return false
+}
+
+// jsonProblem describes a decode failure without echoing request content.
+func jsonProblem(err error) string {
+	if text := err.Error(); strings.HasPrefix(text, "json: unknown field") {
+		return strings.TrimPrefix(text, "json: ")
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) && typeErr.Field != "" {
+		return "field " + typeErr.Field + " has the wrong type"
+	}
+	return "malformed document"
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -176,35 +257,6 @@ func decodeJSON(r *http.Request, dst any) error {
 			return errors.New("api: multiple JSON values")
 		}
 		return err
-	}
-	return nil
-}
-
-func validateServiceRequest(in registerServiceRequest) error {
-	if !serviceNamePattern.MatchString(in.Name) {
-		return errors.New("name must be 1-128 letters, digits, dots, underscores, or hyphens")
-	}
-	if host, port, err := net.SplitHostPort(in.Address); err != nil || host == "" {
-		return errors.New("address must be host:port")
-	} else if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return errors.New("address port must be between 1 and 65535")
-	}
-	if len(in.Version) > 128 {
-		return errors.New("version must be at most 128 characters")
-	}
-	if len(in.Tags) > 16 {
-		return errors.New("at most 16 tags are allowed")
-	}
-	for _, tag := range in.Tags {
-		if strings.TrimSpace(tag) == "" || len(tag) > 64 {
-			return errors.New("tags must contain 1-64 non-whitespace characters")
-		}
-	}
-	if in.HealthCheck != "" {
-		u, err := url.ParseRequestURI(in.HealthCheck)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Host != in.Address {
-			return fmt.Errorf("health_check must be an http or https URL on the service address without user information")
-		}
 	}
 	return nil
 }

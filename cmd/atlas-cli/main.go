@@ -40,12 +40,17 @@ Usage:
   atlas-cli <command> [flags]
 
 Commands:
-  members    list the cluster as seen by a node
-  services   list registered service instances
-  lookup     find instances by service name
-  watch      stream membership events
-  db-backup  create a consistent SQLite database snapshot
-  db-restore restore a verified snapshot to a new database path
+  members     list the cluster as seen by a node
+  services    list registered service instances (all pages)
+  lookup      find instances by service name
+  watch       stream membership and registry events
+  heartbeat   refresh a TTL service: heartbeat <service-id>
+  deregister  delete a service: deregister <service-id>
+  credentials list API credentials without secrets (admin)
+  backup      download a node's registry snapshot over the API (admin)
+  evict       remove a failed node and its services: evict <node-id> (admin)
+  db-backup   create a consistent SQLite database snapshot from a local file
+  db-restore  restore a verified snapshot to a new database path
   completion print shell completion (bash|zsh|fish|powershell)
   node       show the node's own record
   health     exit 0 if the node is healthy (used by container health checks)
@@ -73,6 +78,16 @@ func main() {
 		err = services(args, true)
 	case "watch":
 		err = watch(args)
+	case "heartbeat":
+		err = heartbeat(args)
+	case "deregister":
+		err = deregister(args)
+	case "credentials":
+		err = credentials(args)
+	case "backup":
+		err = remoteBackup(args)
+	case "evict":
+		err = evict(args)
 	case "db-backup":
 		err = dbBackup(args)
 	case "db-restore":
@@ -220,7 +235,7 @@ func (c *client) stream(path string) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-		return fmt.Errorf("%s: %s %s", path, resp.Status, body)
+		return apiError(path, resp.Status, body)
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -252,7 +267,7 @@ func (c *client) get(path string, out any) error {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s %s", path, resp.Status, body)
+		return apiError(path, resp.Status, body)
 	}
 	if out == nil {
 		return nil
@@ -284,11 +299,14 @@ func services(args []string, requireName bool) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		positionalName, args = args[0], args[1:]
 	}
-	name, region, health, key, output := "", "", "", "", "table"
+	name, region, health, key, output, serviceVersion := "", "", "", "", "table", ""
+	var tags stringList
 	c, err := newClientWith("services", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&name, "name", positionalName, "filter by service name")
 		fs.StringVar(&region, "region", "", "filter by region")
 		fs.StringVar(&health, "health", "", "filter by health (healthy|unhealthy|unknown)")
+		fs.StringVar(&serviceVersion, "version", "", "filter by service version (services only)")
+		fs.Var(&tags, "tag", "require a tag; repeat for several")
 		fs.StringVar(&key, "key", "", "stable routing key (lookup only)")
 		fs.StringVar(&output, "output", "table", "output format (table|json)")
 	})
@@ -314,6 +332,12 @@ func services(args []string, requireName bool) error {
 	if health != "" && !requireName {
 		query.Set("health", health)
 	}
+	if serviceVersion != "" && !requireName {
+		query.Set("version", serviceVersion)
+	}
+	for _, tag := range tags {
+		query.Add("tag", tag)
+	}
 	path := "/v1/services"
 	if requireName {
 		path = "/v1/lookup/" + url.PathEscape(name)
@@ -323,21 +347,25 @@ func services(args []string, requireName bool) error {
 	} else if key != "" {
 		return errors.New("--key is only supported by lookup")
 	}
-	if encoded := query.Encode(); encoded != "" {
-		path += "?" + encoded
-	}
 	var resp struct {
 		Count    int               `json:"count"`
 		Services []storage.Service `json:"services"`
 	}
 	if requireName {
+		if encoded := query.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
 		var service storage.Service
 		if err := c.get(path, &service); err != nil {
 			return err
 		}
 		resp.Count, resp.Services = 1, []storage.Service{service}
-	} else if err := c.get(path, &resp); err != nil {
-		return err
+	} else {
+		all, err := c.listAll(query)
+		if err != nil {
+			return err
+		}
+		resp.Count, resp.Services = len(all), all
 	}
 	if output == "json" {
 		if requireName {
@@ -358,11 +386,30 @@ func services(args []string, requireName bool) error {
 }
 
 func watch(args []string) error {
-	c, err := newClientWithTimeout("watch", args, 24*time.Hour, nil)
+	kinds, service, lastID := "", "", ""
+	c, err := newClientWithTimeout("watch", args, 24*time.Hour, func(fs *flag.FlagSet) {
+		fs.StringVar(&kinds, "kinds", "", "comma-separated event kinds: member, service (default both)")
+		fs.StringVar(&service, "service", "", "only events for this service name")
+		fs.StringVar(&lastID, "last-event-id", "", "resume after this event ID")
+	})
 	if err != nil {
 		return err
 	}
-	return c.stream("/v1/events")
+	query := url.Values{}
+	if kinds != "" {
+		query.Set("kinds", kinds)
+	}
+	if service != "" {
+		query.Set("service", service)
+	}
+	if lastID != "" {
+		query.Set("last_event_id", lastID)
+	}
+	path := "/v1/events"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return c.stream(path)
 }
 
 func dbBackup(args []string) error {
@@ -419,7 +466,7 @@ func completion(args []string) error {
 	if len(args) != 1 {
 		return errors.New("completion requires one shell: bash, zsh, fish, or powershell")
 	}
-	commands := "members services lookup watch db-backup db-restore node health keygen tokengen version completion"
+	commands := "members services lookup watch heartbeat deregister credentials backup evict db-backup db-restore node health keygen tokengen version completion"
 	var script string
 	switch args[0] {
 	case "bash":

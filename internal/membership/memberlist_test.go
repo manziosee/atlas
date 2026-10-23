@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -538,5 +539,27 @@ func TestSendTrimsGossipToIPv6MTUPayload(t *testing.T) {
 		}
 	default:
 		t.Fatal("no packet delivered")
+	}
+}
+
+func TestEvictOnlyRemovesFailedPeers(t *testing.T) {
+	fn := newFakeNet()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := New(testConfig("self", "127.0.0.1:7301"), fn.attach("127.0.0.1:7301"), log)
+	m.merge(Member{ID: "peer", Addr: "127.0.0.1:7302", State: StateAlive, Incarnation: 1})
+
+	if _, err := m.Evict("self"); !errors.Is(err, ErrEvictSelf) {
+		t.Fatalf("evict self err = %v", err)
+	}
+	if _, err := m.Evict("ghost"); !errors.Is(err, ErrUnknownMember) {
+		t.Fatalf("evict unknown err = %v", err)
+	}
+	if _, err := m.Evict("peer"); !errors.Is(err, ErrMemberAlive) {
+		t.Fatalf("evict alive err = %v", err)
+	}
+	m.merge(Member{ID: "peer", Addr: "127.0.0.1:7302", State: StateDead, Incarnation: 1})
+	evicted, err := m.Evict("peer")
+	if err != nil || evicted.State != StateLeft {
+		t.Fatalf("evict dead = %+v %v, want left", evicted, err)
 	}
 }

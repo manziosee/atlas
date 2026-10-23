@@ -23,6 +23,7 @@ import (
 	"github.com/manziosee/atlas/internal/api"
 	"github.com/manziosee/atlas/internal/config"
 	"github.com/manziosee/atlas/internal/dnsdiscovery"
+	"github.com/manziosee/atlas/internal/events"
 	"github.com/manziosee/atlas/internal/logging"
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/metrics"
@@ -98,12 +99,16 @@ func run() error {
 		}
 	}
 
+	broker := events.NewBroker(4096)
 	var wg sync.WaitGroup
+	wg.Go(func() { publishEvents(ctx, ml, registry, broker) })
 	wg.Go(func() { ml.Run(ctx) })
 	wg.Go(func() { joinLoop(ctx, ml, cfg.Seeds, log) })
 	wg.Go(func() {
 		runHealthChecks(ctx, registry, cfg.NodeID, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, log)
 	})
+	wg.Go(func() { expireTTLServices(ctx, registry, cfg.NodeID, log) })
+	wg.Go(func() { reapOrphanedServices(ctx, registry, ml, cfg.OrphanServiceReap, log) })
 	// --- HTTP API ------------------------------------------------------
 	limiter := security.NewRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies...)
 	wg.Go(func() { limiter.Run(ctx) })
@@ -119,6 +124,8 @@ func run() error {
 		RateLimiter: limiter,
 		Log:         log.With("component", "api"),
 		Ready:       func() bool { return ctx.Err() == nil },
+		Events:      broker,
+		Replay:      flyReplay(cfg.NodeID),
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -277,7 +284,7 @@ func restartRequired(old, next *config.Config) bool {
 		old.MaxClockSkew != next.MaxClockSkew || old.HTTPAddr != next.HTTPAddr || old.GRPCAddr != next.GRPCAddr ||
 		old.MetricsAddr != next.MetricsAddr || old.PprofAddr != next.PprofAddr || old.DNSAddr != next.DNSAddr || old.DNSZone != next.DNSZone || old.DNSTTL != next.DNSTTL ||
 		old.TLS != next.TLS || old.HealthCheckInterval != next.HealthCheckInterval ||
-		old.HealthCheckTimeout != next.HealthCheckTimeout || old.LogFormat != next.LogFormat
+		old.HealthCheckTimeout != next.HealthCheckTimeout || old.OrphanServiceReap != next.OrphanServiceReap || old.LogFormat != next.LogFormat
 }
 
 func serve(srv *http.Server, tls bool) error {
@@ -291,6 +298,16 @@ func serve(srv *http.Server, tls bool) error {
 		return nil
 	}
 	return err
+}
+
+// flyReplay lets a Fly.io machine hand an owner-only request to the machine
+// that owns the service. It is enabled only when node IDs are Fly machine IDs
+// (the default, since a machine's hostname is its ID).
+func flyReplay(nodeID string) func(string) string {
+	if machine := os.Getenv("FLY_MACHINE_ID"); machine == "" || machine != nodeID {
+		return nil
+	}
+	return func(owner string) string { return "instance=" + owner }
 }
 
 // advertiseAddr resolves the address peers should dial: explicit config,

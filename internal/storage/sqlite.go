@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,8 +24,20 @@ import (
 
 var ErrNotFound = errors.New("storage: service not found")
 var ErrRegistryTooLarge = errors.New("storage: registry exceeds replication limit")
+var ErrNotOwner = errors.New("storage: service belongs to another node")
+var ErrRevisionMismatch = errors.New("storage: service revision does not match")
+var ErrNoTTL = errors.New("storage: service has no TTL")
+
+// NotOwnerError reports the node that owns a service. It matches ErrNotOwner.
+type NotOwnerError struct{ Owner string }
+
+func (e *NotOwnerError) Error() string        { return "storage: service belongs to node " + e.Owner }
+func (e *NotOwnerError) Is(target error) bool { return target == ErrNotOwner }
 
 const MaxReplicatedServices = 100_000
+
+// MaxTTLSeconds bounds heartbeat TTLs to one day.
+const MaxTTLSeconds = 86_400
 
 type Health string
 
@@ -36,6 +49,8 @@ const (
 
 // Service is a registered service instance. Revision is a per-instance
 // monotonic version used when replicas merge updates from gossip.
+// CheckedAt and HeartbeatAt are the owner's local bookkeeping; they are never
+// replicated or included in the registry digest.
 type Service struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
@@ -48,8 +63,10 @@ type Service struct {
 	Health      Health    `json:"health"`
 	Revision    uint64    `json:"revision"`
 	Deleted     bool      `json:"deleted,omitempty"`
+	TTLSeconds  int64     `json:"ttl_seconds,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	CheckedAt   time.Time `json:"checked_at,omitzero"`
+	HeartbeatAt time.Time `json:"heartbeat_at,omitzero"`
 }
 
 func (service Service) Validate() error {
@@ -81,6 +98,12 @@ func (service Service) Validate() error {
 	if service.Health != HealthUnknown && service.Health != HealthHealthy && service.Health != HealthUnhealthy {
 		return fmt.Errorf("storage: invalid health %q", service.Health)
 	}
+	if service.TTLSeconds < 0 || service.TTLSeconds > MaxTTLSeconds {
+		return errors.New("storage: TTL must be between 1 second and 1 day")
+	}
+	if service.TTLSeconds > 0 && service.HealthCheck != "" {
+		return errors.New("storage: a service uses either an HTTP health check or a TTL heartbeat, not both")
+	}
 	if len(service.HealthCheck) > 2048 {
 		return errors.New("storage: health-check URL is too long")
 	}
@@ -93,10 +116,15 @@ func (service Service) Validate() error {
 	return nil
 }
 
+// Filter selects active services. Every set field must match, and a service
+// must carry every listed tag.
 type Filter struct {
-	Name   string
-	Region string
-	Health Health
+	Name    string
+	Region  string
+	Health  Health
+	Version string
+	NodeID  string
+	Tags    []string
 }
 
 // Store persists service records in SQLite. One connection serializes local
@@ -107,6 +135,24 @@ type Store struct {
 	mu          sync.Mutex
 	sampleMu    sync.Mutex
 	sampleAfter string
+
+	listenersMu sync.RWMutex
+	listeners   []func(Change)
+}
+
+// Change describes one committed write. Before is nil for a new record.
+type Change struct {
+	Before *Service
+	After  Service
+}
+
+// OnChange registers fn for every committed write, including replicated
+// merges. fn runs while the store's write lock is held, so it must not block
+// or call back into the store.
+func (s *Store) OnChange(fn func(Change)) {
+	s.listenersMu.Lock()
+	s.listeners = append(s.listeners, fn)
+	s.listenersMu.Unlock()
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -149,18 +195,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) migrate(ctx context.Context) error {
-	var version int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return fmt.Errorf("storage: read SQLite schema version: %w", err)
-	}
-	if version > 1 {
-		return fmt.Errorf("storage: database schema version %d is newer than supported version 1", version)
-	}
-	if version == 1 {
-		return nil
-	}
-	const schema = `
+const schemaVersion = 2
+
+// migrations[n] upgrades a database from schema version n-1 to n.
+var migrations = [...]string{
+	1: `
 CREATE TABLE IF NOT EXISTS services (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -177,16 +216,40 @@ CREATE TABLE IF NOT EXISTS services (
   checked_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS services_lookup ON services(name, region, health, deleted);
-`
+`,
+	2: `
+ALTER TABLE services ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN heartbeat_at INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS services_owner ON services(node_id, deleted);
+`,
+}
+
+func (s *Store) migrate(ctx context.Context) error {
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("storage: read SQLite schema version: %w", err)
+	}
+	if version > schemaVersion {
+		return fmt.Errorf("storage: database schema version %d is newer than supported version %d", version, schemaVersion)
+	}
+	for next := version + 1; next <= schemaVersion; next++ {
+		if err := s.migrateTo(ctx, next); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateTo(ctx context.Context, version int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storage: start SQLite migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("storage: migrate SQLite schema: %w", err)
+	if _, err := tx.ExecContext(ctx, migrations[version]); err != nil {
+		return fmt.Errorf("storage: migrate SQLite schema to version %d: %w", version, err)
 	}
-	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
 		return fmt.Errorf("storage: set SQLite schema version: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -197,37 +260,123 @@ CREATE INDEX IF NOT EXISTS services_lookup ON services(name, region, health, del
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Outcome reports what Upsert or Update did.
+type Outcome int
+
+const (
+	Created Outcome = iota + 1
+	Updated
+	Unchanged
+)
+
 // Register creates a service instance or advances its revision when the same
 // instance ID is registered again by its owning node.
 func (s *Store) Register(ctx context.Context, service Service) (Service, error) {
+	stored, _, err := s.Upsert(ctx, service)
+	return stored, err
+}
+
+// Upsert registers service under its ID. Re-registering identical content is
+// a no-op, which makes client retries safe. Changing the address, health check
+// or TTL resets health to the supplied value; other edits keep the observed
+// health. Any node may reuse the ID of a deleted service.
+func (s *Store) Upsert(ctx context.Context, service Service) (Service, Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if service.Health == "" {
 		service.Health = HealthUnknown
 	}
 	if service.Health != HealthUnknown && service.Health != HealthHealthy && service.Health != HealthUnhealthy {
-		return Service{}, fmt.Errorf("storage: invalid health %q", service.Health)
+		return Service{}, 0, fmt.Errorf("storage: invalid health %q", service.Health)
 	}
 	current, err := scanService(s.db.QueryRowContext(ctx, serviceSelect+` WHERE id = ?`, service.ID))
+	var before *Service
+	outcome := Created
 	switch {
 	case err == nil:
-		if current.NodeID != service.NodeID {
-			return Service{}, errors.New("storage: service belongs to another node")
+		before = &current
+		if !current.Deleted {
+			if current.NodeID != service.NodeID {
+				return Service{}, 0, &NotOwnerError{Owner: current.NodeID}
+			}
+			if sameSpec(current, service) {
+				return current, Unchanged, nil
+			}
+			outcome = Updated
+			if !resetsHealth(current, service) {
+				service.Health, service.CheckedAt = current.Health, current.CheckedAt
+			}
 		}
 		service.Revision = current.Revision + 1
 	case errors.Is(err, sql.ErrNoRows):
 		service.Revision = 1
 	default:
-		return Service{}, err
+		return Service{}, 0, err
 	}
+	now := time.Now().UTC()
 	service.Deleted = false
-	service.UpdatedAt = time.Now().UTC()
-	if err := service.Validate(); err != nil {
-		return Service{}, err
+	service.UpdatedAt = now
+	if service.TTLSeconds > 0 {
+		service.HeartbeatAt = now
 	}
-	return s.put(ctx, service)
+	if err := service.Validate(); err != nil {
+		return Service{}, 0, err
+	}
+	stored, err := s.write(ctx, before, service)
+	return stored, outcome, err
 }
 
+// Update applies fn to a copy of the active service owned by nodeID and stores
+// the result. A non-zero ifRevision must equal the stored revision.
+func (s *Store) Update(ctx context.Context, id, nodeID string, ifRevision uint64, fn func(*Service) error) (Service, Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return Service{}, 0, err
+	}
+	if current.NodeID != nodeID {
+		return Service{}, 0, &NotOwnerError{Owner: current.NodeID}
+	}
+	if ifRevision != 0 && current.Revision != ifRevision {
+		return Service{}, 0, ErrRevisionMismatch
+	}
+	next := current
+	next.Tags = slices.Clone(current.Tags)
+	if err := fn(&next); err != nil {
+		return Service{}, 0, err
+	}
+	next.ID, next.NodeID, next.Region = current.ID, current.NodeID, current.Region
+	if sameSpec(current, next) {
+		return current, Unchanged, nil
+	}
+	now := time.Now().UTC()
+	if resetsHealth(current, next) {
+		next.Health, next.CheckedAt = HealthUnknown, time.Time{}
+		if next.TTLSeconds > 0 {
+			next.HeartbeatAt = now
+		}
+	}
+	next.Revision = current.Revision + 1
+	next.UpdatedAt = now
+	if err := next.Validate(); err != nil {
+		return Service{}, 0, err
+	}
+	stored, err := s.write(ctx, &current, next)
+	return stored, Updated, err
+}
+
+// sameSpec compares the client-supplied part of two registrations.
+func sameSpec(a, b Service) bool {
+	return a.Name == b.Name && a.Address == b.Address && a.Region == b.Region && a.Version == b.Version &&
+		slices.Equal(a.Tags, b.Tags) && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds
+}
+
+func resetsHealth(before, after Service) bool {
+	return before.Address != after.Address || before.HealthCheck != after.HealthCheck || before.TTLSeconds != after.TTLSeconds
+}
+
+// Delete tombstones a service owned by nodeID.
 func (s *Store) Delete(ctx context.Context, id, nodeID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,13 +385,19 @@ func (s *Store) Delete(ctx context.Context, id, nodeID string) error {
 		return err
 	}
 	if service.NodeID != nodeID {
-		return errors.New("storage: service belongs to another node")
+		return &NotOwnerError{Owner: service.NodeID}
 	}
+	_, err = s.tombstone(ctx, service)
+	return err
+}
+
+// tombstone marks service deleted with a higher revision. Callers hold s.mu.
+func (s *Store) tombstone(ctx context.Context, service Service) (Service, error) {
+	before := service
 	service.Revision++
 	service.Deleted = true
 	service.UpdatedAt = time.Now().UTC()
-	_, err = s.put(ctx, service)
-	return err
+	return s.write(ctx, &before, service)
 }
 
 func (s *Store) SetHealth(ctx context.Context, id, nodeID string, health Health, checkedAt time.Time) error {
@@ -256,16 +411,17 @@ func (s *Store) SetHealth(ctx context.Context, id, nodeID string, health Health,
 		return err
 	}
 	if service.NodeID != nodeID || service.Deleted {
-		return errors.New("storage: service is not owned by this node")
+		return &NotOwnerError{Owner: service.NodeID}
 	}
 	if service.Health == health {
 		return s.updateCheckedAt(ctx, id, checkedAt)
 	}
+	before := service
 	service.Health = health
 	service.Revision++
 	service.UpdatedAt = checkedAt.UTC()
 	service.CheckedAt = checkedAt.UTC()
-	_, err = s.put(ctx, service)
+	_, err = s.write(ctx, &before, service)
 	return err
 }
 
@@ -278,21 +434,30 @@ func (s *Store) Get(ctx context.Context, id string) (Service, error) {
 }
 
 func (s *Store) List(ctx context.Context, filter Filter) ([]Service, error) {
+	query, args := filterQuery(filter)
+	return s.query(ctx, query+` ORDER BY name, region, node_id, id`, args...)
+}
+
+func filterQuery(filter Filter) (string, []any) {
 	query := serviceSelect + ` WHERE deleted = 0`
-	args := make([]any, 0, 3)
-	if filter.Name != "" {
-		query += ` AND name = ?`
-		args = append(args, filter.Name)
+	args := make([]any, 0, 5+len(filter.Tags))
+	for _, field := range []struct{ column, value string }{
+		{"name", filter.Name}, {"region", filter.Region}, {"health", string(filter.Health)},
+		{"version", filter.Version}, {"node_id", filter.NodeID},
+	} {
+		if field.value != "" {
+			query += ` AND ` + field.column + ` = ?`
+			args = append(args, field.value)
+		}
 	}
-	if filter.Region != "" {
-		query += ` AND region = ?`
-		args = append(args, filter.Region)
+	for _, tag := range filter.Tags {
+		query += ` AND EXISTS (SELECT 1 FROM json_each(services.tags) WHERE json_each.value = ?)`
+		args = append(args, tag)
 	}
-	if filter.Health != "" {
-		query += ` AND health = ?`
-		args = append(args, string(filter.Health))
-	}
-	query += ` ORDER BY name, region, node_id, id`
+	return query, args
+}
+
+func (s *Store) query(ctx context.Context, query string, args ...any) ([]Service, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -311,20 +476,7 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Service, error) {
 
 // Owned returns active registrations owned by nodeID that have HTTP checks.
 func (s *Store) Owned(ctx context.Context, nodeID string) ([]Service, error) {
-	rows, err := s.db.QueryContext(ctx, serviceSelect+` WHERE node_id = ? AND deleted = 0 AND health_check <> '' ORDER BY id`, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	services := make([]Service, 0)
-	for rows.Next() {
-		service, err := scanService(rows)
-		if err != nil {
-			return nil, err
-		}
-		services = append(services, service)
-	}
-	return services, rows.Err()
+	return s.query(ctx, serviceSelect+` WHERE node_id = ? AND deleted = 0 AND health_check <> '' ORDER BY id`, nodeID)
 }
 
 // Snapshot returns a rotating page of records and deletion tombstones for
@@ -372,7 +524,7 @@ func (s *Store) RegistryDigest(ctx context.Context) ([sha256.Size]byte, error) {
 		if count >= MaxReplicatedServices {
 			return digest, ErrRegistryTooLarge
 		}
-		service.CheckedAt = time.Time{}
+		service.CheckedAt, service.HeartbeatAt = time.Time{}, time.Time{}
 		encoded, err := json.Marshal(service)
 		if err != nil {
 			return digest, err
@@ -410,7 +562,7 @@ func (s *Store) ReplicationSnapshot(ctx context.Context) ([]Service, error) {
 		if err != nil {
 			return nil, err
 		}
-		service.CheckedAt = time.Time{}
+		service.CheckedAt, service.HeartbeatAt = time.Time{}, time.Time{}
 		services = append(services, service)
 		if len(services) > MaxReplicatedServices {
 			return nil, ErrRegistryTooLarge
@@ -431,7 +583,7 @@ func (s *Store) snapshotPage(ctx context.Context, suffix string, cursor string, 
 		if err != nil {
 			return nil, err
 		}
-		service.CheckedAt = time.Time{}
+		service.CheckedAt, service.HeartbeatAt = time.Time{}, time.Time{}
 		services = append(services, service)
 	}
 	return services, rows.Err()
@@ -453,7 +605,7 @@ func (s *Store) Merge(ctx context.Context, incoming Service) error {
 		}
 		incoming.UpdatedAt = time.Unix(0, int64(incoming.Revision)).UTC()
 	}
-	incoming.CheckedAt = time.Time{}
+	incoming.CheckedAt, incoming.HeartbeatAt = time.Time{}, time.Time{}
 	if err := incoming.Validate(); err != nil {
 		return err
 	}
@@ -461,10 +613,14 @@ func (s *Store) Merge(ctx context.Context, incoming Service) error {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err == nil && !wins(incoming, current) {
-		return nil
+	var before *Service
+	if err == nil {
+		if !wins(incoming, current) {
+			return nil
+		}
+		before = &current
 	}
-	_, err = s.put(ctx, incoming)
+	_, err = s.write(ctx, before, incoming)
 	return err
 }
 
@@ -488,8 +644,22 @@ func wins(incoming, current Service) bool {
 
 func canonicalReplicatedService(service Service) Service {
 	service.UpdatedAt = service.UpdatedAt.UTC().Round(0)
-	service.CheckedAt = time.Time{}
+	service.CheckedAt, service.HeartbeatAt = time.Time{}, time.Time{}
 	return service
+}
+
+// write persists service and notifies change listeners. Callers hold s.mu.
+func (s *Store) write(ctx context.Context, before *Service, service Service) (Service, error) {
+	stored, err := s.put(ctx, service)
+	if err != nil {
+		return Service{}, err
+	}
+	s.listenersMu.RLock()
+	for _, listener := range s.listeners {
+		listener(Change{Before: before, After: stored})
+	}
+	s.listenersMu.RUnlock()
+	return stored, nil
 }
 
 func (s *Store) put(ctx context.Context, service Service) (Service, error) {
@@ -505,15 +675,17 @@ func (s *Store) put(ctx context.Context, service Service) (Service, error) {
 		deleted = 1
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
  name=excluded.name,node_id=excluded.node_id,address=excluded.address,region=excluded.region,
  version=excluded.version,tags=excluded.tags,health_check=excluded.health_check,health=excluded.health,
- revision=excluded.revision,deleted=excluded.deleted,updated_at=excluded.updated_at,checked_at=excluded.checked_at`,
+ revision=excluded.revision,deleted=excluded.deleted,updated_at=excluded.updated_at,checked_at=excluded.checked_at,
+ ttl_seconds=excluded.ttl_seconds,
+ heartbeat_at=CASE WHEN excluded.heartbeat_at = 0 THEN services.heartbeat_at ELSE excluded.heartbeat_at END`,
 		service.ID, service.Name, service.NodeID, service.Address, service.Region, service.Version,
 		string(tags), service.HealthCheck, service.Health, service.Revision, deleted,
-		service.UpdatedAt.UnixNano(), timeNanos(service.CheckedAt))
+		service.UpdatedAt.UnixNano(), timeNanos(service.CheckedAt), service.TTLSeconds, timeNanos(service.HeartbeatAt))
 	if err != nil {
 		return Service{}, fmt.Errorf("storage: save service: %w", err)
 	}
@@ -525,7 +697,7 @@ func (s *Store) updateCheckedAt(ctx context.Context, id string, at time.Time) er
 	return err
 }
 
-const serviceSelect = `SELECT id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at FROM services`
+const serviceSelect = `SELECT id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at FROM services`
 
 type scanner interface{ Scan(...any) error }
 
@@ -533,10 +705,10 @@ func scanService(row scanner) (Service, error) {
 	var service Service
 	var tags string
 	var deleted int
-	var updatedAt, checkedAt int64
+	var updatedAt, checkedAt, heartbeatAt int64
 	if err := row.Scan(&service.ID, &service.Name, &service.NodeID, &service.Address, &service.Region,
 		&service.Version, &tags, &service.HealthCheck, &service.Health, &service.Revision,
-		&deleted, &updatedAt, &checkedAt); err != nil {
+		&deleted, &updatedAt, &checkedAt, &service.TTLSeconds, &heartbeatAt); err != nil {
 		return Service{}, err
 	}
 	if err := json.Unmarshal([]byte(tags), &service.Tags); err != nil {
@@ -546,6 +718,9 @@ func scanService(row scanner) (Service, error) {
 	service.UpdatedAt = time.Unix(0, updatedAt).UTC()
 	if checkedAt != 0 {
 		service.CheckedAt = time.Unix(0, checkedAt).UTC()
+	}
+	if heartbeatAt != 0 {
+		service.HeartbeatAt = time.Unix(0, heartbeatAt).UTC()
 	}
 	return service, nil
 }

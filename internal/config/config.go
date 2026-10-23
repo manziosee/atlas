@@ -90,6 +90,9 @@ type Config struct {
 	TrustedProxies      []*net.IPNet
 	HealthCheckInterval time.Duration
 	HealthCheckTimeout  time.Duration
+	// OrphanServiceReap deletes services whose owning node has been absent
+	// from the live member list this long. Zero disables the reaper.
+	OrphanServiceReap time.Duration
 
 	// Logging
 	LogLevel  string
@@ -163,6 +166,7 @@ func Load(lookup LookupFunc) (*Config, error) {
 		RateLimitBurst:      p.int("ATLAS_RATE_LIMIT_BURST", 40),
 		HealthCheckInterval: p.duration("ATLAS_HEALTH_CHECK_INTERVAL", 5*time.Second),
 		HealthCheckTimeout:  p.duration("ATLAS_HEALTH_CHECK_TIMEOUT", time.Second),
+		OrphanServiceReap:   p.duration("ATLAS_ORPHAN_SERVICE_REAP", 10*time.Minute),
 
 		LogLevel:  p.str("ATLAS_LOG_LEVEL", "info"),
 		LogFormat: p.str("ATLAS_LOG_FORMAT", "json"),
@@ -200,7 +204,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_HTTP_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
 	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
-	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
+	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
 }
 
 func readConfigFile(path string) (map[string]string, error) {
@@ -282,6 +286,9 @@ func (c *Config) Validate() error {
 	}
 	if c.DNSTTL < time.Second || c.DNSTTL > time.Hour {
 		add("ATLAS_DNS_TTL must be between 1s and 1h")
+	}
+	if c.OrphanServiceReap != 0 && c.OrphanServiceReap < time.Minute {
+		add("ATLAS_ORPHAN_SERVICE_REAP must be 0 (disabled) or at least 1m, so restarting nodes keep their services")
 	}
 	if host, port, err := net.SplitHostPort(c.PprofAddr); err != nil {
 		add("ATLAS_PPROF_ADDR: invalid host:port %q", c.PprofAddr)

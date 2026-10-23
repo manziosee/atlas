@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/manziosee/atlas/internal/events"
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/storage"
@@ -24,15 +25,6 @@ func (fakeCluster) LocalNode() membership.Member {
 	return membership.Member{ID: "n1", Addr: "10.0.0.1:7946", State: membership.StateAlive}
 }
 func (f fakeCluster) Members() []membership.Member { return []membership.Member{f.LocalNode()} }
-
-type fakeEventCluster struct {
-	fakeCluster
-	events chan membership.Event
-}
-
-func (f *fakeEventCluster) Subscribe(_ int) (<-chan membership.Event, func()) {
-	return f.events, func() {}
-}
 
 var token = strings.Repeat("x", 40)
 
@@ -192,10 +184,10 @@ func TestServiceRegistrationValidatesInput(t *testing.T) {
 }
 
 func TestMembershipEventStream(t *testing.T) {
-	events := make(chan membership.Event, 1)
-	cluster := &fakeEventCluster{events: events}
+	broker := events.NewBroker(16)
 	h := NewHandler(Deps{
-		Cluster:     cluster,
+		Cluster:     fakeCluster{},
+		Events:      broker,
 		Auth:        security.NewTokenAuthenticator([]string{token}),
 		RateLimiter: security.NewRateLimiter(1000, 1000),
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -217,7 +209,7 @@ func TestMembershipEventStream(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream; charset=utf-8" {
 		t.Fatalf("event stream response = %d, Content-Type %q", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
-	events <- membership.Event{Type: membership.EventJoin, Member: membership.Member{ID: "streamed"}}
+	broker.Publish(events.FromMember(membership.Event{Type: membership.EventJoin, Member: membership.Member{ID: "streamed"}}))
 	scanner := bufio.NewScanner(resp.Body)
 	found := false
 	deadline := time.After(time.Second)

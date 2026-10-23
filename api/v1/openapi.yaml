@@ -1,124 +1,415 @@
 openapi: 3.1.0
 info:
   title: Atlas Node API
-  version: 1.0.0
-  description: Authenticated HTTP API for membership and the replicated service registry.
+  version: 1.1.0
+  description: >-
+    Authenticated HTTP API for cluster membership and the replicated service
+    registry. Every node serves the same API. Writes are owned by the node
+    that registered a service; reads may go to any node. On Fly.io, a request
+    that must reach the owner is replayed there automatically.
+
+
+    Every error response uses the Error schema. Branch on `code`, which is
+    stable; `error` is a human-readable message.
 servers:
+  - url: https://atlas-edge.fly.dev
+    description: Public demo cluster
   - url: http://127.0.0.1:8080
+    description: Local node
 security:
   - bearerAuth: []
+tags:
+  - name: health
+  - name: cluster
+  - name: registry
+  - name: events
+  - name: admin
 paths:
   /healthz:
     get:
+      tags: [health]
       security: []
       summary: Check process liveness
       responses:
-        '200':
-          description: The node is running.
+        '200': { description: The node is running. }
   /readyz:
     get:
+      tags: [health]
       security: []
       summary: Check node readiness
       responses:
-        '200':
-          description: The node is ready.
-        '503':
-          description: The node is not ready.
+        '200': { description: The node is ready. }
+        '503': { description: The node is not ready. }
   /v1/node:
     get:
+      tags: [cluster]
       summary: Get this node's identity and version
       responses:
         '200':
           description: Node details.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: '#/components/schemas/Member' }
+                  version: { type: string }
+                  commit: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
   /v1/members:
     get:
+      tags: [cluster]
       summary: List members known to this node
       responses:
         '200':
           description: Current local membership view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  members: { type: array, items: { $ref: '#/components/schemas/Member' } }
+        '401': { $ref: '#/components/responses/Error' }
   /v1/services:
     get:
-      summary: Find registered service instances
+      tags: [registry]
+      summary: List registered service instances, one page at a time
+      description: >-
+        Results are ordered by name, region, node and ID. Follow `next_cursor`
+        until it is absent to read every match.
       parameters:
-        - { in: query, name: name, schema: { type: string } }
-        - { in: query, name: region, schema: { type: string } }
-        - { in: query, name: health, schema: { type: string, enum: [unknown, healthy, unhealthy] } }
+        - { in: query, name: name, schema: { type: string, maxLength: 128 } }
+        - { in: query, name: region, schema: { type: string, maxLength: 128 } }
+        - { in: query, name: health, schema: { $ref: '#/components/schemas/Health' } }
+        - { in: query, name: version, schema: { type: string, maxLength: 128 } }
+        - { in: query, name: node_id, description: Owning node, schema: { type: string, maxLength: 128 } }
+        - in: query
+          name: tag
+          description: Required tag. Repeat for several; a service must carry all of them.
+          style: form
+          explode: true
+          schema: { type: array, maxItems: 16, items: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+        - { in: query, name: cursor, description: next_cursor from the previous page, schema: { type: string } }
       responses:
         '200':
-          description: Matching active instances.
+          description: One page of matching active instances.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, services]
+                properties:
+                  count: { type: integer, description: Instances in this page }
+                  services: { type: array, items: { $ref: '#/components/schemas/Service' } }
+                  next_cursor: { type: string, description: Present when more pages exist }
+        '400': { $ref: '#/components/responses/Error' }
     post:
+      tags: [registry]
       summary: Register a service instance on this node
+      description: >-
+        Registration is idempotent when the request carries an `id` or an
+        `Idempotency-Key` header: repeating it returns the existing record
+        (200) instead of creating a duplicate, and changed content updates it.
+        If the ID belongs to a node that has left the cluster, this node adopts it.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          description: Derives a stable ID per credential. Do not combine with a different `id`.
+          schema: { type: string, maxLength: 256 }
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterService'
+            schema: { $ref: '#/components/schemas/ServiceSpec' }
       responses:
-        '201':
-          description: The created instance.
-        '400':
-          description: Invalid request.
+        '201': { $ref: '#/components/responses/Created' }
+        '200': { $ref: '#/components/responses/Service' }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/services/{id}:
     parameters:
       - { in: path, name: id, required: true, schema: { type: string } }
     get:
+      tags: [registry]
       summary: Get a service instance
       responses:
-        '200':
-          description: The requested instance.
-        '404':
-          description: Instance not found.
-    delete:
-      summary: Delete an instance owned by this node
+        '200': { $ref: '#/components/responses/Service' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      tags: [registry]
+      summary: Create or fully replace a service with this ID
+      description: Without If-Match this is an idempotent create-or-replace. With If-Match the service must exist at that revision.
+      parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceSpec' }
       responses:
-        '204':
-          description: Instance deleted.
-        '404':
-          description: Instance not found.
-        '409':
-          description: The instance belongs to another node.
+        '201': { $ref: '#/components/responses/Created' }
+        '200': { $ref: '#/components/responses/Service' }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '412': { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [registry]
+      summary: Change some fields of a service owned by this node
+      description: Changing address, health_check or ttl_seconds resets health to unknown; other edits keep it.
+      parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServicePatch' }
+      responses:
+        '200': { $ref: '#/components/responses/Service' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '412': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [registry]
+      summary: Deregister a service
+      description: >-
+        The owning node always accepts this. Any other node accepts it when the
+        owner has left the cluster, or when the credential has the admin scope;
+        otherwise the response is 409 owner_alive with `owner_node`.
+      responses:
+        '204': { description: Service deleted. }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/services/{id}/heartbeat:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      tags: [registry]
+      summary: Refresh a TTL service and mark it healthy
+      description: >-
+        Send heartbeats more often than ttl_seconds, for example every third of it.
+        One missed TTL period marks the service unhealthy; three remove it, after
+        which this returns 404 and the client should register again.
+      responses:
+        '200': { $ref: '#/components/responses/Service' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /v1/lookup/{name}:
     get:
-      summary: Select a healthy service instance
+      tags: [registry]
+      summary: Select one healthy service instance
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
         - { in: query, name: region, schema: { type: string, maxLength: 64 } }
         - { in: query, name: key, description: Stable consistent-hash key, schema: { type: string, maxLength: 256 } }
+        - { in: query, name: tag, style: form, explode: true, schema: { type: array, items: { type: string } } }
       responses:
-        '200':
-          description: Selected instance.
-        '503':
-          description: No eligible instance is available.
+        '200': { $ref: '#/components/responses/Service' }
+        '503': { $ref: '#/components/responses/Error' }
   /v1/events:
     get:
-      summary: Stream membership events
+      tags: [events]
+      summary: Stream membership and registry events
+      description: >-
+        Server-Sent Events. Each event has an `id:` line; reconnect with the
+        Last-Event-ID header (or `last_event_id` query parameter) to receive
+        what was missed. An `event: reset` frame means the gap could not be
+        replayed and the client should re-read current state. Event types:
+        join, update, reap, service.registered, service.updated,
+        service.health, service.deregistered.
+      parameters:
+        - { in: query, name: kinds, description: 'Comma-separated: member, service', schema: { type: string } }
+        - { in: query, name: service, description: Only service events for this name, schema: { type: string } }
+        - { in: query, name: last_event_id, schema: { type: string } }
+        - { in: header, name: Last-Event-ID, schema: { type: string } }
       responses:
         '200':
-          description: Server-Sent Events stream.
+          description: Event stream. The data line of each frame is an Event.
           content:
             text/event-stream:
+              schema: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/admin/credentials:
+    get:
+      tags: [admin]
+      summary: List configured API credentials without secrets
+      responses:
+        '200':
+          description: Credentials by fingerprint. `id` matches token_id in access logs.
+          content:
+            application/json:
               schema:
-                type: string
+                type: object
+                properties:
+                  count: { type: integer }
+                  credentials:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        scopes: { type: array, items: { type: string, enum: [read, write, admin] } }
+                        expires_at: { type: string, format: date-time }
+                        source: { type: string, enum: [static, scoped] }
+                        expired: { type: boolean }
+                        current: { type: boolean, description: True for the credential making this request }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/backup:
+    post:
+      tags: [admin]
+      summary: Download a consistent SQLite snapshot of this node's registry
+      responses:
+        '200':
+          description: SQLite database file. Restore it with `atlas-cli db-restore`.
+          content:
+            application/vnd.sqlite3:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/nodes/{id}:
+    delete:
+      tags: [admin]
+      summary: Evict a failed node and delete its services
+      description: Only nodes that are not alive can be evicted; a live node would rejoin immediately.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Node evicted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node_id: { type: string }
+                  services_removed: { type: integer }
+                  member: { $ref: '#/components/schemas/Member' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       description: >-
-        Use a credential with read scope for reads, write scope for registry
-        changes, or admin scope for both. Expired credentials receive 401 and
-        credentials missing the required scope receive 403.
+        Reads need the read scope, registry changes the write scope, and
+        /v1/admin routes the admin scope. Admin credentials hold every scope.
+        Missing or expired credentials receive 401 unauthorized; credentials
+        without the required scope receive 403 insufficient_scope.
+  parameters:
+    IfMatch:
+      in: header
+      name: If-Match
+      description: The ETag (revision) the change is based on, for example "3".
+      schema: { type: string }
+  responses:
+    Service:
+      description: The service instance. The ETag header carries its revision.
+      headers:
+        ETag: { schema: { type: string } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Service' }
+    Created:
+      description: The created service instance.
+      headers:
+        ETag: { schema: { type: string } }
+        Location: { schema: { type: string } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Service' }
+    Error:
+      description: An error. See Error.code.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
   schemas:
-    RegisterService:
+    Health:
+      type: string
+      enum: [unknown, healthy, unhealthy]
+    ServiceSpec:
       type: object
       required: [name, address]
+      additionalProperties: false
       properties:
-        name: { type: string, maxLength: 128 }
-        address: { type: string, description: Host and port, for example 10.0.0.8:8080 }
+        id: { type: string, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$', description: Optional stable ID; random when omitted }
+        name: { type: string, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$' }
+        address: { type: string, description: 'Host and port, for example 10.0.0.8:8080' }
         version: { type: string, maxLength: 128 }
-        tags:
-          type: array
-          maxItems: 16
-          items: { type: string, maxLength: 64 }
-        health_check: { type: string, format: uri }
+        tags: { type: array, maxItems: 16, items: { type: string, maxLength: 64 } }
+        health_check: { type: string, format: uri, description: HTTP(S) URL on the service address. Not with ttl_seconds. }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400, description: Heartbeat TTL. Not with health_check. }
+    ServicePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        address: { type: string }
+        version: { type: string }
+        tags: { type: array, items: { type: string } }
+        health_check: { type: string }
+        ttl_seconds: { type: integer }
+    Service:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        node_id: { type: string, description: Owning node }
+        address: { type: string }
+        region: { type: string }
+        version: { type: string }
+        tags: { type: array, items: { type: string } }
+        health_check: { type: string }
+        health: { $ref: '#/components/schemas/Health' }
+        revision: { type: integer, description: Increases on every change; use with If-Match }
+        ttl_seconds: { type: integer }
+        updated_at: { type: string, format: date-time }
+        checked_at: { type: string, format: date-time, description: Last health check (owner node only) }
+        heartbeat_at: { type: string, format: date-time, description: Last heartbeat (owner node only) }
+    Member:
+      type: object
+      properties:
+        id: { type: string }
+        addr: { type: string }
+        region: { type: string }
+        state: { type: string, enum: [alive, suspect, dead, left] }
+        incarnation: { type: integer }
+        since: { type: string, format: date-time }
+    Event:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        kind: { type: string, enum: [member, service] }
+        at: { type: string, format: date-time }
+        member: { $ref: '#/components/schemas/Member' }
+        service: { $ref: '#/components/schemas/Service' }
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string, description: Human-readable message }
+        code:
+          type: string
+          description: Stable machine-readable code.
+          enum:
+            - invalid_json
+            - validation_failed
+            - unauthorized
+            - insufficient_scope
+            - not_found
+            - route_not_found
+            - method_not_allowed
+            - not_owner
+            - owner_alive
+            - member_alive
+            - precondition_failed
+            - no_ttl
+            - rate_limited
+            - payload_too_large
+            - no_healthy_instance
+            - unavailable
+            - internal
+        request_id: { type: string, description: Matches request_id in the node's access log }
+        owner_node: { type: string, description: For not_owner and owner_alive, the node that owns the service }

@@ -31,6 +31,14 @@ cover: ## Run tests with coverage report
 bench-scale: ## Measure membership convergence at 100, 500, and 1000 in-process nodes
 	go test -run '^$$' -bench '^BenchmarkClusterConvergence$$' -benchtime=1x -timeout=15m ./internal/membership
 
+.PHONY: proto
+proto: ## Regenerate the typed gRPC SDK in api/v1 (needs buf, protoc-gen-go, protoc-gen-go-grpc)
+	buf generate
+
+.PHONY: test-python
+test-python: ## Run Python client tests (set ATLAS_TEST_ENDPOINT and ATLAS_TEST_TOKEN)
+	cd clients/python && python3 -m unittest discover -s tests -v
+
 .PHONY: lint
 lint: ## Run golangci-lint
 	golangci-lint run

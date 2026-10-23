@@ -208,6 +208,34 @@ func (m *Memberlist) Members() []Member {
 	return out
 }
 
+var (
+	ErrUnknownMember = errors.New("membership: unknown member")
+	ErrMemberAlive   = errors.New("membership: member is alive")
+	ErrEvictSelf     = errors.New("membership: a node cannot evict itself")
+)
+
+// Evict marks a failed or departed member as left so peers stop probing it
+// and it is reaped after ReapAfter. Alive members are refused: they would
+// refute the claim by raising their incarnation and rejoin immediately.
+func (m *Memberlist) Evict(id string) (Member, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id == m.self.ID {
+		return Member{}, ErrEvictSelf
+	}
+	mb, ok := m.members[id]
+	if !ok {
+		return Member{}, ErrUnknownMember
+	}
+	if mb.State == StateAlive {
+		return *mb, ErrMemberAlive
+	}
+	if mb.State != StateLeft {
+		m.setState(mb, StateLeft)
+	}
+	return *mb, nil
+}
+
 // Latency returns this node's EWMA observation of the peer's successful probe
 // round-trip time. A zero value means no successful probe has been recorded.
 func (m *Memberlist) Latency(id string) time.Duration {

@@ -37,12 +37,45 @@ jobs:
       - run: go mod verify
       - run: go test -race -shuffle=on -count=1 -coverprofile=coverage.out -covermode=atomic ./...
       - name: Enforce 60% statement coverage
+        # Generated protobuf code is excluded; it is tested through the API.
         run: |
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ { sub("%", "", $3); print $3 }')
+          grep -v '\.pb\.go:' coverage.out > coverage.handwritten.out
+          total=$(go tool cover -func=coverage.handwritten.out | awk '/^total:/ { sub("%", "", $3); print $3 }')
           awk -v total="$total" 'BEGIN { if (total < 60) exit 1 }'
           echo "Total statement coverage: ${total}% (minimum 60%)"
       - uses: actions/upload-artifact@v7
         with: { name: coverage, path: coverage.out }
+
+  python-client:
+    name: Python client against a live node
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - name: Start a single development node
+        run: |
+          go build -o "$RUNNER_TEMP/atlas-node" ./cmd/atlas-node
+          go build -o "$RUNNER_TEMP/atlas-cli" ./cmd/atlas-cli
+          token="$("$RUNNER_TEMP/atlas-cli" tokengen)"
+          echo "::add-mask::$token"
+          echo "ATLAS_TEST_TOKEN=$token" >> "$GITHUB_ENV"
+          ATLAS_GOSSIP_KEY="$("$RUNNER_TEMP/atlas-cli" keygen)" ATLAS_API_TOKENS="$token"             ATLAS_NODE_ID=ci-node ATLAS_DB_PATH="$RUNNER_TEMP/atlas.db" ATLAS_HTTP_ADDR=127.0.0.1:8080             ATLAS_GRPC_ADDR=127.0.0.1:8082 ATLAS_METRICS_ADDR=127.0.0.1:9090 ATLAS_GOSSIP_BIND_ADDR=127.0.0.1:7946             ATLAS_RATE_LIMIT_RPS=500 ATLAS_RATE_LIMIT_BURST=1000             nohup "$RUNNER_TEMP/atlas-node" > "$RUNNER_TEMP/node.log" 2>&1 &
+          deadline=$((SECONDS + 60))
+          until curl -fsS http://127.0.0.1:8080/readyz >/dev/null; do
+            if (( SECONDS >= deadline )); then cat "$RUNNER_TEMP/node.log"; exit 1; fi
+            sleep 1
+          done
+      - name: Run Python client tests
+        working-directory: clients/python
+        env:
+          ATLAS_TEST_ENDPOINT: http://127.0.0.1:8080
+        run: python3 -m unittest discover -s tests -v
+      - name: Node log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/node.log"
 
   scale:
     name: Membership scale simulation

@@ -18,7 +18,7 @@ func TestMessageCodecRoundTrip(t *testing.T) {
 		RegistryDigest: bytes.Repeat([]byte{0x5a}, 32), PushPullReply: true,
 		From:     Member{ID: "sender", Addr: "127.0.0.1:7946", Region: "af", State: StateAlive, Incarnation: 8},
 		Members:  []Member{{ID: "member", Addr: "127.0.0.1:7948", State: StateDead, Incarnation: 10}},
-		Services: []storage.Service{{ID: "svc-1", Name: "api", NodeID: "sender", Address: "127.0.0.1:8080", Region: "af", Version: "v2", Tags: []string{"blue", "public"}, HealthCheck: "http://127.0.0.1:8080/health", Health: storage.HealthUnhealthy, Revision: 11, Deleted: true, UpdatedAt: updated, CheckedAt: checked}},
+		Services: []storage.Service{{ID: "svc-1", Name: "api", NodeID: "sender", Address: "127.0.0.1:8080", Region: "af", Version: "v2", Tags: []string{"blue", "public"}, HealthCheck: "http://127.0.0.1:8080/health", Health: storage.HealthUnhealthy, Revision: 11, Deleted: true, TTLSeconds: 30, UpdatedAt: updated, CheckedAt: checked}},
 		Target:   &target, SentAt: 1_700_000_002_000,
 	}
 	wire, err := marshalMessage(want)
@@ -40,7 +40,7 @@ func TestMessageCodecRoundTrip(t *testing.T) {
 	}
 	gotService := got.Services[0]
 	wantService := want.Services[0]
-	if gotService.ID != wantService.ID || gotService.Name != wantService.Name || gotService.NodeID != wantService.NodeID || gotService.Address != wantService.Address || gotService.Region != wantService.Region || gotService.Version != wantService.Version || gotService.HealthCheck != wantService.HealthCheck || gotService.Health != wantService.Health || gotService.Revision != wantService.Revision || gotService.Deleted != wantService.Deleted || !gotService.UpdatedAt.Equal(updated) || !gotService.CheckedAt.Equal(checked) || len(gotService.Tags) != 2 || gotService.Tags[0] != "blue" || gotService.Tags[1] != "public" {
+	if gotService.ID != wantService.ID || gotService.Name != wantService.Name || gotService.NodeID != wantService.NodeID || gotService.Address != wantService.Address || gotService.Region != wantService.Region || gotService.Version != wantService.Version || gotService.HealthCheck != wantService.HealthCheck || gotService.Health != wantService.Health || gotService.Revision != wantService.Revision || gotService.Deleted != wantService.Deleted || gotService.TTLSeconds != 30 || !gotService.UpdatedAt.Equal(updated) || !gotService.CheckedAt.Equal(checked) || len(gotService.Tags) != 2 || gotService.Tags[0] != "blue" || gotService.Tags[1] != "public" {
 		t.Fatalf("service mismatch: got %#v", gotService)
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/manziosee/atlas/internal/httperr"
 )
 
 // RateLimiter applies a token bucket per client IP. Idle buckets are evicted
@@ -107,7 +109,7 @@ func (l *RateLimiter) Middleware(next http.Handler) http.Handler {
 		if !l.AllowClient(r.RemoteAddr, r.Header.Get("X-Forwarded-For")) {
 			retry := math.Ceil(1 / float64(l.currentLimit()))
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Max(retry, 1))))
-			http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+			httperr.Write(w, http.StatusTooManyRequests, httperr.CodeRateLimited, "rate limit exceeded")
 			return
 		}
 		next.ServeHTTP(w, r)
