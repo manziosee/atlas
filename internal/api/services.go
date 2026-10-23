@@ -188,7 +188,9 @@ func (d Deps) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		httperr.Write(w, http.StatusServiceUnavailable, httperr.CodeUnavailable, "service registry unavailable")
 	default:
 		if d.Log != nil {
-			d.Log.Error("registry operation failed", "err", err, "path", r.URL.Path)
+			// Log the route pattern, not the client-controlled path; the request ID
+			// links this entry to the access log line that has the full path.
+			d.Log.Error("registry operation failed", "err", err, "route", r.Pattern, "request_id", w.Header().Get("X-Request-Id"))
 		}
 		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "internal error")
 	}
