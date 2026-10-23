@@ -59,6 +59,12 @@ func (n *fakeNet) partition(addr string) {
 	n.mu.Unlock()
 }
 
+func (n *fakeNet) heal(addr string) {
+	n.mu.Lock()
+	delete(n.down, addr)
+	n.mu.Unlock()
+}
+
 func (n *fakeNet) block(from, to string) {
 	n.mu.Lock()
 	n.blocked[from+"->"+to] = true
@@ -562,4 +568,37 @@ func TestEvictOnlyRemovesFailedPeers(t *testing.T) {
 	if err != nil || evicted.State != StateLeft {
 		t.Fatalf("evict dead = %+v %v, want left", evicted, err)
 	}
+}
+
+// After a partition both sides mark each other dead and stop gossiping to
+// each other; only a seed pull across the healed link brings them back.
+func TestRejoinHealsPartitionAfterBothSidesDeclaredDead(t *testing.T) {
+	const size = 3
+	fn, nodes := startCluster(t, size)
+	isolated := nodes[size-1]
+	waitFor(t, 10*time.Second, func() bool { return countState(nodes[0], StateAlive) == size }, "cluster did not converge")
+
+	fn.partition(isolated.LocalNode().Addr)
+	waitFor(t, 10*time.Second, func() bool {
+		return countState(nodes[0], StateDead) == 1 && countState(isolated, StateDead) == size-1
+	}, "partition was not detected on both sides")
+
+	fn.heal(isolated.LocalNode().Addr)
+	time.Sleep(time.Second)
+	if countState(nodes[0], StateAlive) == size {
+		t.Fatal("cluster healed without a rejoin; the test no longer covers the stuck case")
+	}
+
+	ctx := context.Background()
+	if err := nodes[0].Rejoin(ctx, []string{isolated.LocalNode().Addr}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		for _, n := range nodes {
+			if countState(n, StateAlive) != size {
+				return false
+			}
+		}
+		return true
+	}, "cluster did not converge after rejoin")
 }

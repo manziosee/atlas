@@ -323,30 +323,54 @@ func advertiseAddr(cfg *config.Config) (string, error) {
 	return transport.AdvertiseAddr(cfg.GossipBindAddr)
 }
 
-// joinLoop keeps contacting seeds with exponential backoff until at least
-// one peer is known, so nodes may start in any order.
+// seedRefreshInterval is how often a connected node pulls state from one
+// seed, which heals partitions in which both sides still have live peers.
+const seedRefreshInterval = 30 * time.Second
+
+// maxJoinBackoff caps retries while a node has no live peer, so an isolated
+// node rejoins soon after its network returns.
+const maxJoinBackoff = 10 * time.Second
+
+// joinLoop contacts seeds for the life of the node. Without live peers it
+// joins every seed with exponential backoff, so nodes may start in any order
+// and an isolated node finds its way back. Once connected it periodically
+// pulls from one random seed: after a partition each side has marked the
+// other dead, and gossip alone never crosses back.
 func joinLoop(ctx context.Context, ml *membership.Memberlist, seeds []string, log *slog.Logger) {
 	if len(seeds) == 0 {
 		log.Info("no seeds configured; waiting for peers to join us")
 		return
 	}
 	backoff := 500 * time.Millisecond
+	connected := false
 	for {
+		wait := seedRefreshInterval
 		// A peer may have joined *us* (e.g. we are the only seed listed).
 		if hasLivePeer(ml.Members(), ml.LocalNode().ID) {
-			n := len(ml.Members())
-			log.Info("joined cluster", "members", n)
-			return
-		}
-		if _, err := ml.Join(ctx, seeds); err != nil {
-			log.Warn("join attempt failed", "err", err, "retry_in", backoff)
+			if !connected {
+				log.Info("joined cluster", "members", len(ml.Members()))
+				connected = true
+			}
+			backoff = 500 * time.Millisecond
+			if err := ml.Rejoin(ctx, seeds); err != nil {
+				log.Debug("seed refresh failed", "err", err)
+			}
+		} else {
+			if connected {
+				log.Warn("lost contact with every peer; contacting seeds")
+				connected = false
+			}
+			if _, err := ml.Join(ctx, seeds); err != nil {
+				log.Warn("join attempt failed", "err", err, "retry_in", backoff)
+			}
+			wait = backoff
+			backoff = min(backoff*2, maxJoinBackoff)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
-		backoff = min(backoff*2, 30*time.Second)
 	}
 }
 
