@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,13 +25,30 @@ import (
 	"github.com/manziosee/atlas/internal/storage"
 )
 
-// pairCluster is one node's view of a two-node cluster.
+// pairCluster is one node's view of a two-node cluster. HTTP handlers read
+// it on server goroutines while tests change the peer, so it is locked.
 type pairCluster struct {
+	mu         sync.Mutex
 	self, peer membership.Member
 }
 
-func (c *pairCluster) LocalNode() membership.Member { return c.self }
-func (c *pairCluster) Members() []membership.Member { return []membership.Member{c.self, c.peer} }
+func (c *pairCluster) LocalNode() membership.Member {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.self
+}
+
+func (c *pairCluster) Members() []membership.Member {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return []membership.Member{c.self, c.peer}
+}
+
+func (c *pairCluster) setPeerAPIAddr(addr string) {
+	c.mu.Lock()
+	c.peer.APIAddr = addr
+	c.mu.Unlock()
+}
 
 type node struct {
 	store   *storage.Store
@@ -168,13 +186,13 @@ func TestForwardingFallsBackWithoutLoops(t *testing.T) {
 	}
 
 	// An owner that is alive in gossip but not answering is reported as such.
-	n1.cluster.peer.APIAddr = "http://" + closedAddr(t)
+	n1.cluster.setPeerAPIAddr("http://" + closedAddr(t))
 	if resp, body := call(t, n1, http.MethodPatch, "/v1/services/cart-1", `{"version":"x"}`); resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, httperr.CodeOwnerUnreachable) {
 		t.Fatalf("unreachable owner = %d %s", resp.StatusCode, body)
 	}
 
 	// Without an API address (an older peer) the client sees not_owner.
-	n1.cluster.peer.APIAddr = ""
+	n1.cluster.setPeerAPIAddr("")
 	if resp, body := call(t, n1, http.MethodPatch, "/v1/services/cart-1", `{"version":"x"}`); resp.StatusCode != http.StatusConflict || !strings.Contains(body, `"owner_node":"n2"`) {
 		t.Fatalf("owner without API address = %d %s", resp.StatusCode, body)
 	}

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,9 +87,13 @@ func TestHealthCheckIntervalPerService(t *testing.T) {
 		}
 	}
 	checker := NewHealthChecker(store, "n", time.Second, time.Second)
+	// Probes run concurrently, so the fake guards its counters.
+	var mu sync.Mutex
 	probed := map[string]int{}
 	checker.probe = func(_ context.Context, check string) error {
+		mu.Lock()
 		probed[check]++
+		mu.Unlock()
 		return nil
 	}
 	start := time.Now()
