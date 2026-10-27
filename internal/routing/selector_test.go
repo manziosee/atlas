@@ -79,3 +79,21 @@ func TestSelectPrefersLowestObservedLatencyAfterRegion(t *testing.T) {
 		t.Fatalf("SelectWithLatency() = %+v, %v; want nearest local instance jnb-2", got, err)
 	}
 }
+
+func TestSelectSkipsDrainingInstances(t *testing.T) {
+	services := []storage.Service{
+		{ID: "a", Name: "api", Health: storage.HealthHealthy, Draining: true},
+		{ID: "b", Name: "api", Health: storage.HealthUnknown},
+	}
+	selector := NewSelector()
+	for range 10 {
+		got, err := selector.Select(services, "", "")
+		if err != nil || got.ID != "b" {
+			t.Fatalf("Select() = %+v %v, want the non-draining instance", got, err)
+		}
+	}
+	services[1].Draining = true
+	if _, err := selector.Select(services, "", ""); err == nil {
+		t.Fatal("Select() returned an instance although every instance is draining")
+	}
+}

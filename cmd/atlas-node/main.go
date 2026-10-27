@@ -81,6 +81,7 @@ func run() error {
 		NodeID:           cfg.NodeID,
 		Region:           cfg.Region,
 		AdvertiseAddr:    advertise,
+		APIAddr:          apiAdvertiseAddr(cfg, advertise),
 		ProbeInterval:    cfg.ProbeInterval,
 		ProbeTimeout:     cfg.ProbeTimeout,
 		SuspicionTimeout: cfg.SuspicionTimeout,
@@ -105,7 +106,9 @@ func run() error {
 	wg.Go(func() { ml.Run(ctx) })
 	wg.Go(func() { joinLoop(ctx, ml, cfg.Seeds, log) })
 	wg.Go(func() {
-		runHealthChecks(ctx, registry, cfg.NodeID, cfg.HealthCheckInterval, cfg.HealthCheckTimeout, log)
+		storage.NewHealthChecker(registry, cfg.NodeID, cfg.HealthCheckInterval, cfg.HealthCheckTimeout).Run(ctx, func(err error) {
+			log.Warn("service health checks failed", "err", err)
+		})
 	})
 	wg.Go(func() { expireTTLServices(ctx, registry, cfg.NodeID, log) })
 	wg.Go(func() { reapOrphanedServices(ctx, registry, ml, cfg.OrphanServiceReap, log) })
@@ -117,6 +120,10 @@ func run() error {
 		return fmt.Errorf("configure API credentials: %w", err)
 	}
 
+	forwarder, err := newForwarder(cfg)
+	if err != nil {
+		return fmt.Errorf("configure write forwarding: %w", err)
+	}
 	apiDeps := api.Deps{
 		Cluster:     ml,
 		Registry:    registry,
@@ -126,6 +133,7 @@ func run() error {
 		Ready:       func() bool { return ctx.Err() == nil },
 		Events:      broker,
 		Replay:      flyReplay(cfg.NodeID),
+		Forwarder:   forwarder,
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -281,7 +289,7 @@ func restartRequired(old, next *config.Config) bool {
 		old.GossipBindAddr != next.GossipBindAddr || old.GossipAdvertiseAddr != next.GossipAdvertiseAddr || !slices.Equal(old.Seeds, next.Seeds) ||
 		old.ProbeInterval != next.ProbeInterval || old.ProbeTimeout != next.ProbeTimeout || old.SuspicionTimeout != next.SuspicionTimeout ||
 		old.GossipInterval != next.GossipInterval || old.GossipFanout != next.GossipFanout || old.DeadNodeReap != next.DeadNodeReap ||
-		old.MaxClockSkew != next.MaxClockSkew || old.HTTPAddr != next.HTTPAddr || old.GRPCAddr != next.GRPCAddr ||
+		old.MaxClockSkew != next.MaxClockSkew || old.HTTPAddr != next.HTTPAddr || old.APIAdvertiseAddr != next.APIAdvertiseAddr || old.GRPCAddr != next.GRPCAddr ||
 		old.MetricsAddr != next.MetricsAddr || old.PprofAddr != next.PprofAddr || old.DNSAddr != next.DNSAddr || old.DNSZone != next.DNSZone || old.DNSTTL != next.DNSTTL ||
 		old.TLS != next.TLS || old.HealthCheckInterval != next.HealthCheckInterval ||
 		old.HealthCheckTimeout != next.HealthCheckTimeout || old.OrphanServiceReap != next.OrphanServiceReap || old.LogFormat != next.LogFormat
@@ -298,6 +306,43 @@ func serve(srv *http.Server, tls bool) error {
 		return nil
 	}
 	return err
+}
+
+// apiAdvertiseAddr is the base URL peers use to forward writes here: the
+// explicit setting, or the gossip advertise host with the HTTP port and the
+// API's scheme.
+func apiAdvertiseAddr(cfg *config.Config, gossipAdvertise string) string {
+	if cfg.APIAdvertiseAddr != "" {
+		return strings.TrimRight(cfg.APIAdvertiseAddr, "/")
+	}
+	host, _, err := net.SplitHostPort(gossipAdvertise)
+	if err != nil {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(cfg.HTTPAddr)
+	if err != nil {
+		return ""
+	}
+	scheme := "http"
+	if cfg.TLS.Enabled {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+// newForwarder builds the client for forwarding writes to peers. With TLS it
+// trusts the cluster CA and presents this node's certificate, which must
+// allow client authentication when peers require mTLS.
+func newForwarder(cfg *config.Config) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.TLS.Enabled {
+		tlsConfig, err := security.ClientTLSConfig(cfg.TLS.CAFile, cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		if err != nil {
+			return nil, err
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+	return &http.Client{Timeout: 10 * time.Second, Transport: transport}, nil
 }
 
 // flyReplay lets a Fly.io machine hand an owner-only request to the machine
@@ -381,23 +426,4 @@ func hasLivePeer(members []membership.Member, selfID string) bool {
 		}
 	}
 	return false
-}
-
-func runHealthChecks(ctx context.Context, registry *storage.Store, nodeID string, interval, timeout time.Duration, log *slog.Logger) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	check := func() {
-		if err := registry.CheckOwnedHealth(ctx, nodeID, timeout); err != nil && ctx.Err() == nil {
-			log.Warn("service health checks failed", "err", err)
-		}
-	}
-	check()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			check()
-		}
-	}
 }

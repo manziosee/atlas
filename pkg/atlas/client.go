@@ -26,17 +26,23 @@ const (
 )
 
 type Service struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	NodeID      string    `json:"node_id"`
-	Address     string    `json:"address"`
-	Region      string    `json:"region"`
-	Version     string    `json:"version,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
-	HealthCheck string    `json:"health_check,omitempty"`
-	Health      Health    `json:"health"`
-	Revision    uint64    `json:"revision"`
-	TTLSeconds  int64     `json:"ttl_seconds,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	NodeID      string   `json:"node_id"`
+	Address     string   `json:"address"`
+	Region      string   `json:"region"`
+	Version     string   `json:"version,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	HealthCheck string   `json:"health_check,omitempty"`
+	Health      Health   `json:"health"`
+	Revision    uint64   `json:"revision"`
+	TTLSeconds  int64    `json:"ttl_seconds,omitempty"`
+	// Health-check tuning; zero values mean the node defaults.
+	CheckIntervalSeconds int64 `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int   `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int   `json:"healthy_threshold,omitempty"`
+	// Draining instances stay registered but receive no traffic.
+	Draining    bool      `json:"draining,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	CheckedAt   time.Time `json:"checked_at,omitzero"`
 	HeartbeatAt time.Time `json:"heartbeat_at,omitzero"`
@@ -45,14 +51,19 @@ type Service struct {
 // RegisterRequest describes a service instance. ID is optional: supply a
 // stable ID (or use RegisterIdempotent) so retries and redeploys update the
 // same record. Use either HealthCheck or TTLSeconds with Heartbeat.
+// HealthCheck is an http(s)://, tcp:// or grpc(s):// URL on Address.
 type RegisterRequest struct {
-	ID          string   `json:"id,omitempty"`
-	Name        string   `json:"name"`
-	Address     string   `json:"address"`
-	Version     string   `json:"version,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	HealthCheck string   `json:"health_check,omitempty"`
-	TTLSeconds  int64    `json:"ttl_seconds,omitempty"`
+	ID                   string   `json:"id,omitempty"`
+	Name                 string   `json:"name"`
+	Address              string   `json:"address"`
+	Version              string   `json:"version,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	HealthCheck          string   `json:"health_check,omitempty"`
+	TTLSeconds           int64    `json:"ttl_seconds,omitempty"`
+	CheckIntervalSeconds int64    `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int      `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int      `json:"healthy_threshold,omitempty"`
+	Draining             bool     `json:"draining,omitempty"`
 }
 
 // ServicePatch changes only the non-nil fields.
@@ -63,6 +74,11 @@ type ServicePatch struct {
 	Tags        *[]string `json:"tags,omitempty"`
 	HealthCheck *string   `json:"health_check,omitempty"`
 	TTLSeconds  *int64    `json:"ttl_seconds,omitempty"`
+
+	CheckIntervalSeconds *int64 `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   *int   `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     *int   `json:"healthy_threshold,omitempty"`
+	Draining             *bool  `json:"draining,omitempty"`
 }
 
 // Filter narrows List and ListPage. A service must carry every tag in Tags.
@@ -100,6 +116,7 @@ type Member struct {
 	State       string    `json:"state"`
 	Incarnation uint64    `json:"incarnation"`
 	Since       time.Time `json:"since,omitzero"`
+	APIAddr     string    `json:"api_addr,omitempty"`
 }
 
 type NodeInfo struct {
@@ -173,6 +190,19 @@ func (c *Client) Update(ctx context.Context, id string, patch ServicePatch, ifRe
 	var service Service
 	err := c.request(ctx, http.MethodPatch, "/v1/services/"+url.PathEscape(id), patch, &service, ifMatch(ifRevision))
 	return service, err
+}
+
+// Drain stops new traffic to an instance (lookups, DNS and client load
+// balancers skip it) while it stays registered, for example before a deploy.
+func (c *Client) Drain(ctx context.Context, id string) (Service, error) {
+	draining := true
+	return c.Update(ctx, id, ServicePatch{Draining: &draining}, 0)
+}
+
+// Undrain returns a drained instance to rotation.
+func (c *Client) Undrain(ctx context.Context, id string) (Service, error) {
+	draining := false
+	return c.Update(ctx, id, ServicePatch{Draining: &draining}, 0)
 }
 
 // Heartbeat refreshes a TTL service. A NotFound error means the service

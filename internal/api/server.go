@@ -61,6 +61,9 @@ type Deps struct {
 	// Replay returns a Fly-Replay header value that routes a request to the
 	// node that owns a service, or "" when replay is unavailable.
 	Replay func(ownerNodeID string) string
+	// Forwarder sends owner-only writes to the owning node's HTTP API. Nil
+	// disables forwarding; such writes then return 409 not_owner.
+	Forwarder *http.Client
 }
 
 // NewHandler builds the full middleware chain and routes.
@@ -116,7 +119,7 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/admin/credentials", d.listCredentials)
 	v1.HandleFunc("POST /v1/admin/backup", d.backup)
 	v1.HandleFunc("DELETE /v1/admin/nodes/{id}", d.evictNode)
-	mux.Handle("/v1/", d.Auth.Middleware(jsonFallback(v1)))
+	mux.Handle("/v1/", d.Auth.Middleware(originMiddleware(jsonFallback(v1))))
 
 	h := jsonFallback(mux)
 	h = security.MaxBody(maxBodyBytes)(h)

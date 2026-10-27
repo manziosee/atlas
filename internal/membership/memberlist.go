@@ -36,9 +36,11 @@ const (
 
 // Config tunes the protocol. See internal/config for the env mapping.
 type Config struct {
-	NodeID           string
-	Region           string
-	AdvertiseAddr    string
+	NodeID        string
+	Region        string
+	AdvertiseAddr string
+	// APIAddr is gossiped so peers can forward owner-only writes here.
+	APIAddr          string
 	ProbeInterval    time.Duration
 	ProbeTimeout     time.Duration
 	SuspicionTimeout time.Duration
@@ -138,10 +140,11 @@ func New(cfg Config, tr Transport, log *slog.Logger) *Memberlist {
 			return allowed
 		}(),
 		self: Member{
-			ID:     cfg.NodeID,
-			Addr:   cfg.AdvertiseAddr,
-			Region: cfg.Region,
-			State:  StateAlive,
+			ID:      cfg.NodeID,
+			Addr:    cfg.AdvertiseAddr,
+			APIAddr: cfg.APIAddr,
+			Region:  cfg.Region,
+			State:   StateAlive,
 			// Starting from wall-clock millis guarantees a restarted node
 			// outranks whatever the cluster remembers about its previous life.
 			Incarnation: uint64(now.UnixMilli()), //nolint:gosec // positive by construction
@@ -763,7 +766,7 @@ func (m *Memberlist) merge(in Member) {
 	if in.Incarnation < cur.Incarnation || (in.Incarnation == cur.Incarnation && in.State <= cur.State) {
 		return
 	}
-	cur.Incarnation, cur.Addr, cur.Region = in.Incarnation, in.Addr, in.Region
+	cur.Incarnation, cur.Addr, cur.Region, cur.APIAddr = in.Incarnation, in.Addr, in.Region, in.APIAddr
 	m.queueBroadcast(*cur)
 	if in.State != cur.State {
 		m.setState(cur, in.State)

@@ -508,3 +508,49 @@ func TestEventStreamCarriesServiceEventsAndResumes(t *testing.T) {
 		t.Fatalf("bad kinds = %d", bad.Code)
 	}
 }
+
+func TestHealthCheckOptionsAndDraining(t *testing.T) {
+	h := newHarness(t, nil)
+	for _, body := range []string{
+		`{"name":"tcp","address":"10.0.7.1:5432","health_check":"tcp://10.0.7.1:5432","check_interval_seconds":10,"unhealthy_threshold":5}`,
+		`{"name":"rpc","address":"10.0.7.2:9000","health_check":"grpc://10.0.7.2:9000/pkg.API","healthy_threshold":1}`,
+	} {
+		if _, rec := h.register(body); rec.Code != http.StatusCreated {
+			t.Fatalf("register %s = %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	for _, body := range []string{
+		`{"name":"x","address":"10.0.7.3:80","unhealthy_threshold":2}`,
+		`{"name":"x","address":"10.0.7.3:80","health_check":"udp://10.0.7.3:80"}`,
+		`{"name":"x","address":"10.0.7.3:80","health_check":"tcp://10.0.7.3:80","check_interval_seconds":7200}`,
+		`{"name":"x","address":"10.0.7.3:80","health_check":"tcp://10.0.7.3:80","healthy_threshold":11}`,
+	} {
+		if _, rec := h.register(body); rec.Code != http.StatusBadRequest {
+			t.Errorf("register %s = %d, want 400", body, rec.Code)
+		}
+	}
+
+	blue, _ := h.register(`{"id":"web-blue","name":"web","address":"10.0.7.10:80"}`)
+	h.register(`{"id":"web-green","name":"web","address":"10.0.7.11:80"}`)
+	drained := h.do(http.MethodPatch, "/v1/services/"+blue.ID, writeToken, `{"draining":true}`)
+	if drained.Code != http.StatusOK || !strings.Contains(drained.Body.String(), `"draining":true`) {
+		t.Fatalf("drain = %d %s", drained.Code, drained.Body.String())
+	}
+	for range 6 {
+		var picked storage.Service
+		h.do(http.MethodGet, "/v1/lookup/web", readToken, "").json(t, &picked)
+		if picked.ID == blue.ID {
+			t.Fatal("lookup returned a draining instance")
+		}
+	}
+	if listed := h.do(http.MethodGet, "/v1/services?name=web", readToken, ""); !strings.Contains(listed.Body.String(), `"draining":true`) {
+		t.Fatal("draining instance missing from the listing")
+	}
+	h.do(http.MethodPatch, "/v1/services/web-green", writeToken, `{"draining":true}`)
+	if rec := h.do(http.MethodGet, "/v1/lookup/web", readToken, ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("lookup with every instance draining = %d", rec.Code)
+	}
+	if rec := h.do(http.MethodPatch, "/v1/services/"+blue.ID, writeToken, `{"draining":false}`); !strings.Contains(rec.Body.String(), `"health"`) || strings.Contains(rec.Body.String(), `"draining":true`) {
+		t.Fatalf("undrain = %s", rec.Body.String())
+	}
+}

@@ -1,12 +1,15 @@
 openapi: 3.1.0
 info:
   title: Atlas Node API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Authenticated HTTP API for cluster membership and the replicated service
-    registry. Every node serves the same API. Writes are owned by the node
-    that registered a service; reads may go to any node. On Fly.io, a request
-    that must reach the owner is replayed there automatically.
+    registry. Every node serves the same API, and any node accepts any
+    request. A service is owned by the node that registered it; a write that
+    reaches another node is forwarded to the owner (using the owner's
+    gossiped API address and the caller's own credential) and the owner's
+    answer is returned. Without a reachable owner the response is
+    409 not_owner or 502 owner_unreachable.
 
 
     Every error response uses the Error schema. Branch on `code`, which is
@@ -156,7 +159,7 @@ paths:
         '412': { $ref: '#/components/responses/Error' }
     patch:
       tags: [registry]
-      summary: Change some fields of a service owned by this node
+      summary: Change some fields of a service (forwarded to its owner)
       description: Changing address, health_check or ttl_seconds resets health to unknown; other edits keep it.
       parameters:
         - { $ref: '#/components/parameters/IfMatch' }
@@ -170,6 +173,7 @@ paths:
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
         '412': { $ref: '#/components/responses/Error' }
     delete:
       tags: [registry]
@@ -182,6 +186,7 @@ paths:
         '204': { description: Service deleted. }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /v1/services/{id}/heartbeat:
     parameters:
       - { in: path, name: id, required: true, schema: { type: string } }
@@ -196,6 +201,7 @@ paths:
         '200': { $ref: '#/components/responses/Service' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /v1/lookup/{name}:
     get:
       tags: [registry]
@@ -338,8 +344,19 @@ components:
         address: { type: string, description: 'Host and port, for example 10.0.0.8:8080' }
         version: { type: string, maxLength: 128 }
         tags: { type: array, maxItems: 16, items: { type: string, maxLength: 64 } }
-        health_check: { type: string, format: uri, description: HTTP(S) URL on the service address. Not with ttl_seconds. }
+        health_check:
+          type: string
+          format: uri
+          description: >-
+            Check on the service address, chosen by scheme: http:// or https:// (2xx passes),
+            tcp:// (a connection passes) or grpc:// / grpcs:// (grpc.health.v1 SERVING passes;
+            an optional path names the gRPC service). Not with ttl_seconds.
+          examples: ['http://10.0.0.8:8080/healthz', 'tcp://10.0.0.8:5432', 'grpc://10.0.0.8:9000/payments.v1.API']
         ttl_seconds: { type: integer, minimum: 1, maximum: 86400, description: Heartbeat TTL. Not with health_check. }
+        check_interval_seconds: { type: integer, minimum: 1, maximum: 3600, description: Check interval for this service; ATLAS_HEALTH_CHECK_INTERVAL when omitted. Needs health_check. }
+        unhealthy_threshold: { type: integer, minimum: 1, maximum: 10, description: Consecutive failed checks before a healthy service turns unhealthy (default 3). Needs health_check. }
+        healthy_threshold: { type: integer, minimum: 1, maximum: 10, description: Consecutive passing checks before an unhealthy service recovers (default 2). Needs health_check. }
+        draining: { type: boolean, description: 'Keep the record but send it no traffic: lookups, DNS and client load balancers skip it.' }
     ServicePatch:
       type: object
       additionalProperties: false
@@ -350,6 +367,10 @@ components:
         tags: { type: array, items: { type: string } }
         health_check: { type: string }
         ttl_seconds: { type: integer }
+        check_interval_seconds: { type: integer }
+        unhealthy_threshold: { type: integer }
+        healthy_threshold: { type: integer }
+        draining: { type: boolean }
     Service:
       type: object
       properties:
@@ -364,6 +385,10 @@ components:
         health: { $ref: '#/components/schemas/Health' }
         revision: { type: integer, description: Increases on every change; use with If-Match }
         ttl_seconds: { type: integer }
+        check_interval_seconds: { type: integer }
+        unhealthy_threshold: { type: integer }
+        healthy_threshold: { type: integer }
+        draining: { type: boolean }
         updated_at: { type: string, format: date-time }
         checked_at: { type: string, format: date-time, description: Last health check (owner node only) }
         heartbeat_at: { type: string, format: date-time, description: Last heartbeat (owner node only) }
@@ -376,6 +401,7 @@ components:
         state: { type: string, enum: [alive, suspect, dead, left] }
         incarnation: { type: integer }
         since: { type: string, format: date-time }
+        api_addr: { type: string, description: Base URL of the member's HTTP API; used to forward writes to the owner }
     Event:
       type: object
       properties:
@@ -403,6 +429,7 @@ components:
             - method_not_allowed
             - not_owner
             - owner_alive
+            - owner_unreachable
             - member_alive
             - precondition_failed
             - no_ttl
@@ -412,4 +439,4 @@ components:
             - unavailable
             - internal
         request_id: { type: string, description: Matches request_id in the node's access log }
-        owner_node: { type: string, description: For not_owner and owner_alive, the node that owns the service }
+        owner_node: { type: string, description: 'For not_owner, owner_alive and owner_unreachable: the node that owns the service' }

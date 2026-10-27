@@ -37,6 +37,12 @@ class AsyncAtlasClient:
     async def update(self, service_id: str, **fields: Any) -> ServiceInstance:
         return await self._call(self._client.update, service_id, **fields)
 
+    async def drain(self, service_id: str) -> ServiceInstance:
+        return await self._call(self._client.drain, service_id)
+
+    async def undrain(self, service_id: str) -> ServiceInstance:
+        return await self._call(self._client.undrain, service_id)
+
     async def heartbeat(self, service_id: str) -> ServiceInstance:
         return await self._call(self._client.heartbeat, service_id)
 

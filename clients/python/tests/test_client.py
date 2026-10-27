@@ -69,6 +69,23 @@ class AtlasClientTest(unittest.TestCase):
             self.client.heartbeat(plain["id"])
         self.assertEqual(no_ttl.exception.code, "no_ttl")
 
+    def test_health_check_options_and_draining(self) -> None:
+        name = unique("drain")
+        tcp = self.client.register(
+            name, "10.9.5.1:5432", health_check="tcp://10.9.5.1:5432",
+            check_interval_seconds=10, unhealthy_threshold=4, healthy_threshold=1,
+        )
+        self.assertEqual(tcp["check_interval_seconds"], 10)
+        self.assertEqual(tcp["unhealthy_threshold"], 4)
+        other = self.client.register(name, "10.9.5.2:5432")
+        self.assertTrue(self.client.drain(tcp["id"])["draining"])
+        for _ in range(4):
+            self.assertEqual(self.client.lookup(name)["id"], other["id"])
+        self.assertNotIn("draining", self.client.undrain(tcp["id"]))
+        with self.assertRaises(AtlasError) as bad:
+            self.client.register(unique("bad"), "10.9.5.3:80", unhealthy_threshold=2)
+        self.assertEqual(bad.exception.code, "validation_failed")
+
     def test_paging_and_filters(self) -> None:
         name = unique("page")
         for i in range(5):

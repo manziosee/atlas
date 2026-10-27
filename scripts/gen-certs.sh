@@ -53,7 +53,8 @@ issue() { # name cn eku san
   echo "issued $name.crt ($eku)"
 }
 
-issue server atlas-node serverAuth "$san"
+# Nodes also present this certificate as clients when forwarding writes to peers.
+issue server atlas-node serverAuth,clientAuth "$san"
 issue client atlas-cli  clientAuth
 
 # Containers run as UID 65532 and mount this directory read-only, so the

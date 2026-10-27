@@ -223,7 +223,7 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 	}
 	if id, ok := s.parseInstanceName(q.Name.String()); ok {
 		service, err := s.registry.Get(ctx, id)
-		if err != nil || service.Health == storage.HealthUnhealthy {
+		if err != nil || !service.Routable() {
 			response.RCode = dnsmessage.RCodeNameError
 			return pack(response)
 		}
@@ -254,13 +254,13 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 	}
 	filtered := make([]storage.Service, 0, len(services))
 	for _, service := range services {
-		if service.Health == storage.HealthHealthy {
+		if service.Health == storage.HealthHealthy && service.Routable() {
 			filtered = append(filtered, service)
 		}
 	}
 	if len(filtered) == 0 {
 		for _, service := range services {
-			if service.Health == storage.HealthUnknown {
+			if service.Health == storage.HealthUnknown && service.Routable() {
 				filtered = append(filtered, service)
 			}
 		}

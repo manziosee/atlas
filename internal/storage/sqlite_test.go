@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -176,52 +174,6 @@ func TestServiceMergeConvergesAcrossReplicaOrderings(t *testing.T) {
 		if err != nil || len(got) != 1 || got[0].Name != "zulu" || got[0].NodeID != "owner-z" || !got[0].Deleted || !got[0].CheckedAt.IsZero() {
 			t.Fatalf("merge order %v produced %+v, err %v", order, got, err)
 		}
-	}
-}
-
-func TestOwnedHealthChecksPublishOnlyStateChanges(t *testing.T) {
-	ctx := context.Background()
-	healthy := true
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if !healthy {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-	}))
-	defer server.Close()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "registry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	service, err := store.Register(ctx, Service{
-		ID: "web-1", Name: "web", NodeID: "node-a", Address: server.Listener.Addr().String(),
-		Region: "jnb", HealthCheck: server.URL + "/healthz", Health: HealthUnknown,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CheckOwnedHealth(ctx, "node-b", time.Second); err != nil {
-		t.Fatal(err)
-	}
-	unchanged, err := store.Get(ctx, service.ID)
-	if err != nil || unchanged.Health != HealthUnknown {
-		t.Fatalf("non-owner health check changed record: %+v, err %v", unchanged, err)
-	}
-	if err := store.CheckOwnedHealth(ctx, "node-a", time.Second); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := store.Get(ctx, service.ID)
-	if err != nil || updated.Health != HealthHealthy || updated.Revision != 2 {
-		t.Fatalf("healthy check result = %+v, err = %v", updated, err)
-	}
-	healthy = false
-	if err := store.CheckOwnedHealth(ctx, "node-a", time.Second); err != nil {
-		t.Fatal(err)
-	}
-	updated, err = store.Get(ctx, service.ID)
-	if err != nil || updated.Health != HealthUnhealthy || updated.Revision != 3 {
-		t.Fatalf("unhealthy check result = %+v, err = %v", updated, err)
 	}
 }
 

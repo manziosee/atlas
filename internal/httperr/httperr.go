@@ -19,6 +19,7 @@ const (
 	CodeMethodNotAllowed   = "method_not_allowed"
 	CodeNotOwner           = "not_owner"
 	CodeOwnerAlive         = "owner_alive"
+	CodeOwnerUnreachable   = "owner_unreachable"
 	CodeMemberAlive        = "member_alive"
 	CodePreconditionFailed = "precondition_failed"
 	CodeNoTTL              = "no_ttl"

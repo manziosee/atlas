@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"net"
 	"strings"
 	"time"
 
@@ -113,7 +114,11 @@ func authorizeRPC(ctx context.Context, deps Deps, method string) (context.Contex
 		return ctx, nil, status.Error(code, message)
 	}
 	started := time.Now()
-	return granted, func(err error) {
+	client := remote
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		client = host
+	}
+	return withRequestOrigin(granted, false, client), func(err error) {
 		if deps.Log != nil {
 			deps.Log.Info("grpc request", "method", method, "status", status.Code(err).String(), "duration_ms", time.Since(started).Milliseconds(), "remote", remote, "token_id", tokenID)
 		}
@@ -141,7 +146,13 @@ func grpcError(err error) error {
 	var invalidInput validationError
 	var alive ownerAliveError
 	var notOwner *storage.NotOwnerError
+	var remote *remoteError
+	var unreachable *ownerUnreachableError
 	switch {
+	case errors.As(err, &remote):
+		return status.Error(grpcCodeForHTTP(remote.status), remote.body.Code+": "+remote.body.Error)
+	case errors.As(err, &unreachable):
+		return status.Error(codes.Unavailable, "owner_unreachable: node "+unreachable.owner+" did not answer; retry shortly")
 	case errors.As(err, &invalidInput):
 		return status.Error(codes.InvalidArgument, invalidInput.msg)
 	case errors.Is(err, storage.ErrNotFound):
@@ -160,6 +171,28 @@ func grpcError(err error) error {
 		return status.Error(codes.Unavailable, "service registry unavailable")
 	default:
 		return status.Error(codes.Internal, "internal error")
+	}
+}
+
+// grpcCodeForHTTP maps an owner's HTTP status relayed by forwarding.
+func grpcCodeForHTTP(status int) codes.Code {
+	switch status {
+	case 400:
+		return codes.InvalidArgument
+	case 401:
+		return codes.Unauthenticated
+	case 403:
+		return codes.PermissionDenied
+	case 404:
+		return codes.NotFound
+	case 409, 412:
+		return codes.FailedPrecondition
+	case 429:
+		return codes.ResourceExhausted
+	case 502, 503, 504:
+		return codes.Unavailable
+	default:
+		return codes.Internal
 	}
 }
 

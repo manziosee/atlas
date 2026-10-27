@@ -48,6 +48,8 @@ Commands:
   deregister  delete a service: deregister <service-id>
   credentials list API credentials without secrets (admin)
   backup      download a node's registry snapshot over the API (admin)
+  drain       stop traffic to an instance before a deploy: drain <service-id>
+  undrain     return a drained instance to rotation: undrain <service-id>
   evict       remove a failed node and its services: evict <node-id> (admin)
   db-backup   create a consistent SQLite database snapshot from a local file
   db-restore  restore a verified snapshot to a new database path
@@ -86,6 +88,10 @@ func main() {
 		err = credentials(args)
 	case "backup":
 		err = remoteBackup(args)
+	case "drain":
+		err = setDraining("drain", args, true)
+	case "undrain":
+		err = setDraining("undrain", args, false)
 	case "evict":
 		err = evict(args)
 	case "db-backup":
@@ -466,7 +472,7 @@ func completion(args []string) error {
 	if len(args) != 1 {
 		return errors.New("completion requires one shell: bash, zsh, fish, or powershell")
 	}
-	commands := "members services lookup watch heartbeat deregister credentials backup evict db-backup db-restore node health keygen tokengen version completion"
+	commands := "members services lookup watch heartbeat deregister drain undrain credentials backup evict db-backup db-restore node health keygen tokengen version completion"
 	var script string
 	switch args[0] {
 	case "bash":
