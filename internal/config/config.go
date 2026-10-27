@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/security"
 )
 
@@ -75,7 +76,11 @@ type Config struct {
 	MaxClockSkew        time.Duration
 
 	// API
-	HTTPAddr            string
+	HTTPAddr string
+	// APIAdvertiseAddr is the base URL peers use to reach this node's HTTP
+	// API when forwarding writes. Empty derives it from the gossip advertise
+	// host and the HTTP port.
+	APIAdvertiseAddr    string
 	GRPCAddr            string
 	MetricsAddr         string
 	PprofAddr           string
@@ -145,13 +150,14 @@ func Load(lookup LookupFunc) (*Config, error) {
 		DeadNodeReap:        p.duration("ATLAS_DEAD_NODE_REAP", 5*time.Minute),
 		MaxClockSkew:        p.duration("ATLAS_MAX_CLOCK_SKEW", 30*time.Second),
 
-		HTTPAddr:    p.str("ATLAS_HTTP_ADDR", "0.0.0.0:8080"),
-		GRPCAddr:    p.str("ATLAS_GRPC_ADDR", "0.0.0.0:8082"),
-		MetricsAddr: p.str("ATLAS_METRICS_ADDR", "0.0.0.0:9090"),
-		PprofAddr:   p.str("ATLAS_PPROF_ADDR", "127.0.0.1:6060"),
-		DNSAddr:     p.str("ATLAS_DNS_ADDR", ""),
-		DNSZone:     p.str("ATLAS_DNS_ZONE", "atlas"),
-		DNSTTL:      p.duration("ATLAS_DNS_TTL", 5*time.Second),
+		HTTPAddr:         p.str("ATLAS_HTTP_ADDR", "0.0.0.0:8080"),
+		APIAdvertiseAddr: p.str("ATLAS_API_ADVERTISE_ADDR", ""),
+		GRPCAddr:         p.str("ATLAS_GRPC_ADDR", "0.0.0.0:8082"),
+		MetricsAddr:      p.str("ATLAS_METRICS_ADDR", "0.0.0.0:9090"),
+		PprofAddr:        p.str("ATLAS_PPROF_ADDR", "127.0.0.1:6060"),
+		DNSAddr:          p.str("ATLAS_DNS_ADDR", ""),
+		DNSZone:          p.str("ATLAS_DNS_ZONE", "atlas"),
+		DNSTTL:           p.duration("ATLAS_DNS_TTL", 5*time.Second),
 		TLS: TLS{
 			Enabled:            p.bool("ATLAS_TLS_ENABLED", false),
 			CertFile:           p.str("ATLAS_TLS_CERT_FILE", ""),
@@ -201,7 +207,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_GOSSIP_BIND_ADDR": {}, "ATLAS_GOSSIP_ADVERTISE_ADDR": {}, "ATLAS_SEEDS": {}, "ATLAS_ALLOWED_NODE_IDS": {},
 	"ATLAS_GOSSIP_KEY": {}, "ATLAS_GOSSIP_KEYS_SECONDARY": {}, "ATLAS_PROBE_INTERVAL": {}, "ATLAS_PROBE_TIMEOUT": {},
 	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
-	"ATLAS_HTTP_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
+	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
 	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
@@ -286,6 +292,9 @@ func (c *Config) Validate() error {
 	}
 	if c.DNSTTL < time.Second || c.DNSTTL > time.Hour {
 		add("ATLAS_DNS_TTL must be between 1s and 1h")
+	}
+	if c.APIAdvertiseAddr != "" && membership.ValidateAPIAddr(c.APIAdvertiseAddr) != nil {
+		add("ATLAS_API_ADVERTISE_ADDR must be an http(s) origin such as http://10.0.0.4:8080, got %q", c.APIAdvertiseAddr)
 	}
 	if c.OrphanServiceReap != 0 && c.OrphanServiceReap < time.Minute {
 		add("ATLAS_ORPHAN_SERVICE_REAP must be 0 (disabled) or at least 1m, so restarting nodes keep their services")

@@ -22,7 +22,10 @@ type typedRegistry struct {
 	deps Deps
 }
 
-var updatablePaths = []string{"name", "address", "version", "tags", "health_check", "ttl_seconds"}
+var updatablePaths = []string{
+	"name", "address", "version", "tags", "health_check", "ttl_seconds",
+	"check_interval_seconds", "unhealthy_threshold", "healthy_threshold", "draining",
+}
 
 func (t *typedRegistry) RegisterService(ctx context.Context, req *atlasv1.RegisterServiceRequest) (*atlasv1.RegisterServiceResponse, error) {
 	spec := specFromProto(req.GetSpec())
@@ -44,25 +47,34 @@ func (t *typedRegistry) UpdateService(ctx context.Context, req *atlasv1.UpdateSe
 			return nil, status.Errorf(codes.InvalidArgument, "update_mask path %q is not updatable", path)
 		}
 	}
-	incoming := specFromProto(req.GetSpec())
-	service, err := t.deps.update(ctx, req.GetId(), req.GetIfRevision(), func(s *serviceSpec) {
-		for _, path := range paths {
-			switch path {
-			case "name":
-				s.Name = incoming.Name
-			case "address":
-				s.Address = incoming.Address
-			case "version":
-				s.Version = incoming.Version
-			case "tags":
-				s.Tags = incoming.Tags
-			case "health_check":
-				s.HealthCheck = incoming.HealthCheck
-			case "ttl_seconds":
-				s.TTLSeconds = incoming.TTLSeconds
-			}
+	// The mask selects fields from a full patch of the incoming spec.
+	full := fullPatch(specFromProto(req.GetSpec()))
+	var patch servicePatch
+	for _, path := range paths {
+		switch path {
+		case "name":
+			patch.Name = full.Name
+		case "address":
+			patch.Address = full.Address
+		case "version":
+			patch.Version = full.Version
+		case "tags":
+			patch.Tags = full.Tags
+		case "health_check":
+			patch.HealthCheck = full.HealthCheck
+		case "ttl_seconds":
+			patch.TTLSeconds = full.TTLSeconds
+		case "check_interval_seconds":
+			patch.CheckIntervalSeconds = full.CheckIntervalSeconds
+		case "unhealthy_threshold":
+			patch.UnhealthyThreshold = full.UnhealthyThreshold
+		case "healthy_threshold":
+			patch.HealthyThreshold = full.HealthyThreshold
+		case "draining":
+			patch.Draining = full.Draining
 		}
-	})
+	}
+	service, err := t.deps.update(ctx, req.GetId(), req.GetIfRevision(), patch)
 	if err != nil {
 		return nil, grpcError(err)
 	}
@@ -185,7 +197,8 @@ func (t *typedRegistry) Watch(req *atlasv1.WatchRequest, stream atlasv1.Registry
 func specFromProto(spec *atlasv1.ServiceSpec) serviceSpec {
 	return serviceSpec{
 		Name: spec.GetName(), Address: spec.GetAddress(), Version: spec.GetVersion(), Tags: spec.GetTags(),
-		HealthCheck: spec.GetHealthCheck(), TTLSeconds: spec.GetTtlSeconds(),
+		HealthCheck: spec.GetHealthCheck(), TTLSeconds: spec.GetTtlSeconds(), CheckIntervalSeconds: spec.GetCheckIntervalSeconds(),
+		UnhealthyThreshold: int(spec.GetUnhealthyThreshold()), HealthyThreshold: int(spec.GetHealthyThreshold()), Draining: spec.GetDraining(),
 	}
 }
 
@@ -195,6 +208,8 @@ func serviceToProto(service storage.Service) *atlasv1.Service {
 		Version: service.Version, Tags: service.Tags, HealthCheck: service.HealthCheck, Health: healthToProto(service.Health),
 		Revision: service.Revision, TtlSeconds: service.TTLSeconds, UpdatedAt: timestamp(service.UpdatedAt),
 		CheckedAt: timestamp(service.CheckedAt), HeartbeatAt: timestamp(service.HeartbeatAt),
+		CheckIntervalSeconds: service.CheckIntervalSeconds, Draining: service.Draining,
+		UnhealthyThreshold: int32(service.UnhealthyThreshold), HealthyThreshold: int32(service.HealthyThreshold), // #nosec G115 -- validated to at most 10.
 	}
 }
 
@@ -210,7 +225,7 @@ func memberToProto(member membership.Member) *atlasv1.Member {
 	case membership.StateLeft:
 		state = atlasv1.MemberState_MEMBER_STATE_LEFT
 	}
-	return &atlasv1.Member{Id: member.ID, Addr: member.Addr, Region: member.Region, State: state, Incarnation: member.Incarnation, Since: timestamp(member.Since)}
+	return &atlasv1.Member{Id: member.ID, Addr: member.Addr, Region: member.Region, State: state, Incarnation: member.Incarnation, Since: timestamp(member.Since), ApiAddr: member.APIAddr}
 }
 
 func eventToProto(event events.Event) *atlasv1.Event {

@@ -202,6 +202,9 @@ func marshalMember(member Member) []byte {
 	if member.Incarnation != 0 {
 		b = appendVarintField(b, 5, member.Incarnation)
 	}
+	if member.APIAddr != "" {
+		b = appendStringField(b, 6, member.APIAddr)
+	}
 	return b
 }
 
@@ -231,7 +234,7 @@ func unmarshalMember(data []byte, member *Member) error {
 			}
 			continue
 		}
-		if number >= 1 && number <= 3 {
+		if (number >= 1 && number <= 3) || number == 6 {
 			if typ != protowire.BytesType {
 				return errors.New("membership: invalid protobuf member string")
 			}
@@ -247,6 +250,8 @@ func unmarshalMember(data []byte, member *Member) error {
 				member.Addr = string(value)
 			case 3:
 				member.Region = string(value)
+			case 6:
+				member.APIAddr = string(value)
 			}
 			continue
 		}
@@ -293,6 +298,18 @@ func marshalService(service storage.Service) []byte {
 	if service.TTLSeconds > 0 {
 		b = appendVarintField(b, 14, uint64(service.TTLSeconds)) // #nosec G115 -- guarded positive above.
 	}
+	if service.CheckIntervalSeconds > 0 {
+		b = appendVarintField(b, 15, uint64(service.CheckIntervalSeconds)) // #nosec G115 -- guarded positive above.
+	}
+	if service.UnhealthyThreshold > 0 {
+		b = appendVarintField(b, 16, uint64(service.UnhealthyThreshold)) // #nosec G115 -- guarded positive above.
+	}
+	if service.HealthyThreshold > 0 {
+		b = appendVarintField(b, 17, uint64(service.HealthyThreshold)) // #nosec G115 -- guarded positive above.
+	}
+	if service.Draining {
+		b = appendVarintField(b, 18, 1)
+	}
 	return b
 }
 
@@ -333,7 +350,7 @@ func unmarshalService(data []byte, service *storage.Service) error {
 			}
 			continue
 		}
-		if number >= 9 && number <= 14 {
+		if number >= 9 && number <= 18 {
 			if typ != protowire.VarintType {
 				return errors.New("membership: invalid protobuf service varint")
 			}
@@ -365,6 +382,25 @@ func unmarshalService(data []byte, service *storage.Service) error {
 					return errors.New("membership: invalid protobuf service TTL")
 				}
 				service.TTLSeconds = int64(value) // #nosec G115 -- bounded by MaxTTLSeconds above.
+			case 15:
+				if value > storage.MaxCheckIntervalSeconds {
+					return errors.New("membership: invalid protobuf service check interval")
+				}
+				service.CheckIntervalSeconds = int64(value) // #nosec G115 -- bounded above.
+			case 16, 17:
+				if value > storage.MaxCheckThreshold {
+					return errors.New("membership: invalid protobuf service health threshold")
+				}
+				if number == 16 {
+					service.UnhealthyThreshold = int(value)
+				} else {
+					service.HealthyThreshold = int(value)
+				}
+			case 18:
+				if value > 1 {
+					return errors.New("membership: invalid protobuf draining flag")
+				}
+				service.Draining = value == 1
 			}
 			continue
 		}

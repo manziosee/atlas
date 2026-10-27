@@ -71,7 +71,9 @@ func FromServiceChange(change storage.Change) (Event, bool) {
 
 func sameMetadata(a, b storage.Service) bool {
 	return a.Name == b.Name && a.Address == b.Address && a.Region == b.Region && a.Version == b.Version &&
-		strings.Join(a.Tags, "\x00") == strings.Join(b.Tags, "\x00") && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds
+		strings.Join(a.Tags, "\x00") == strings.Join(b.Tags, "\x00") && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds &&
+		a.CheckIntervalSeconds == b.CheckIntervalSeconds && a.UnhealthyThreshold == b.UnhealthyThreshold &&
+		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining
 }
 
 // Broker assigns event IDs, keeps a ring of recent events and delivers them to

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,11 +54,27 @@ func (c *client) listAll(query url.Values) ([]storage.Service, error) {
 
 // send performs a non-GET request and decodes a JSON response into out.
 func (c *client) send(method, path string, out any) error {
+	return c.sendBody(method, path, nil, out)
+}
+
+// sendBody is send with a JSON request body (nil for none).
+func (c *client) sendBody(method, path string, in, out any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.http.Timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.addr, "/")+path, nil)
+	var payload io.Reader
+	if in != nil {
+		encoded, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.addr, "/")+path, payload)
 	if err != nil {
 		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -135,6 +152,29 @@ func deregister(args []string) error {
 		return err
 	}
 	fmt.Println("deregistered", id)
+	return nil
+}
+
+// setDraining implements drain and undrain. Any node accepts the change and
+// forwards it to the owner.
+func setDraining(command string, args []string, draining bool) error {
+	id, rest, err := positional(command, args, "service ID")
+	if err != nil {
+		return err
+	}
+	c, err := newClient(command, rest)
+	if err != nil {
+		return err
+	}
+	var service storage.Service
+	if err := c.sendBody(http.MethodPatch, "/v1/services/"+url.PathEscape(id), map[string]bool{"draining": draining}, &service); err != nil {
+		return err
+	}
+	state := "in rotation"
+	if service.Draining {
+		state = "draining: lookups, DNS and client balancers skip it"
+	}
+	fmt.Println(service.ID, state)
 	return nil
 }
 

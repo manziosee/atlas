@@ -12,7 +12,8 @@ spec:
     algorithm: ECDSA
     size: 256
     rotationPolicy: Always
-  usages: [server auth, digital signature]
+  # client auth: nodes present this certificate when forwarding writes to peers.
+  usages: [server auth, client auth, digital signature]
   dnsNames:
     - atlas
     - atlas.atlas.svc

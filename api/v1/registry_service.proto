@@ -65,10 +65,18 @@ message Service {
   google.protobuf.Timestamp updated_at = 12;
   google.protobuf.Timestamp checked_at = 13;
   google.protobuf.Timestamp heartbeat_at = 14;
+  int64 check_interval_seconds = 15;
+  int32 unhealthy_threshold = 16;
+  int32 healthy_threshold = 17;
+  // Draining services stay registered but receive no traffic.
+  bool draining = 18;
 }
 
 // ServiceSpec is the client-owned part of a registration. Use either
-// health_check or ttl_seconds, not both.
+// health_check or ttl_seconds, not both. health_check is an http(s)://,
+// tcp:// or grpc(s):// URL on the service address; the interval and
+// thresholds tune it (zero means the node default: 3 failures to turn
+// unhealthy, 2 successes to recover).
 message ServiceSpec {
   string name = 1;
   string address = 2;
@@ -76,6 +84,10 @@ message ServiceSpec {
   repeated string tags = 4;
   string health_check = 5;
   int64 ttl_seconds = 6;
+  int64 check_interval_seconds = 7;
+  int32 unhealthy_threshold = 8;
+  int32 healthy_threshold = 9;
+  bool draining = 10;
 }
 
 message RegisterServiceRequest {
@@ -96,7 +108,8 @@ message RegisterServiceResponse {
 message UpdateServiceRequest {
   string id = 1;
   ServiceSpec spec = 2;
-  // Paths: name, address, version, tags, health_check, ttl_seconds.
+  // Paths: name, address, version, tags, health_check, ttl_seconds,
+  // check_interval_seconds, unhealthy_threshold, healthy_threshold, draining.
   google.protobuf.FieldMask update_mask = 3;
   // When non-zero, the update fails with FAILED_PRECONDITION unless the
   // stored revision matches.
@@ -151,6 +164,8 @@ message Member {
   MemberState state = 4;
   uint64 incarnation = 5;
   google.protobuf.Timestamp since = 6;
+  // Base URL of the member's HTTP API, used to forward owner-only writes.
+  string api_addr = 7;
 }
 
 message GetNodeRequest {}

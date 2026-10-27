@@ -148,3 +148,20 @@ func TestFlyReplayOnlyWhenNodeIDIsMachineID(t *testing.T) {
 		t.Fatal("replay header not produced on Fly")
 	}
 }
+
+func TestAPIAdvertiseAddr(t *testing.T) {
+	cases := []struct {
+		cfg    config.Config
+		gossip string
+		want   string
+	}{
+		{config.Config{HTTPAddr: "0.0.0.0:8080"}, "atlas-1:7946", "http://atlas-1:8080"},
+		{config.Config{HTTPAddr: "[::]:8080", TLS: config.TLS{Enabled: true}}, "[fdaa::2]:7946", "https://[fdaa::2]:8080"},
+		{config.Config{HTTPAddr: "0.0.0.0:8080", APIAdvertiseAddr: "https://api.node-1.internal/"}, "x:1", "https://api.node-1.internal"},
+	}
+	for _, c := range cases {
+		if got := apiAdvertiseAddr(&c.cfg, c.gossip); got != c.want {
+			t.Errorf("apiAdvertiseAddr(%+v, %q) = %q, want %q", c.cfg.HTTPAddr, c.gossip, got, c.want)
+		}
+	}
+}

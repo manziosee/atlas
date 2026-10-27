@@ -602,3 +602,37 @@ func TestRejoinHealsPartitionAfterBothSidesDeclaredDead(t *testing.T) {
 		return true
 	}, "cluster did not converge after rejoin")
 }
+
+func TestAPIAddrSpreadsThroughGossip(t *testing.T) {
+	fn := newFakeNet()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	t.Cleanup(func() { cancel(); wg.Wait() })
+	nodes := make([]*Memberlist, 3)
+	for i := range nodes {
+		addr := fmt.Sprintf("127.0.0.1:%d", 7400+i)
+		cfg := testConfig(fmt.Sprintf("api-%d", i), addr)
+		cfg.APIAddr = fmt.Sprintf("http://10.0.0.%d:8080", i+1)
+		nodes[i] = New(cfg, fn.attach(addr), log)
+		wg.Go(func() { nodes[i].Run(ctx) })
+	}
+	for _, n := range nodes[1:] {
+		if _, err := n.Join(ctx, []string{"127.0.0.1:7400"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		for _, n := range nodes {
+			for i, m := range n.Members() {
+				if m.APIAddr != fmt.Sprintf("http://10.0.0.%d:8080", i+1) {
+					return false
+				}
+			}
+		}
+		return true
+	}, "API addresses did not reach every node")
+	if err := (Member{ID: "x", Addr: "127.0.0.1:1", APIAddr: "ftp://bad"}).validate(); err == nil {
+		t.Fatal("a non-HTTP API address passed validation")
+	}
+}

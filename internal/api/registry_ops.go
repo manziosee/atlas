@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -21,6 +22,8 @@ import (
 
 // Registry operations shared by the HTTP and gRPC APIs. They return storage
 // errors or the error types below; each transport maps them to its own codes.
+// Owner-only writes that reach another node are forwarded to the owner when
+// its API address is known (see forward.go).
 
 // ServiceRegistry is the subset of storage.Store the API needs.
 type ServiceRegistry interface {
@@ -60,22 +63,80 @@ func (e ownerAliveError) Error() string { return "the owning node " + e.owner + 
 
 // serviceSpec is the client-owned part of a registration.
 type serviceSpec struct {
-	ID          string   `json:"id,omitempty"`
-	Name        string   `json:"name"`
-	Address     string   `json:"address"`
-	Version     string   `json:"version,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	HealthCheck string   `json:"health_check,omitempty"`
-	TTLSeconds  int64    `json:"ttl_seconds,omitempty"`
+	ID                   string   `json:"id,omitempty"`
+	Name                 string   `json:"name"`
+	Address              string   `json:"address"`
+	Version              string   `json:"version,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+	HealthCheck          string   `json:"health_check,omitempty"`
+	TTLSeconds           int64    `json:"ttl_seconds,omitempty"`
+	CheckIntervalSeconds int64    `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int      `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int      `json:"healthy_threshold,omitempty"`
+	Draining             bool     `json:"draining,omitempty"`
+}
+
+// servicePatch changes the non-nil fields of a service. It is also the wire
+// format when a non-owner forwards an update to the owner, so it must not
+// encode absent fields.
+type servicePatch struct {
+	Name                 *string   `json:"name,omitempty"`
+	Address              *string   `json:"address,omitempty"`
+	Version              *string   `json:"version,omitempty"`
+	Tags                 *[]string `json:"tags,omitempty"`
+	HealthCheck          *string   `json:"health_check,omitempty"`
+	TTLSeconds           *int64    `json:"ttl_seconds,omitempty"`
+	CheckIntervalSeconds *int64    `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   *int      `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     *int      `json:"healthy_threshold,omitempty"`
+	Draining             *bool     `json:"draining,omitempty"`
+}
+
+func (p servicePatch) apply(s *serviceSpec) {
+	set(&s.Name, p.Name)
+	set(&s.Address, p.Address)
+	set(&s.Version, p.Version)
+	set(&s.Tags, p.Tags)
+	set(&s.HealthCheck, p.HealthCheck)
+	set(&s.TTLSeconds, p.TTLSeconds)
+	set(&s.CheckIntervalSeconds, p.CheckIntervalSeconds)
+	set(&s.UnhealthyThreshold, p.UnhealthyThreshold)
+	set(&s.HealthyThreshold, p.HealthyThreshold)
+	set(&s.Draining, p.Draining)
+}
+
+func set[T any](dst *T, value *T) {
+	if value != nil {
+		*dst = *value
+	}
+}
+
+// fullPatch replaces every client-owned field with spec's values.
+func fullPatch(spec serviceSpec) servicePatch {
+	tags := spec.Tags
+	if tags == nil {
+		tags = []string{} // encodes as [], not null, when forwarded
+	}
+	return servicePatch{
+		Name: &spec.Name, Address: &spec.Address, Version: &spec.Version, Tags: &tags,
+		HealthCheck: &spec.HealthCheck, TTLSeconds: &spec.TTLSeconds,
+		CheckIntervalSeconds: &spec.CheckIntervalSeconds, UnhealthyThreshold: &spec.UnhealthyThreshold,
+		HealthyThreshold: &spec.HealthyThreshold, Draining: &spec.Draining,
+	}
 }
 
 func specOf(s storage.Service) serviceSpec {
-	return serviceSpec{ID: s.ID, Name: s.Name, Address: s.Address, Version: s.Version, Tags: s.Tags, HealthCheck: s.HealthCheck, TTLSeconds: s.TTLSeconds}
+	return serviceSpec{
+		ID: s.ID, Name: s.Name, Address: s.Address, Version: s.Version, Tags: s.Tags,
+		HealthCheck: s.HealthCheck, TTLSeconds: s.TTLSeconds, CheckIntervalSeconds: s.CheckIntervalSeconds,
+		UnhealthyThreshold: s.UnhealthyThreshold, HealthyThreshold: s.HealthyThreshold, Draining: s.Draining,
+	}
 }
 
 func (spec serviceSpec) applyTo(s *storage.Service) {
 	s.Name, s.Address, s.Version, s.Tags = spec.Name, spec.Address, spec.Version, spec.Tags
-	s.HealthCheck, s.TTLSeconds = spec.HealthCheck, spec.TTLSeconds
+	s.HealthCheck, s.TTLSeconds, s.CheckIntervalSeconds = spec.HealthCheck, spec.TTLSeconds, spec.CheckIntervalSeconds
+	s.UnhealthyThreshold, s.HealthyThreshold, s.Draining = spec.UnhealthyThreshold, spec.HealthyThreshold, spec.Draining
 }
 
 // register creates or idempotently re-registers a service owned by this node.
@@ -110,11 +171,25 @@ func (d Deps) register(ctx context.Context, spec serviceSpec, idempotencyKey str
 	spec.applyTo(&record)
 	service, outcome, err := d.Registry.Upsert(ctx, record)
 	var notOwner *storage.NotOwnerError
-	if errors.As(err, &notOwner) && !d.ownerAlive(notOwner.Owner) {
+	if !errors.As(err, &notOwner) {
+		return service, outcome, err
+	}
+	if !d.ownerAlive(notOwner.Owner) {
 		// The previous owner left the cluster, so this node adopts the ID.
 		if _, err = d.Registry.Tombstone(ctx, spec.ID); err == nil || errors.Is(err, storage.ErrNotFound) {
 			service, outcome, err = d.Registry.Upsert(ctx, record)
 		}
+		return service, outcome, err
+	}
+	if forwarded, status, ok, fwdErr := d.forwardService(ctx, notOwner.Owner, http.MethodPost, "/v1/services", spec, 0); ok {
+		if fwdErr != nil {
+			return storage.Service{}, 0, fwdErr
+		}
+		outcome = storage.Updated
+		if status == http.StatusCreated {
+			outcome = storage.Created
+		}
+		return forwarded, outcome, nil
 	}
 	return service, outcome, err
 }
@@ -124,21 +199,27 @@ func idempotentID(tokenID, key string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// update edits a service owned by this node. fn changes a copy; the result is
-// validated before it is stored.
-func (d Deps) update(ctx context.Context, id string, ifRevision uint64, fn func(*serviceSpec)) (storage.Service, error) {
+// update applies patch to a service. The owner applies it locally; any other
+// node forwards the same patch to the owner.
+func (d Deps) update(ctx context.Context, id string, ifRevision uint64, patch servicePatch) (storage.Service, error) {
 	if d.Registry == nil {
 		return storage.Service{}, errRegistryUnavailable
 	}
 	service, _, err := d.Registry.Update(ctx, id, d.Cluster.LocalNode().ID, ifRevision, func(s *storage.Service) error {
 		spec := specOf(*s)
-		fn(&spec)
+		patch.apply(&spec)
 		if err := validateSpec(spec); err != nil {
 			return err
 		}
 		spec.applyTo(s)
 		return nil
 	})
+	var notOwner *storage.NotOwnerError
+	if errors.As(err, &notOwner) {
+		if forwarded, _, ok, fwdErr := d.forwardService(ctx, notOwner.Owner, http.MethodPatch, "/v1/services/"+url.PathEscape(id), patch, ifRevision); ok {
+			return forwarded, fwdErr
+		}
+	}
 	return service, err
 }
 
@@ -146,11 +227,19 @@ func (d Deps) heartbeatService(ctx context.Context, id string) (storage.Service,
 	if d.Registry == nil {
 		return storage.Service{}, errRegistryUnavailable
 	}
-	return d.Registry.Heartbeat(ctx, id, d.Cluster.LocalNode().ID, time.Now())
+	service, err := d.Registry.Heartbeat(ctx, id, d.Cluster.LocalNode().ID, time.Now())
+	var notOwner *storage.NotOwnerError
+	if errors.As(err, &notOwner) {
+		if forwarded, _, ok, fwdErr := d.forwardService(ctx, notOwner.Owner, http.MethodPost, "/v1/services/"+url.PathEscape(id)+"/heartbeat", nil, 0); ok {
+			return forwarded, fwdErr
+		}
+	}
+	return service, err
 }
 
-// deregister removes a service through its owner. Another node may remove it
-// when the owner has left the cluster, or when the caller is an admin.
+// deregister removes a service through its owner, forwarding when another
+// node owns it. Without a reachable owner, any node may remove it once the
+// owner has left the cluster, and an admin may remove it at any time.
 func (d Deps) deregister(ctx context.Context, id string) error {
 	if d.Registry == nil {
 		return errRegistryUnavailable
@@ -160,8 +249,13 @@ func (d Deps) deregister(ctx context.Context, id string) error {
 	if !errors.As(err, &notOwner) {
 		return err
 	}
-	if d.ownerAlive(notOwner.Owner) && !security.Granted(ctx, security.ScopeAdmin) {
-		return ownerAliveError{owner: notOwner.Owner}
+	if d.ownerAlive(notOwner.Owner) {
+		if _, _, ok, fwdErr := d.forwardService(ctx, notOwner.Owner, http.MethodDelete, "/v1/services/"+url.PathEscape(id), nil, 0); ok {
+			return fwdErr
+		}
+		if !security.Granted(ctx, security.ScopeAdmin) {
+			return ownerAliveError{owner: notOwner.Owner}
+		}
 	}
 	_, err = d.Registry.Tombstone(ctx, id)
 	return err
@@ -225,15 +319,22 @@ func (d Deps) nodeLatency(nodeID string) time.Duration {
 
 // ownerAlive reports whether nodeID is this node or a live or suspect member.
 func (d Deps) ownerAlive(nodeID string) bool {
-	if nodeID == d.Cluster.LocalNode().ID {
-		return true
+	_, alive := d.member(nodeID)
+	return alive
+}
+
+// member returns nodeID's record and whether it is this node or a live or
+// suspect peer.
+func (d Deps) member(nodeID string) (membership.Member, bool) {
+	if self := d.Cluster.LocalNode(); nodeID == self.ID {
+		return self, true
 	}
 	for _, member := range d.Cluster.Members() {
 		if member.ID == nodeID {
-			return member.State == membership.StateAlive || member.State == membership.StateSuspect
+			return member, member.State == membership.StateAlive || member.State == membership.StateSuspect
 		}
 	}
-	return false
+	return membership.Member{}, false
 }
 
 // ownerOf extracts the owning node from a not-owner or owner-alive error.
@@ -278,11 +379,19 @@ func validateSpec(in serviceSpec) error {
 	if in.TTLSeconds > 0 && in.HealthCheck != "" {
 		return invalid("use either health_check or ttl_seconds, not both")
 	}
-	if in.HealthCheck != "" {
-		u, err := url.ParseRequestURI(in.HealthCheck)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Host != in.Address {
-			return invalid("health_check must be an http or https URL on the service address without user information")
+	if in.HealthCheck != "" && storage.ValidateHealthCheck(in.HealthCheck, in.Address) != nil {
+		return invalid("health_check must be an http, https, tcp, grpc or grpcs URL on the service address, without credentials, query or fragment")
+	}
+	if in.CheckIntervalSeconds < 0 || in.CheckIntervalSeconds > storage.MaxCheckIntervalSeconds {
+		return invalid("check_interval_seconds must be between 1 and %d", storage.MaxCheckIntervalSeconds)
+	}
+	for _, threshold := range []int{in.UnhealthyThreshold, in.HealthyThreshold} {
+		if threshold < 0 || threshold > storage.MaxCheckThreshold {
+			return invalid("unhealthy_threshold and healthy_threshold must be between 1 and %d", storage.MaxCheckThreshold)
 		}
+	}
+	if in.HealthCheck == "" && (in.CheckIntervalSeconds != 0 || in.UnhealthyThreshold != 0 || in.HealthyThreshold != 0) {
+		return invalid("check_interval_seconds and thresholds need a health_check")
 	}
 	return nil
 }

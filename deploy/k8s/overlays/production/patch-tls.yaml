@@ -12,6 +12,10 @@ spec:
               value: https://127.0.0.1:8080
             - name: ATLAS_CA_FILE
               value: /etc/atlas/tls/ca.crt
+            # Peers forward writes over TLS, so advertise a name the
+            # certificate covers instead of the pod IP.
+            - name: ATLAS_API_ADVERTISE_ADDR
+              value: https://$(ATLAS_NODE_ID).atlas-headless.atlas.svc.cluster.local:8080
           startupProbe:
             httpGet: { path: /healthz, port: http, scheme: HTTPS }
           livenessProbe:

@@ -32,8 +32,8 @@ type Selector struct {
 func NewSelector() *Selector { return &Selector{} }
 
 // Select chooses a healthy instance, preferring the requested region. Unknown
-// health is used only when no healthy candidate exists; unhealthy records are
-// never returned.
+// health is used only when no healthy candidate exists; unhealthy and draining
+// records are never returned.
 func (s *Selector) Select(services []storage.Service, region, key string) (storage.Service, error) {
 	return s.SelectWithLatency(services, region, key, nil)
 }
@@ -45,13 +45,13 @@ func (s *Selector) Select(services []storage.Service, region, key string) (stora
 func (s *Selector) SelectWithLatency(services []storage.Service, region, key string, latency func(nodeID string) time.Duration) (storage.Service, error) {
 	available := make([]storage.Service, 0, len(services))
 	for _, service := range services {
-		if service.Health == storage.HealthHealthy {
+		if service.Health == storage.HealthHealthy && service.Routable() {
 			available = append(available, service)
 		}
 	}
 	if len(available) == 0 {
 		for _, service := range services {
-			if service.Health == storage.HealthUnknown {
+			if service.Health == storage.HealthUnknown && service.Routable() {
 				available = append(available, service)
 			}
 		}

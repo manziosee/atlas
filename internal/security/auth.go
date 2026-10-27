@@ -60,6 +60,8 @@ type tokenIDKey struct{}
 
 type scopesKey struct{}
 
+type bearerKey struct{}
+
 func NewTokenAuthenticator(tokens []string) *TokenAuthenticator {
 	a := &TokenAuthenticator{}
 	_ = a.ReplaceConfigured(tokens, nil)
@@ -248,7 +250,15 @@ func (a *TokenAuthenticator) GrantFor(ctx context.Context, token string, require
 	if !ok {
 		return ctx, "", false
 	}
-	return WithGrant(ctx, id, scopes), id, true
+	return context.WithValue(WithGrant(ctx, id, scopes), bearerKey{}, token), id, true
+}
+
+// BearerToken returns the authenticated request's bearer token. The API uses
+// it only to forward an owner-only write to the owning node on the caller's
+// behalf; it is never logged.
+func BearerToken(ctx context.Context) string {
+	token, _ := ctx.Value(bearerKey{}).(string)
+	return token
 }
 
 // Middleware rejects invalid, expired, or under-scoped bearer credentials.

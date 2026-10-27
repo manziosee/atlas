@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"time"
 )
 
@@ -51,6 +52,10 @@ type Member struct {
 	Region      string `json:"region"`
 	State       State  `json:"state"`
 	Incarnation uint64 `json:"incarnation"`
+	// APIAddr is the base URL of the member's HTTP API (for example
+	// http://10.0.0.4:8080). Nodes use it to forward writes to the owner of a
+	// service. It is empty for members running older versions.
+	APIAddr string `json:"api_addr,omitempty"`
 	// Since is the local time of the last state change. It is not
 	// authoritative across nodes and is ignored on receipt.
 	Since time.Time `json:"since,omitzero"`
@@ -66,14 +71,28 @@ func (m Member) validate() error {
 	if m.ID == "" || len(m.ID) > maxIDLen {
 		return errors.New("membership: invalid member id")
 	}
-	if len(m.Region) > maxRegionLen || len(m.Addr) > maxAddrLen {
+	if len(m.Region) > maxRegionLen || len(m.Addr) > maxAddrLen || len(m.APIAddr) > maxAddrLen {
 		return errors.New("membership: region or address too long")
 	}
 	if _, _, err := net.SplitHostPort(m.Addr); err != nil {
 		return fmt.Errorf("membership: invalid member addr %q", m.Addr)
 	}
+	if m.APIAddr != "" && ValidateAPIAddr(m.APIAddr) != nil {
+		return fmt.Errorf("membership: invalid member API address %q", m.APIAddr)
+	}
 	if m.State > StateLeft {
 		return errors.New("membership: invalid state")
+	}
+	return nil
+}
+
+// ValidateAPIAddr accepts an http or https origin: scheme and host with an
+// optional port, and nothing else.
+func ValidateAPIAddr(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("membership: API address must be an http(s) origin such as http://10.0.0.4:8080")
 	}
 	return nil
 }

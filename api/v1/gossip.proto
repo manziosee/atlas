@@ -35,6 +35,8 @@ message Member {
   string region = 3;
   uint32 state = 4;
   uint64 incarnation = 5;
+  // Base URL of the member's HTTP API, used to forward owner-only writes.
+  string api_addr = 6;
 }
 
 message Service {
@@ -60,4 +62,10 @@ message Service {
   // Heartbeat TTL in seconds; zero means the service has no TTL. Older nodes
   // skip this field, so mixed-version clusters keep replicating.
   uint64 ttl_seconds = 14;
+  // Health-check tuning and drain state (zero values mean node defaults and
+  // not draining). Older nodes skip these fields.
+  uint64 check_interval_seconds = 15;
+  uint32 unhealthy_threshold = 16;
+  uint32 healthy_threshold = 17;
+  bool draining = 18;
 }

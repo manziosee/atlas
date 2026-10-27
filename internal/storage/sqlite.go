@@ -39,6 +39,14 @@ const MaxReplicatedServices = 100_000
 // MaxTTLSeconds bounds heartbeat TTLs to one day.
 const MaxTTLSeconds = 86_400
 
+// Health-check tuning bounds. Zero values select the node defaults.
+const (
+	MaxCheckIntervalSeconds   = 3600
+	MaxCheckThreshold         = 10
+	DefaultUnhealthyThreshold = 3
+	DefaultHealthyThreshold   = 2
+)
+
 type Health string
 
 const (
@@ -52,18 +60,26 @@ const (
 // CheckedAt and HeartbeatAt are the owner's local bookkeeping; they are never
 // replicated or included in the registry digest.
 type Service struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	NodeID      string    `json:"node_id"`
-	Address     string    `json:"address"`
-	Region      string    `json:"region"`
-	Version     string    `json:"version,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
-	HealthCheck string    `json:"health_check,omitempty"`
-	Health      Health    `json:"health"`
-	Revision    uint64    `json:"revision"`
-	Deleted     bool      `json:"deleted,omitempty"`
-	TTLSeconds  int64     `json:"ttl_seconds,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	NodeID      string   `json:"node_id"`
+	Address     string   `json:"address"`
+	Region      string   `json:"region"`
+	Version     string   `json:"version,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	HealthCheck string   `json:"health_check,omitempty"`
+	Health      Health   `json:"health"`
+	Revision    uint64   `json:"revision"`
+	Deleted     bool     `json:"deleted,omitempty"`
+	TTLSeconds  int64    `json:"ttl_seconds,omitempty"`
+	// CheckIntervalSeconds overrides ATLAS_HEALTH_CHECK_INTERVAL for this
+	// service; the thresholds are consecutive results needed to change state.
+	CheckIntervalSeconds int64 `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int   `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int   `json:"healthy_threshold,omitempty"`
+	// Draining keeps the record but removes it from lookups, DNS and client
+	// load balancing, so a deploy can stop sending traffic before shutdown.
+	Draining    bool      `json:"draining,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	CheckedAt   time.Time `json:"checked_at,omitzero"`
 	HeartbeatAt time.Time `json:"heartbeat_at,omitzero"`
@@ -108,12 +124,53 @@ func (service Service) Validate() error {
 		return errors.New("storage: health-check URL is too long")
 	}
 	if service.HealthCheck != "" {
-		u, err := url.ParseRequestURI(service.HealthCheck)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Host != service.Address {
-			return errors.New("storage: invalid health-check URL")
+		if err := ValidateHealthCheck(service.HealthCheck, service.Address); err != nil {
+			return err
 		}
 	}
+	if service.CheckIntervalSeconds < 0 || service.CheckIntervalSeconds > MaxCheckIntervalSeconds {
+		return errors.New("storage: check interval must be between 1 second and 1 hour")
+	}
+	if service.UnhealthyThreshold < 0 || service.UnhealthyThreshold > MaxCheckThreshold ||
+		service.HealthyThreshold < 0 || service.HealthyThreshold > MaxCheckThreshold {
+		return errors.New("storage: health thresholds must be between 1 and 10")
+	}
+	if service.HealthCheck == "" && (service.CheckIntervalSeconds != 0 || service.UnhealthyThreshold != 0 || service.HealthyThreshold != 0) {
+		return errors.New("storage: check interval and thresholds require a health check")
+	}
 	return nil
+}
+
+// Routable reports whether lookups, DNS and client load balancers may send
+// traffic to the service. Unknown health is routable as a fallback.
+func (service Service) Routable() bool {
+	return !service.Deleted && !service.Draining && service.Health != HealthUnhealthy
+}
+
+// ValidateHealthCheck accepts http(s)://, tcp:// and grpc(s):// checks whose
+// host and port are the service address. A gRPC check may name the service to
+// ask about in its path, for example grpc://10.0.0.5:9000/payments.v1.API.
+func ValidateHealthCheck(check, address string) error {
+	u, err := url.Parse(check)
+	if err != nil || u.User != nil || u.Hostname() == "" || u.Host != address || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("storage: health check must be a URL on the service address without credentials, query or fragment")
+	}
+	switch u.Scheme {
+	case "http", "https":
+		return nil
+	case "tcp":
+		if u.Path != "" {
+			return errors.New("storage: a tcp health check has no path")
+		}
+		return nil
+	case "grpc", "grpcs":
+		if strings.Count(strings.TrimPrefix(u.Path, "/"), "/") > 0 {
+			return errors.New("storage: a grpc health check path is a single service name")
+		}
+		return nil
+	default:
+		return errors.New("storage: health check scheme must be http, https, tcp, grpc or grpcs")
+	}
 }
 
 // Filter selects active services. Every set field must match, and a service
@@ -195,7 +252,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -221,6 +278,12 @@ CREATE INDEX IF NOT EXISTS services_lookup ON services(name, region, health, del
 ALTER TABLE services ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE services ADD COLUMN heartbeat_at INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS services_owner ON services(node_id, deleted);
+`,
+	3: `
+ALTER TABLE services ADD COLUMN check_interval_seconds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN unhealthy_threshold INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN healthy_threshold INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;
 `,
 }
 
@@ -369,7 +432,9 @@ func (s *Store) Update(ctx context.Context, id, nodeID string, ifRevision uint64
 // sameSpec compares the client-supplied part of two registrations.
 func sameSpec(a, b Service) bool {
 	return a.Name == b.Name && a.Address == b.Address && a.Region == b.Region && a.Version == b.Version &&
-		slices.Equal(a.Tags, b.Tags) && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds
+		slices.Equal(a.Tags, b.Tags) && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds &&
+		a.CheckIntervalSeconds == b.CheckIntervalSeconds && a.UnhealthyThreshold == b.UnhealthyThreshold &&
+		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining
 }
 
 func resetsHealth(before, after Service) bool {
@@ -675,17 +740,20 @@ func (s *Store) put(ctx context.Context, service Service) (Service, error) {
 		deleted = 1
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
+ check_interval_seconds,unhealthy_threshold,healthy_threshold,draining)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
  name=excluded.name,node_id=excluded.node_id,address=excluded.address,region=excluded.region,
  version=excluded.version,tags=excluded.tags,health_check=excluded.health_check,health=excluded.health,
  revision=excluded.revision,deleted=excluded.deleted,updated_at=excluded.updated_at,checked_at=excluded.checked_at,
- ttl_seconds=excluded.ttl_seconds,
+ ttl_seconds=excluded.ttl_seconds,check_interval_seconds=excluded.check_interval_seconds,
+ unhealthy_threshold=excluded.unhealthy_threshold,healthy_threshold=excluded.healthy_threshold,draining=excluded.draining,
  heartbeat_at=CASE WHEN excluded.heartbeat_at = 0 THEN services.heartbeat_at ELSE excluded.heartbeat_at END`,
 		service.ID, service.Name, service.NodeID, service.Address, service.Region, service.Version,
 		string(tags), service.HealthCheck, service.Health, service.Revision, deleted,
-		service.UpdatedAt.UnixNano(), timeNanos(service.CheckedAt), service.TTLSeconds, timeNanos(service.HeartbeatAt))
+		service.UpdatedAt.UnixNano(), timeNanos(service.CheckedAt), service.TTLSeconds, timeNanos(service.HeartbeatAt),
+		service.CheckIntervalSeconds, service.UnhealthyThreshold, service.HealthyThreshold, boolInt(service.Draining))
 	if err != nil {
 		return Service{}, fmt.Errorf("storage: save service: %w", err)
 	}
@@ -697,24 +765,27 @@ func (s *Store) updateCheckedAt(ctx context.Context, id string, at time.Time) er
 	return err
 }
 
-const serviceSelect = `SELECT id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at FROM services`
+const serviceSelect = `SELECT id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
+ check_interval_seconds,unhealthy_threshold,healthy_threshold,draining FROM services`
 
 type scanner interface{ Scan(...any) error }
 
 func scanService(row scanner) (Service, error) {
 	var service Service
 	var tags string
-	var deleted int
+	var deleted, draining int
 	var updatedAt, checkedAt, heartbeatAt int64
 	if err := row.Scan(&service.ID, &service.Name, &service.NodeID, &service.Address, &service.Region,
 		&service.Version, &tags, &service.HealthCheck, &service.Health, &service.Revision,
-		&deleted, &updatedAt, &checkedAt, &service.TTLSeconds, &heartbeatAt); err != nil {
+		&deleted, &updatedAt, &checkedAt, &service.TTLSeconds, &heartbeatAt,
+		&service.CheckIntervalSeconds, &service.UnhealthyThreshold, &service.HealthyThreshold, &draining); err != nil {
 		return Service{}, err
 	}
 	if err := json.Unmarshal([]byte(tags), &service.Tags); err != nil {
 		return Service{}, fmt.Errorf("storage: decode tags: %w", err)
 	}
 	service.Deleted = deleted != 0
+	service.Draining = draining != 0
 	service.UpdatedAt = time.Unix(0, updatedAt).UTC()
 	if checkedAt != 0 {
 		service.CheckedAt = time.Unix(0, checkedAt).UTC()
@@ -723,6 +794,13 @@ func scanService(row scanner) (Service, error) {
 		service.HeartbeatAt = time.Unix(0, heartbeatAt).UTC()
 	}
 	return service, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func timeNanos(t time.Time) int64 {

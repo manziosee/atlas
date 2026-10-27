@@ -131,21 +131,26 @@ func (MemberState) EnumDescriptor() ([]byte, []int) {
 }
 
 type Service struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	NodeId        string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Address       string                 `protobuf:"bytes,4,opt,name=address,proto3" json:"address,omitempty"`
-	Region        string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"`
-	Version       string                 `protobuf:"bytes,6,opt,name=version,proto3" json:"version,omitempty"`
-	Tags          []string               `protobuf:"bytes,7,rep,name=tags,proto3" json:"tags,omitempty"`
-	HealthCheck   string                 `protobuf:"bytes,8,opt,name=health_check,json=healthCheck,proto3" json:"health_check,omitempty"`
-	Health        Health                 `protobuf:"varint,9,opt,name=health,proto3,enum=atlas.registry.v1.Health" json:"health,omitempty"`
-	Revision      uint64                 `protobuf:"varint,10,opt,name=revision,proto3" json:"revision,omitempty"`
-	TtlSeconds    int64                  `protobuf:"varint,11,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	CheckedAt     *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
-	HeartbeatAt   *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=heartbeat_at,json=heartbeatAt,proto3" json:"heartbeat_at,omitempty"`
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Id                   string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name                 string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	NodeId               string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Address              string                 `protobuf:"bytes,4,opt,name=address,proto3" json:"address,omitempty"`
+	Region               string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"`
+	Version              string                 `protobuf:"bytes,6,opt,name=version,proto3" json:"version,omitempty"`
+	Tags                 []string               `protobuf:"bytes,7,rep,name=tags,proto3" json:"tags,omitempty"`
+	HealthCheck          string                 `protobuf:"bytes,8,opt,name=health_check,json=healthCheck,proto3" json:"health_check,omitempty"`
+	Health               Health                 `protobuf:"varint,9,opt,name=health,proto3,enum=atlas.registry.v1.Health" json:"health,omitempty"`
+	Revision             uint64                 `protobuf:"varint,10,opt,name=revision,proto3" json:"revision,omitempty"`
+	TtlSeconds           int64                  `protobuf:"varint,11,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	UpdatedAt            *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	CheckedAt            *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	HeartbeatAt          *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=heartbeat_at,json=heartbeatAt,proto3" json:"heartbeat_at,omitempty"`
+	CheckIntervalSeconds int64                  `protobuf:"varint,15,opt,name=check_interval_seconds,json=checkIntervalSeconds,proto3" json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int32                  `protobuf:"varint,16,opt,name=unhealthy_threshold,json=unhealthyThreshold,proto3" json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int32                  `protobuf:"varint,17,opt,name=healthy_threshold,json=healthyThreshold,proto3" json:"healthy_threshold,omitempty"`
+	// Draining services stay registered but receive no traffic.
+	Draining      bool `protobuf:"varint,18,opt,name=draining,proto3" json:"draining,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -278,18 +283,53 @@ func (x *Service) GetHeartbeatAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Service) GetCheckIntervalSeconds() int64 {
+	if x != nil {
+		return x.CheckIntervalSeconds
+	}
+	return 0
+}
+
+func (x *Service) GetUnhealthyThreshold() int32 {
+	if x != nil {
+		return x.UnhealthyThreshold
+	}
+	return 0
+}
+
+func (x *Service) GetHealthyThreshold() int32 {
+	if x != nil {
+		return x.HealthyThreshold
+	}
+	return 0
+}
+
+func (x *Service) GetDraining() bool {
+	if x != nil {
+		return x.Draining
+	}
+	return false
+}
+
 // ServiceSpec is the client-owned part of a registration. Use either
-// health_check or ttl_seconds, not both.
+// health_check or ttl_seconds, not both. health_check is an http(s)://,
+// tcp:// or grpc(s):// URL on the service address; the interval and
+// thresholds tune it (zero means the node default: 3 failures to turn
+// unhealthy, 2 successes to recover).
 type ServiceSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
-	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
-	Tags          []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
-	HealthCheck   string                 `protobuf:"bytes,5,opt,name=health_check,json=healthCheck,proto3" json:"health_check,omitempty"`
-	TtlSeconds    int64                  `protobuf:"varint,6,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Name                 string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Address              string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Version              string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	Tags                 []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
+	HealthCheck          string                 `protobuf:"bytes,5,opt,name=health_check,json=healthCheck,proto3" json:"health_check,omitempty"`
+	TtlSeconds           int64                  `protobuf:"varint,6,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
+	CheckIntervalSeconds int64                  `protobuf:"varint,7,opt,name=check_interval_seconds,json=checkIntervalSeconds,proto3" json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int32                  `protobuf:"varint,8,opt,name=unhealthy_threshold,json=unhealthyThreshold,proto3" json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int32                  `protobuf:"varint,9,opt,name=healthy_threshold,json=healthyThreshold,proto3" json:"healthy_threshold,omitempty"`
+	Draining             bool                   `protobuf:"varint,10,opt,name=draining,proto3" json:"draining,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ServiceSpec) Reset() {
@@ -362,6 +402,34 @@ func (x *ServiceSpec) GetTtlSeconds() int64 {
 		return x.TtlSeconds
 	}
 	return 0
+}
+
+func (x *ServiceSpec) GetCheckIntervalSeconds() int64 {
+	if x != nil {
+		return x.CheckIntervalSeconds
+	}
+	return 0
+}
+
+func (x *ServiceSpec) GetUnhealthyThreshold() int32 {
+	if x != nil {
+		return x.UnhealthyThreshold
+	}
+	return 0
+}
+
+func (x *ServiceSpec) GetHealthyThreshold() int32 {
+	if x != nil {
+		return x.HealthyThreshold
+	}
+	return 0
+}
+
+func (x *ServiceSpec) GetDraining() bool {
+	if x != nil {
+		return x.Draining
+	}
+	return false
 }
 
 type RegisterServiceRequest struct {
@@ -484,7 +552,8 @@ type UpdateServiceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Spec  *ServiceSpec           `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
-	// Paths: name, address, version, tags, health_check, ttl_seconds.
+	// Paths: name, address, version, tags, health_check, ttl_seconds,
+	// check_interval_seconds, unhealthy_threshold, healthy_threshold, draining.
 	UpdateMask *fieldmaskpb.FieldMask `protobuf:"bytes,3,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
 	// When non-zero, the update fails with FAILED_PRECONDITION unless the
 	// stored revision matches.
@@ -944,13 +1013,15 @@ func (x *LookupServiceRequest) GetTags() []string {
 }
 
 type Member struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Addr          string                 `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
-	Region        string                 `protobuf:"bytes,3,opt,name=region,proto3" json:"region,omitempty"`
-	State         MemberState            `protobuf:"varint,4,opt,name=state,proto3,enum=atlas.registry.v1.MemberState" json:"state,omitempty"`
-	Incarnation   uint64                 `protobuf:"varint,5,opt,name=incarnation,proto3" json:"incarnation,omitempty"`
-	Since         *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=since,proto3" json:"since,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Addr        string                 `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
+	Region      string                 `protobuf:"bytes,3,opt,name=region,proto3" json:"region,omitempty"`
+	State       MemberState            `protobuf:"varint,4,opt,name=state,proto3,enum=atlas.registry.v1.MemberState" json:"state,omitempty"`
+	Incarnation uint64                 `protobuf:"varint,5,opt,name=incarnation,proto3" json:"incarnation,omitempty"`
+	Since       *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=since,proto3" json:"since,omitempty"`
+	// Base URL of the member's HTTP API, used to forward owner-only writes.
+	ApiAddr       string `protobuf:"bytes,7,opt,name=api_addr,json=apiAddr,proto3" json:"api_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1025,6 +1096,13 @@ func (x *Member) GetSince() *timestamppb.Timestamp {
 		return x.Since
 	}
 	return nil
+}
+
+func (x *Member) GetApiAddr() string {
+	if x != nil {
+		return x.ApiAddr
+	}
+	return ""
 }
 
 type GetNodeRequest struct {
@@ -1385,7 +1463,7 @@ var File_v1_registry_service_proto protoreflect.FileDescriptor
 
 const file_v1_registry_service_proto_rawDesc = "" +
 	"\n" +
-	"\x19v1/registry_service.proto\x12\x11atlas.registry.v1\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xee\x03\n" +
+	"\x19v1/registry_service.proto\x12\x11atlas.registry.v1\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9e\x05\n" +
 	"\aService\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
@@ -1404,7 +1482,11 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x129\n" +
 	"\n" +
 	"checked_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\x12=\n" +
-	"\fheartbeat_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\vheartbeatAt\"\xad\x01\n" +
+	"\fheartbeat_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\vheartbeatAt\x124\n" +
+	"\x16check_interval_seconds\x18\x0f \x01(\x03R\x14checkIntervalSeconds\x12/\n" +
+	"\x13unhealthy_threshold\x18\x10 \x01(\x05R\x12unhealthyThreshold\x12+\n" +
+	"\x11healthy_threshold\x18\x11 \x01(\x05R\x10healthyThreshold\x12\x1a\n" +
+	"\bdraining\x18\x12 \x01(\bR\bdraining\"\xdd\x02\n" +
 	"\vServiceSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x18\n" +
@@ -1412,7 +1494,12 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"\x04tags\x18\x04 \x03(\tR\x04tags\x12!\n" +
 	"\fhealth_check\x18\x05 \x01(\tR\vhealthCheck\x12\x1f\n" +
 	"\vttl_seconds\x18\x06 \x01(\x03R\n" +
-	"ttlSeconds\"\x85\x01\n" +
+	"ttlSeconds\x124\n" +
+	"\x16check_interval_seconds\x18\a \x01(\x03R\x14checkIntervalSeconds\x12/\n" +
+	"\x13unhealthy_threshold\x18\b \x01(\x05R\x12unhealthyThreshold\x12+\n" +
+	"\x11healthy_threshold\x18\t \x01(\x05R\x10healthyThreshold\x12\x1a\n" +
+	"\bdraining\x18\n" +
+	" \x01(\bR\bdraining\"\x85\x01\n" +
 	"\x16RegisterServiceRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x122\n" +
 	"\x04spec\x18\x02 \x01(\v2\x1e.atlas.registry.v1.ServiceSpecR\x04spec\x12'\n" +
@@ -1451,14 +1538,15 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\tR\x03key\x12\x12\n" +
-	"\x04tags\x18\x04 \x03(\tR\x04tags\"\xce\x01\n" +
+	"\x04tags\x18\x04 \x03(\tR\x04tags\"\xe9\x01\n" +
 	"\x06Member\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04addr\x18\x02 \x01(\tR\x04addr\x12\x16\n" +
 	"\x06region\x18\x03 \x01(\tR\x06region\x124\n" +
 	"\x05state\x18\x04 \x01(\x0e2\x1e.atlas.registry.v1.MemberStateR\x05state\x12 \n" +
 	"\vincarnation\x18\x05 \x01(\x04R\vincarnation\x120\n" +
-	"\x05since\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\x10\n" +
+	"\x05since\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x12\x19\n" +
+	"\bapi_addr\x18\a \x01(\tR\aapiAddr\"\x10\n" +
 	"\x0eGetNodeRequest\"r\n" +
 	"\x0fGetNodeResponse\x12-\n" +
 	"\x04node\x18\x01 \x01(\v2\x19.atlas.registry.v1.MemberR\x04node\x12\x18\n" +

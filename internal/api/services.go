@@ -14,16 +14,6 @@ import (
 	"github.com/manziosee/atlas/internal/storage"
 )
 
-// servicePatch carries the fields a PATCH changes; absent fields are kept.
-type servicePatch struct {
-	Name        *string   `json:"name"`
-	Address     *string   `json:"address"`
-	Version     *string   `json:"version"`
-	Tags        *[]string `json:"tags"`
-	HealthCheck *string   `json:"health_check"`
-	TTLSeconds  *int64    `json:"ttl_seconds"`
-}
-
 func (d Deps) registerService(w http.ResponseWriter, r *http.Request) {
 	var spec serviceSpec
 	if !decodeBody(w, r, &spec) {
@@ -55,7 +45,7 @@ func (d Deps) replaceService(w http.ResponseWriter, r *http.Request) {
 		d.writeServiceResult(w, r, service, outcome, err)
 		return
 	}
-	service, err := d.update(r.Context(), id, ifRevision, func(current *serviceSpec) { *current = spec })
+	service, err := d.update(r.Context(), id, ifRevision, fullPatch(spec))
 	d.writeServiceResult(w, r, service, storage.Updated, err)
 }
 
@@ -68,21 +58,8 @@ func (d Deps) patchService(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	service, err := d.update(r.Context(), r.PathValue("id"), ifRevision, func(s *serviceSpec) {
-		apply(&s.Name, patch.Name)
-		apply(&s.Address, patch.Address)
-		apply(&s.Version, patch.Version)
-		apply(&s.Tags, patch.Tags)
-		apply(&s.HealthCheck, patch.HealthCheck)
-		apply(&s.TTLSeconds, patch.TTLSeconds)
-	})
+	service, err := d.update(r.Context(), r.PathValue("id"), ifRevision, patch)
 	d.writeServiceResult(w, r, service, storage.Updated, err)
-}
-
-func apply[T any](dst *T, value *T) {
-	if value != nil {
-		*dst = *value
-	}
 }
 
 func (d Deps) heartbeat(w http.ResponseWriter, r *http.Request) {
@@ -160,8 +137,17 @@ func (d Deps) writeServiceResult(w http.ResponseWriter, r *http.Request, service
 func (d Deps) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var invalidInput validationError
 	var alive ownerAliveError
+	var remote *remoteError
+	var unreachable *ownerUnreachableError
 	owner, owned := ownerOf(err)
 	switch {
+	case errors.As(err, &remote):
+		remote.body.RequestID = ""
+		httperr.WriteBody(w, remote.status, remote.body)
+	case errors.As(err, &unreachable):
+		httperr.WriteBody(w, http.StatusBadGateway, httperr.Body{
+			Error: "the owning node did not answer; retry shortly", Code: httperr.CodeOwnerUnreachable, OwnerNode: unreachable.owner,
+		})
 	case errors.As(err, &invalidInput):
 		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, invalidInput.msg)
 	case errors.Is(err, storage.ErrNotFound):

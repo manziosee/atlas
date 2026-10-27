@@ -287,10 +287,15 @@ also grants the other two. Scoped credentials have a required RFC3339
 
 Each node persists its registrations in SQLite and replicates them to every
 other node over gossip, so any node can answer reads. A registration belongs
-to the node that accepted it: that node runs its health checks and accepts its
-updates. On Fly.io, a write that reaches the wrong machine is replayed to the
-owner automatically. Elsewhere, the response is `409 not_owner` with an
-`owner_node` field.
+to the node that accepted it: that node runs its health checks and applies its
+updates. **You can still send any write to any node.** Every node gossips its
+API address (`ATLAS_API_ADVERTISE_ADDR`, derived automatically when unset), so
+a node that receives an update, heartbeat or delete for another node's service
+forwards it to the owner with your own credential and returns the owner's
+answer. The owner checks the credential again, so forwarding grants nothing
+extra. If the owner is alive but not answering, the response is
+`502 owner_unreachable`; if it runs an older version without an API address,
+`409 not_owner` with an `owner_node` field.
 
 | Method and path | Purpose |
 |-----------------|---------|
@@ -298,7 +303,7 @@ owner automatically. Elsewhere, the response is `409 not_owner` with an
 | `GET /v1/services` | List instances, 100 per page by default (`limit` up to 1000). Filter by `name`, `region`, `health`, `version`, `node_id`, and repeated `tag`. Follow `next_cursor` for more. |
 | `GET /v1/services/{id}` | Read an instance. The `ETag` header is its revision. |
 | `PUT /v1/services/{id}` | Create or fully replace an instance with that ID. |
-| `PATCH /v1/services/{id}` | Change some fields. Send `If-Match: "<revision>"` to reject the change if someone else updated it first (`412 precondition_failed`). |
+| `PATCH /v1/services/{id}` | Change some fields, for example `{"draining": true}`. Send `If-Match: "<revision>"` to reject the change if someone else updated it first (`412 precondition_failed`). |
 | `POST /v1/services/{id}/heartbeat` | Keep a TTL instance healthy. |
 | `DELETE /v1/services/{id}` | Deregister. |
 | `GET /v1/lookup/{name}` | Select one instance by routing rules (`region`, `key`, `tag`). |
@@ -309,12 +314,30 @@ owner automatically. Elsewhere, the response is `409 not_owner` with an
 | `DELETE /v1/admin/nodes/{id}` | Evict a failed node and delete its services. |
 
 **Service lifecycle.** A service is kept honest in one of two ways:
-- **Health check:** with `health_check`, the owner probes that URL every
-  `ATLAS_HEALTH_CHECK_INTERVAL`.
+- **Health check:** the owner probes `health_check` on the service address.
+  The URL scheme picks the probe:
+
+  | Scheme | Passes when |
+  |--------|-------------|
+  | `http://`, `https://` | the response is 2xx (redirects are not followed) |
+  | `tcp://` | a TCP connection opens |
+  | `grpc://`, `grpcs://` | the standard `grpc.health.v1` check answers `SERVING`; an optional path names the gRPC service, as in `grpc://10.0.0.8:9000/payments.v1.API` |
+
+  The first result decides the health of a new service. After that, a slow
+  response doesn't flap it: it turns `unhealthy` only after
+  `unhealthy_threshold` consecutive failures (default 3) and recovers after
+  `healthy_threshold` consecutive passes (default 2). `check_interval_seconds`
+  overrides `ATLAS_HEALTH_CHECK_INTERVAL` for one service.
 - **TTL:** with `ttl_seconds`, the service calls the heartbeat endpoint itself.
   After one missed TTL period it is marked `unhealthy`; after three it is
   removed, and the next heartbeat returns `404`, telling the client to
   register again.
+
+**Draining.** Set `"draining": true` (with `PATCH`, or `atlas-cli drain ID`)
+before stopping an instance for a deploy. It stays registered and keeps its
+health, but lookups, DNS and the client load balancers stop sending it new
+traffic. Set it back to `false`, or deregister the instance once it has
+stopped.
 
 If the owning node itself disappears:
 - Any node accepts a `DELETE` for its services.
@@ -332,7 +355,7 @@ message and the `request_id` that appears in the access log:
 {"error":"service revision does not match If-Match","code":"precondition_failed","request_id":"3aca60719acee38e"}
 ```
 
-Branch on `code`: `not_found`, `not_owner`, `owner_alive`,
+Branch on `code`: `not_found`, `not_owner`, `owner_alive`, `owner_unreachable`,
 `precondition_failed`, `no_ttl`, `validation_failed`, `invalid_json`,
 `unauthorized`, `insufficient_scope`, `rate_limited`, `no_healthy_instance`,
 and the others listed in the OpenAPI `Error` schema.
@@ -383,7 +406,8 @@ resp, err := registry.RegisterService(ctx, &atlasv1.RegisterServiceRequest{
 - `atlas-cli services --tag primary --output json` lists every page.
 - `atlas-cli lookup NAME --key customer-17` selects an instance.
 - `atlas-cli watch --kinds service --service payments` streams events.
-- `atlas-cli heartbeat ID` and `atlas-cli deregister ID` manage one instance.
+- `atlas-cli heartbeat ID`, `atlas-cli drain ID`, `atlas-cli undrain ID` and
+  `atlas-cli deregister ID` manage one instance.
 
 Admin commands:
 - `atlas-cli credentials` lists credentials.
@@ -437,6 +461,7 @@ client = AtlasClient("https://atlas.example:8080", token="...", ca_file="ca.crt"
 # Safe to retry: the same idempotency key always maps to the same record.
 me = client.register("payments", "10.0.0.7:8443", ttl_seconds=15, idempotency_key="payments-host-7")
 client.heartbeat(me["id"])                       # call every ~5 s from your service
+client.drain(me["id"])                           # before shutting down: stop new traffic
 
 instance = client.lookup("payments", region="eu", key="customer-17")
 print(instance["address"])
@@ -489,9 +514,45 @@ err = client.WatchWithOptions(ctx, atlas.WatchOptions{Kinds: []string{"service"}
 ```
 
 `List` follows every page; `ListPage` returns one. `Update`, `Replace`,
-`Delete`, `Node`, `Members`, `Credentials`, `Backup` and `EvictNode` cover the
-rest of the API, and `*atlas.APIError` carries the server's `Code`,
-`RequestID` and `OwnerNode`.
+`Drain`, `Undrain`, `Delete`, `Node`, `Members`, `Credentials`, `Backup` and
+`EvictNode` cover the rest of the API, and `*atlas.APIError` carries the
+server's `Code`, `RequestID` and `OwnerNode`.
+
+### Client-side load balancing
+
+Services don't have to call `/v1/lookup` before every request. The Go client
+keeps a live list of each service's routable instances: healthy (or
+unknown-health when none is healthy), never draining, and from your region
+first. It updates the list from the event stream and re-reads it every 30
+seconds.
+
+**HTTP:** use `atlas.NewTransport` as the `http.Client` transport and address
+services as `<name>.atlas`. Requests rotate across instances. If an instance
+refuses the connection, it's skipped for 30 seconds and a replayable request
+(GET, HEAD, OPTIONS, PUT, DELETE, or anything with an `Idempotency-Key`) is
+retried once on another instance. Other hosts pass through unchanged.
+
+```go
+transport := atlas.NewTransport(client, nil, atlas.InstanceOptions{Region: "eu"})
+defer transport.Close()
+httpClient := &http.Client{Transport: transport}
+resp, err := httpClient.Get("http://payments.atlas/v1/charges")
+```
+
+**gRPC:** register the resolver once, then dial `atlas:///<name>`, optionally
+with `?region=` and repeated `&tag=` filters. The connection follows the
+instance list and uses `round_robin` unless your service config picks another
+policy.
+
+```go
+import "github.com/manziosee/atlas/pkg/atlas/grpcresolver"
+
+grpcresolver.Register(client)
+conn, err := grpc.NewClient("atlas:///payments?region=eu&tag=v2", grpc.WithTransportCredentials(creds))
+```
+
+For finer control, `client.WatchInstances` returns the same live list with
+`Instances`, `Pick` and `OnChange`.
 
 Generate command completion with `atlas-cli completion bash`, `zsh`, `fish`,
 or `powershell`, then load the printed script in the matching shell.
@@ -573,23 +634,31 @@ answer:
 curl -s "${auth[@]}" "http://127.0.0.1:8083/v1/lookup/payments?tag=primary"
 ```
 
-**5. Update it safely.** The service is owned by node 1, so node 2 refuses
-the change and names the owner (on Fly.io the request is replayed to the
-owner instead):
+**5. Update it through any node.** The service is owned by node 1, but you
+can send the change to node 2. Node 2 forwards it to node 1 and returns the
+result, so the response still shows `"node_id":"atlas-1"`:
 
 ```bash
 curl -s "${auth[@]}" -X PATCH -d '{"version":"2.4.0"}' http://127.0.0.1:8082/v1/services/$ID
-# {"error":"service is owned by node atlas-1; ...","code":"not_owner","owner_node":"atlas-1",...}
 ```
 
-On the owner, `If-Match` guards against overwriting someone else's change.
-The first call succeeds and moves the revision forward; repeating it with the
-old revision fails:
+`If-Match` guards against overwriting someone else's change. The first call
+succeeds and moves the revision forward; repeating it with the old revision
+fails, through any node:
 
 ```bash
-curl -s "${auth[@]}" -X PATCH -H 'If-Match: "2"' -d '{"version":"2.4.0"}' http://127.0.0.1:8081/v1/services/$ID
-curl -s "${auth[@]}" -X PATCH -H 'If-Match: "2"' -d '{"version":"2.5.0"}' http://127.0.0.1:8081/v1/services/$ID
+curl -s "${auth[@]}" -X PATCH -H 'If-Match: "3"' -d '{"version":"2.5.0"}' http://127.0.0.1:8083/v1/services/$ID
+curl -s "${auth[@]}" -X PATCH -H 'If-Match: "3"' -d '{"version":"2.6.0"}' http://127.0.0.1:8083/v1/services/$ID
 # {"error":"service revision does not match If-Match","code":"precondition_failed",...}
+```
+
+**Drain it before a deploy.** Lookups skip it right away (the watcher prints
+`service.updated`), while it stays registered and healthy:
+
+```bash
+docker compose exec atlas-1 atlas-cli drain $ID --token "$ATLAS_TOKEN"
+curl -s "${auth[@]}" "http://127.0.0.1:8083/v1/lookup/payments"   # no_healthy_instance
+docker compose exec atlas-1 atlas-cli undrain $ID --token "$ATLAS_TOKEN"
 ```
 
 **6. Let the process "crash."** Stop sending heartbeats. About 15 seconds
@@ -644,9 +713,10 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_TLS_ENABLED` | `false` | HTTPS for the API (TLS 1.3). |
 | `ATLAS_GRPC_ADDR` | `0.0.0.0:8082` | gRPC listener using the same TLS and bearer-token settings. |
 | `ATLAS_PPROF_ADDR` | `127.0.0.1:6060` | Local-only Go pprof listener; configuration rejects non-loopback bind addresses. |
-| `ATLAS_TRUSTED_PROXIES` | empty | Comma-separated CIDRs allowed to supply `X-Forwarded-For` client addresses. |
+| `ATLAS_TRUSTED_PROXIES` | empty | Comma-separated CIDRs allowed to supply `X-Forwarded-For` client addresses. Add the cluster's own network so forwarded writes are rate-limited per original client rather than per forwarding node. |
+| `ATLAS_API_ADVERTISE_ADDR` | derived | Base URL peers use to forward writes here, for example `https://atlas-2.internal:8080`. Unset, it's the gossip advertise host with the `ATLAS_HTTP_ADDR` port. With TLS, peers verify this name against the node certificate, which must also allow client authentication. |
 | `ATLAS_DB_PATH` | `data/atlas.db` | Per-node SQLite file for service registry persistence. |
-| `ATLAS_HEALTH_CHECK_INTERVAL` / `_TIMEOUT` | `5s` / `1s` | Probe interval and deadline for registered HTTP checks. |
+| `ATLAS_HEALTH_CHECK_INTERVAL` / `_TIMEOUT` | `5s` / `1s` | Default probe interval (a service can set `check_interval_seconds`) and the deadline for each probe. Up to 16 probes run at once. |
 | `ATLAS_ORPHAN_SERVICE_REAP` | `10m` | Delete services whose owning node has been gone this long; `0` disables. Minimum `1m`, so a restarting node keeps its services. |
 | `ATLAS_TLS_CLIENT_AUTH` | `false` | Require client certificates (mTLS). |
 | `ATLAS_PROBE_INTERVAL` / `_TIMEOUT` | `1s` / `500ms` | Failure-detector timing. |
@@ -715,10 +785,12 @@ fly volumes create atlas_data -a atlas-edge --region cdg --size 1 --count 2
 fly deploy --build-arg VERSION="$(git describe --tags --always)" --build-arg COMMIT="$(git rev-parse HEAD)"
 ```
 
-Machines get their node ID from their hostname, which on Fly is the Machine
-ID. That lets a node answer an owner-only write that reached the wrong
-Machine with a `Fly-Replay` header, so clients behind the public load
-balancer never see `not_owner`. Pushes to `main` deploy through
+Writes that reach the wrong Machine are forwarded to the owner over Fly's
+private network (each node advertises `http://[<private IP>]:8080`). Node
+IDs default to the hostname, which on Fly is the Machine ID, so if forwarding
+is unavailable a node falls back to answering with a `Fly-Replay` header.
+Either way, clients behind the public load balancer never see `not_owner`.
+Pushes to `main` deploy through
 `.github/workflows/fly-deploy.yml` once CI passes, which needs a
 `FLY_API_TOKEN` repository secret (`fly tokens create deploy`).
 
@@ -822,6 +894,13 @@ atlas/
 - [x] **Phase 3 follow-up, service lifecycle:** TTL heartbeats, deletion and automatic reaping
   of services whose owner left the cluster, idempotent registration, `PUT`/`PATCH` with
   `If-Match` revisions, owner-adopted IDs, and Fly.io replay of owner-only writes.
+- [x] **Writes through any node:** nodes gossip their API address and forward updates,
+  heartbeats and deletes to the owner with the caller's credential, over HTTP and gRPC.
+- [x] **Client-side load balancing:** a Go `http.RoundTripper` for `<service>.atlas` hosts
+  and a gRPC `atlas:///` resolver that follow live instance lists, skip draining
+  instances and retry refused connections elsewhere.
+- [x] **Steadier health checks:** HTTP, TCP and gRPC-health probes, per-service intervals,
+  consecutive failure/success thresholds, and a draining flag for zero-downtime deploys.
 - [x] **Phase 3 follow-up:** bounded registry digest repair over authenticated
   TCP push-pull, including tombstones and full snapshots capped at 100,000 rows.
 - [x] **Adoption:** optional private-network DNS listener for healthy service
@@ -861,7 +940,7 @@ atlas/
   recovery plus a running-node network partition and reconnection.
 - [x] **Test follow-up:** authenticated k6 API load profile runs in Compose CI.
 - [ ] **Test follow-up:** TLS rotation end-to-end tests. CI enforces 60% total
-  statement coverage of hand-written code; the current measured total is 64.9%.
+  statement coverage of hand-written code; the current measured total is 66.5%.
 - [x] **Deployment foundation:** Compose, Kustomize dev/production overlays,
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
 - [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,

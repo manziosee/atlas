@@ -56,6 +56,10 @@ class ServiceInstance(TypedDict, total=False):
     health: str
     revision: int
     ttl_seconds: int
+    check_interval_seconds: int
+    unhealthy_threshold: int
+    healthy_threshold: int
+    draining: bool
     updated_at: str
     checked_at: str
     heartbeat_at: str
@@ -143,6 +147,10 @@ class AtlasClient:
         tags: list[str] | None = None,
         health_check: str = "",
         ttl_seconds: int = 0,
+        check_interval_seconds: int = 0,
+        unhealthy_threshold: int = 0,
+        healthy_threshold: int = 0,
+        draining: bool = False,
         service_id: str = "",
         idempotency_key: str = "",
     ) -> ServiceInstance:
@@ -151,17 +159,15 @@ class AtlasClient:
         Pass ``service_id`` or ``idempotency_key`` to make retries and
         redeploys update the same record instead of creating duplicates.
         Use either ``health_check`` or ``ttl_seconds`` with :meth:`heartbeat`.
+        ``health_check`` is an ``http(s)://``, ``tcp://`` or ``grpc(s)://`` URL
+        on ``address``; the interval and thresholds tune it (zero uses the
+        node defaults: 3 failures to turn unhealthy, 2 successes to recover).
         """
-        payload: dict[str, Any] = {"name": name, "address": address}
-        for key, value in (
-            ("id", service_id),
-            ("version", version),
-            ("tags", tags),
-            ("health_check", health_check),
-            ("ttl_seconds", ttl_seconds),
-        ):
-            if value:
-                payload[key] = value
+        payload = _spec(
+            name, address, id=service_id, version=version, tags=tags, health_check=health_check,
+            ttl_seconds=ttl_seconds, check_interval_seconds=check_interval_seconds,
+            unhealthy_threshold=unhealthy_threshold, healthy_threshold=healthy_threshold, draining=draining,
+        )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return cast(ServiceInstance, self._request("POST", "/v1/services", payload, headers=headers))
 
@@ -175,6 +181,10 @@ class AtlasClient:
         tags: list[str] | None = None,
         health_check: str = "",
         ttl_seconds: int = 0,
+        check_interval_seconds: int = 0,
+        unhealthy_threshold: int = 0,
+        healthy_threshold: int = 0,
+        draining: bool = False,
         if_revision: int = 0,
     ) -> ServiceInstance:
         """Create or fully replace the service with ``service_id`` (PUT).
@@ -182,10 +192,11 @@ class AtlasClient:
         With ``if_revision`` the call fails with code ``precondition_failed``
         if the service changed since that revision was read.
         """
-        payload: dict[str, Any] = {"name": name, "address": address}
-        for key, value in (("version", version), ("tags", tags), ("health_check", health_check), ("ttl_seconds", ttl_seconds)):
-            if value:
-                payload[key] = value
+        payload = _spec(
+            name, address, version=version, tags=tags, health_check=health_check, ttl_seconds=ttl_seconds,
+            check_interval_seconds=check_interval_seconds, unhealthy_threshold=unhealthy_threshold,
+            healthy_threshold=healthy_threshold, draining=draining,
+        )
         return cast(
             ServiceInstance,
             self._request("PUT", self._service_path(service_id), payload, headers=_if_match(if_revision)),
@@ -201,9 +212,14 @@ class AtlasClient:
         tags: list[str] = _UNSET,
         health_check: str = _UNSET,
         ttl_seconds: int = _UNSET,
+        check_interval_seconds: int = _UNSET,
+        unhealthy_threshold: int = _UNSET,
+        healthy_threshold: int = _UNSET,
+        draining: bool = _UNSET,
         if_revision: int = 0,
     ) -> ServiceInstance:
-        """Change only the given fields (PATCH)."""
+        """Change only the given fields (PATCH). Any node accepts this; a node
+        that does not own the service forwards it to the owner."""
         patch = {
             key: value
             for key, value in {
@@ -213,6 +229,10 @@ class AtlasClient:
                 "tags": tags,
                 "health_check": health_check,
                 "ttl_seconds": ttl_seconds,
+                "check_interval_seconds": check_interval_seconds,
+                "unhealthy_threshold": unhealthy_threshold,
+                "healthy_threshold": healthy_threshold,
+                "draining": draining,
             }.items()
             if value is not _UNSET
         }
@@ -220,6 +240,15 @@ class AtlasClient:
             ServiceInstance,
             self._request("PATCH", self._service_path(service_id), patch, headers=_if_match(if_revision)),
         )
+
+    def drain(self, service_id: str) -> ServiceInstance:
+        """Stop new traffic to an instance while it stays registered, for
+        example before a deploy. Lookups, DNS and client balancers skip it."""
+        return self.update(service_id, draining=True)
+
+    def undrain(self, service_id: str) -> ServiceInstance:
+        """Return a drained instance to rotation."""
+        return self.update(service_id, draining=False)
 
     def heartbeat(self, service_id: str) -> ServiceInstance:
         """Refresh a TTL service. ``AtlasError.code == "not_found"`` means it
@@ -430,6 +459,13 @@ class AtlasClient:
             raise _error_from(exc) from exc
         except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             raise AtlasError(f"Atlas event stream failed: {exc}") from exc
+
+
+def _spec(name: str, address: str, **fields: Any) -> dict[str, Any]:
+    """Build a registration body, omitting unset (zero) optional fields."""
+    payload: dict[str, Any] = {"name": name, "address": address}
+    payload.update({key: value for key, value in fields.items() if value})
+    return payload
 
 
 def _if_match(revision: int) -> dict[str, str] | None:
