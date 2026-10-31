@@ -17,6 +17,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/manziosee/atlas/internal/metrics"
+	"github.com/manziosee/atlas/internal/routing"
 	"github.com/manziosee/atlas/internal/storage"
 )
 
@@ -40,6 +41,33 @@ type Server struct {
 	zone     string
 	ttl      uint32
 	next     atomic.Uint64
+
+	ownerAlive func(nodeID string) bool
+	stale      routing.StalePolicy
+}
+
+// SetStalePolicy makes answers follow the lookup stale-record policy:
+// instances whose owner is not alive are dropped (exclude) or used only when
+// no live-owner instance exists (prefer-live). Call it before Serve.
+func (s *Server) SetStalePolicy(policy routing.StalePolicy, ownerAlive func(nodeID string) bool) {
+	s.stale, s.ownerAlive = policy, ownerAlive
+}
+
+// preferLive applies the stale policy to routable instances.
+func (s *Server) preferLive(services []storage.Service) []storage.Service {
+	if s.ownerAlive == nil || s.stale == "" || s.stale == routing.StaleInclude {
+		return services
+	}
+	live := make([]storage.Service, 0, len(services))
+	for _, service := range services {
+		if s.ownerAlive(service.NodeID) {
+			live = append(live, service)
+		}
+	}
+	if len(live) > 0 || s.stale == routing.StaleExclude {
+		return live
+	}
+	return services
 }
 
 func New(registry Registry, zone string, ttl time.Duration) (*Server, error) {
@@ -252,6 +280,7 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 		response.RCode = dnsmessage.RCodeServerFailure
 		return pack(response)
 	}
+	services = s.preferLive(services)
 	filtered := make([]storage.Service, 0, len(services))
 	for _, service := range services {
 		if service.Health == storage.HealthHealthy && service.Routable() {

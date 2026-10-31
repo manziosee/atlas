@@ -948,10 +948,17 @@ type LookupServiceRequest struct {
 	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Region string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
 	// Stable routing key for consistent hashing.
-	Key           string   `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
-	Tags          []string `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Key  string   `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	Tags []string `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`
+	// Overrides of the node's routing policy for this lookup; empty keeps it.
+	// stale_policy: include, prefer-live or exclude (instances whose owner
+	// node is not alive). latency: nearest or off. latency_tolerance: a
+	// duration such as "10ms"; nodes this close to the nearest count as equal.
+	StalePolicy      string `protobuf:"bytes,5,opt,name=stale_policy,json=stalePolicy,proto3" json:"stale_policy,omitempty"`
+	Latency          string `protobuf:"bytes,6,opt,name=latency,proto3" json:"latency,omitempty"`
+	LatencyTolerance string `protobuf:"bytes,7,opt,name=latency_tolerance,json=latencyTolerance,proto3" json:"latency_tolerance,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *LookupServiceRequest) Reset() {
@@ -1010,6 +1017,27 @@ func (x *LookupServiceRequest) GetTags() []string {
 		return x.Tags
 	}
 	return nil
+}
+
+func (x *LookupServiceRequest) GetStalePolicy() string {
+	if x != nil {
+		return x.StalePolicy
+	}
+	return ""
+}
+
+func (x *LookupServiceRequest) GetLatency() string {
+	if x != nil {
+		return x.Latency
+	}
+	return ""
+}
+
+func (x *LookupServiceRequest) GetLatencyTolerance() string {
+	if x != nil {
+		return x.LatencyTolerance
+	}
+	return ""
 }
 
 type Member struct {
@@ -1105,6 +1133,234 @@ func (x *Member) GetApiAddr() string {
 	return ""
 }
 
+type GetServiceHistoryRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One service (history survives deletion), or every service named `name`,
+	// or every service when both are empty.
+	ServiceId string `protobuf:"bytes,1,opt,name=service_id,json=serviceId,proto3" json:"service_id,omitempty"`
+	Name      string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// 1-500; 50 when zero.
+	PageSize int32 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// next_before from the previous page.
+	Before        int64 `protobuf:"varint,4,opt,name=before,proto3" json:"before,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServiceHistoryRequest) Reset() {
+	*x = GetServiceHistoryRequest{}
+	mi := &file_v1_registry_service_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServiceHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServiceHistoryRequest) ProtoMessage() {}
+
+func (x *GetServiceHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_registry_service_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServiceHistoryRequest.ProtoReflect.Descriptor instead.
+func (*GetServiceHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *GetServiceHistoryRequest) GetServiceId() string {
+	if x != nil {
+		return x.ServiceId
+	}
+	return ""
+}
+
+func (x *GetServiceHistoryRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetServiceHistoryRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *GetServiceHistoryRequest) GetBefore() int64 {
+	if x != nil {
+		return x.Before
+	}
+	return 0
+}
+
+type HistoryEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Orders entries on the answering node only.
+	Seq       int64  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	ServiceId string `protobuf:"bytes,2,opt,name=service_id,json=serviceId,proto3" json:"service_id,omitempty"`
+	Name      string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Revision  uint64 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	// registered, updated, health or deregistered.
+	Change string                 `protobuf:"bytes,5,opt,name=change,proto3" json:"change,omitempty"`
+	At     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=at,proto3" json:"at,omitempty"`
+	// The record as it was after the change.
+	Service       *Service `protobuf:"bytes,7,opt,name=service,proto3" json:"service,omitempty"`
+	Deleted       bool     `protobuf:"varint,8,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HistoryEntry) Reset() {
+	*x = HistoryEntry{}
+	mi := &file_v1_registry_service_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryEntry) ProtoMessage() {}
+
+func (x *HistoryEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_registry_service_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryEntry.ProtoReflect.Descriptor instead.
+func (*HistoryEntry) Descriptor() ([]byte, []int) {
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *HistoryEntry) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *HistoryEntry) GetServiceId() string {
+	if x != nil {
+		return x.ServiceId
+	}
+	return ""
+}
+
+func (x *HistoryEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *HistoryEntry) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *HistoryEntry) GetChange() string {
+	if x != nil {
+		return x.Change
+	}
+	return ""
+}
+
+func (x *HistoryEntry) GetAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.At
+	}
+	return nil
+}
+
+func (x *HistoryEntry) GetService() *Service {
+	if x != nil {
+		return x.Service
+	}
+	return nil
+}
+
+func (x *HistoryEntry) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type GetServiceHistoryResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Entries []*HistoryEntry        `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// Zero on the last page.
+	NextBefore    int64 `protobuf:"varint,2,opt,name=next_before,json=nextBefore,proto3" json:"next_before,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServiceHistoryResponse) Reset() {
+	*x = GetServiceHistoryResponse{}
+	mi := &file_v1_registry_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServiceHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServiceHistoryResponse) ProtoMessage() {}
+
+func (x *GetServiceHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_v1_registry_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServiceHistoryResponse.ProtoReflect.Descriptor instead.
+func (*GetServiceHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetServiceHistoryResponse) GetEntries() []*HistoryEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *GetServiceHistoryResponse) GetNextBefore() int64 {
+	if x != nil {
+		return x.NextBefore
+	}
+	return 0
+}
+
 type GetNodeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1113,7 +1369,7 @@ type GetNodeRequest struct {
 
 func (x *GetNodeRequest) Reset() {
 	*x = GetNodeRequest{}
-	mi := &file_v1_registry_service_proto_msgTypes[13]
+	mi := &file_v1_registry_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1125,7 +1381,7 @@ func (x *GetNodeRequest) String() string {
 func (*GetNodeRequest) ProtoMessage() {}
 
 func (x *GetNodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_registry_service_proto_msgTypes[13]
+	mi := &file_v1_registry_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1138,7 +1394,7 @@ func (x *GetNodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodeRequest.ProtoReflect.Descriptor instead.
 func (*GetNodeRequest) Descriptor() ([]byte, []int) {
-	return file_v1_registry_service_proto_rawDescGZIP(), []int{13}
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{16}
 }
 
 type GetNodeResponse struct {
@@ -1152,7 +1408,7 @@ type GetNodeResponse struct {
 
 func (x *GetNodeResponse) Reset() {
 	*x = GetNodeResponse{}
-	mi := &file_v1_registry_service_proto_msgTypes[14]
+	mi := &file_v1_registry_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1164,7 +1420,7 @@ func (x *GetNodeResponse) String() string {
 func (*GetNodeResponse) ProtoMessage() {}
 
 func (x *GetNodeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_registry_service_proto_msgTypes[14]
+	mi := &file_v1_registry_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1177,7 +1433,7 @@ func (x *GetNodeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodeResponse.ProtoReflect.Descriptor instead.
 func (*GetNodeResponse) Descriptor() ([]byte, []int) {
-	return file_v1_registry_service_proto_rawDescGZIP(), []int{14}
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetNodeResponse) GetNode() *Member {
@@ -1209,7 +1465,7 @@ type ListMembersRequest struct {
 
 func (x *ListMembersRequest) Reset() {
 	*x = ListMembersRequest{}
-	mi := &file_v1_registry_service_proto_msgTypes[15]
+	mi := &file_v1_registry_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1221,7 +1477,7 @@ func (x *ListMembersRequest) String() string {
 func (*ListMembersRequest) ProtoMessage() {}
 
 func (x *ListMembersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_registry_service_proto_msgTypes[15]
+	mi := &file_v1_registry_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1234,7 +1490,7 @@ func (x *ListMembersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMembersRequest.ProtoReflect.Descriptor instead.
 func (*ListMembersRequest) Descriptor() ([]byte, []int) {
-	return file_v1_registry_service_proto_rawDescGZIP(), []int{15}
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{18}
 }
 
 type ListMembersResponse struct {
@@ -1246,7 +1502,7 @@ type ListMembersResponse struct {
 
 func (x *ListMembersResponse) Reset() {
 	*x = ListMembersResponse{}
-	mi := &file_v1_registry_service_proto_msgTypes[16]
+	mi := &file_v1_registry_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1258,7 +1514,7 @@ func (x *ListMembersResponse) String() string {
 func (*ListMembersResponse) ProtoMessage() {}
 
 func (x *ListMembersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_registry_service_proto_msgTypes[16]
+	mi := &file_v1_registry_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1271,7 +1527,7 @@ func (x *ListMembersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMembersResponse.ProtoReflect.Descriptor instead.
 func (*ListMembersResponse) Descriptor() ([]byte, []int) {
-	return file_v1_registry_service_proto_rawDescGZIP(), []int{16}
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListMembersResponse) GetMembers() []*Member {
@@ -1294,7 +1550,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_v1_registry_service_proto_msgTypes[17]
+	mi := &file_v1_registry_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1306,7 +1562,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_registry_service_proto_msgTypes[17]
+	mi := &file_v1_registry_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1319,7 +1575,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_v1_registry_service_proto_rawDescGZIP(), []int{17}
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *WatchRequest) GetKinds() []string {
@@ -1362,7 +1618,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_v1_registry_service_proto_msgTypes[18]
+	mi := &file_v1_registry_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1374,7 +1630,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_v1_registry_service_proto_msgTypes[18]
+	mi := &file_v1_registry_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1387,7 +1643,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_v1_registry_service_proto_rawDescGZIP(), []int{18}
+	return file_v1_registry_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Event) GetId() string {
@@ -1533,12 +1789,15 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"&\n" +
 	"\x14DeleteServiceRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x17\n" +
-	"\x15DeleteServiceResponse\"h\n" +
+	"\x15DeleteServiceResponse\"\xd2\x01\n" +
 	"\x14LookupServiceRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\tR\x03key\x12\x12\n" +
-	"\x04tags\x18\x04 \x03(\tR\x04tags\"\xe9\x01\n" +
+	"\x04tags\x18\x04 \x03(\tR\x04tags\x12!\n" +
+	"\fstale_policy\x18\x05 \x01(\tR\vstalePolicy\x12\x18\n" +
+	"\alatency\x18\x06 \x01(\tR\alatency\x12+\n" +
+	"\x11latency_tolerance\x18\a \x01(\tR\x10latencyTolerance\"\xe9\x01\n" +
 	"\x06Member\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04addr\x18\x02 \x01(\tR\x04addr\x12\x16\n" +
@@ -1546,7 +1805,27 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"\x05state\x18\x04 \x01(\x0e2\x1e.atlas.registry.v1.MemberStateR\x05state\x12 \n" +
 	"\vincarnation\x18\x05 \x01(\x04R\vincarnation\x120\n" +
 	"\x05since\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x12\x19\n" +
-	"\bapi_addr\x18\a \x01(\tR\aapiAddr\"\x10\n" +
+	"\bapi_addr\x18\a \x01(\tR\aapiAddr\"\x82\x01\n" +
+	"\x18GetServiceHistoryRequest\x12\x1d\n" +
+	"\n" +
+	"service_id\x18\x01 \x01(\tR\tserviceId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
+	"\tpage_size\x18\x03 \x01(\x05R\bpageSize\x12\x16\n" +
+	"\x06before\x18\x04 \x01(\x03R\x06before\"\x83\x02\n" +
+	"\fHistoryEntry\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x1d\n" +
+	"\n" +
+	"service_id\x18\x02 \x01(\tR\tserviceId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1a\n" +
+	"\brevision\x18\x04 \x01(\x04R\brevision\x12\x16\n" +
+	"\x06change\x18\x05 \x01(\tR\x06change\x12*\n" +
+	"\x02at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x124\n" +
+	"\aservice\x18\a \x01(\v2\x1a.atlas.registry.v1.ServiceR\aservice\x12\x18\n" +
+	"\adeleted\x18\b \x01(\bR\adeleted\"w\n" +
+	"\x19GetServiceHistoryResponse\x129\n" +
+	"\aentries\x18\x01 \x03(\v2\x1f.atlas.registry.v1.HistoryEntryR\aentries\x12\x1f\n" +
+	"\vnext_before\x18\x02 \x01(\x03R\n" +
+	"nextBefore\"\x10\n" +
 	"\x0eGetNodeRequest\"r\n" +
 	"\x0fGetNodeResponse\x12-\n" +
 	"\x04node\x18\x01 \x01(\v2\x19.atlas.registry.v1.MemberR\x04node\x12\x18\n" +
@@ -1577,7 +1856,7 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"\x12MEMBER_STATE_ALIVE\x10\x01\x12\x18\n" +
 	"\x14MEMBER_STATE_SUSPECT\x10\x02\x12\x15\n" +
 	"\x11MEMBER_STATE_DEAD\x10\x03\x12\x15\n" +
-	"\x11MEMBER_STATE_LEFT\x10\x042\x80\a\n" +
+	"\x11MEMBER_STATE_LEFT\x10\x042\xf0\a\n" +
 	"\x0fRegistryService\x12h\n" +
 	"\x0fRegisterService\x12).atlas.registry.v1.RegisterServiceRequest\x1a*.atlas.registry.v1.RegisterServiceResponse\x12T\n" +
 	"\rUpdateService\x12'.atlas.registry.v1.UpdateServiceRequest\x1a\x1a.atlas.registry.v1.Service\x12L\n" +
@@ -1588,7 +1867,8 @@ const file_v1_registry_service_proto_rawDesc = "" +
 	"\rDeleteService\x12'.atlas.registry.v1.DeleteServiceRequest\x1a(.atlas.registry.v1.DeleteServiceResponse\x12T\n" +
 	"\rLookupService\x12'.atlas.registry.v1.LookupServiceRequest\x1a\x1a.atlas.registry.v1.Service\x12P\n" +
 	"\aGetNode\x12!.atlas.registry.v1.GetNodeRequest\x1a\".atlas.registry.v1.GetNodeResponse\x12\\\n" +
-	"\vListMembers\x12%.atlas.registry.v1.ListMembersRequest\x1a&.atlas.registry.v1.ListMembersResponse\x12D\n" +
+	"\vListMembers\x12%.atlas.registry.v1.ListMembersRequest\x1a&.atlas.registry.v1.ListMembersResponse\x12n\n" +
+	"\x11GetServiceHistory\x12+.atlas.registry.v1.GetServiceHistoryRequest\x1a,.atlas.registry.v1.GetServiceHistoryResponse\x12D\n" +
 	"\x05Watch\x12\x1f.atlas.registry.v1.WatchRequest\x1a\x18.atlas.registry.v1.Event0\x01B+Z)github.com/manziosee/atlas/api/v1;atlasv1b\x06proto3"
 
 var (
@@ -1604,75 +1884,83 @@ func file_v1_registry_service_proto_rawDescGZIP() []byte {
 }
 
 var file_v1_registry_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_v1_registry_service_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_v1_registry_service_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_v1_registry_service_proto_goTypes = []any{
-	(Health)(0),                     // 0: atlas.registry.v1.Health
-	(MemberState)(0),                // 1: atlas.registry.v1.MemberState
-	(*Service)(nil),                 // 2: atlas.registry.v1.Service
-	(*ServiceSpec)(nil),             // 3: atlas.registry.v1.ServiceSpec
-	(*RegisterServiceRequest)(nil),  // 4: atlas.registry.v1.RegisterServiceRequest
-	(*RegisterServiceResponse)(nil), // 5: atlas.registry.v1.RegisterServiceResponse
-	(*UpdateServiceRequest)(nil),    // 6: atlas.registry.v1.UpdateServiceRequest
-	(*HeartbeatRequest)(nil),        // 7: atlas.registry.v1.HeartbeatRequest
-	(*GetServiceRequest)(nil),       // 8: atlas.registry.v1.GetServiceRequest
-	(*ListServicesRequest)(nil),     // 9: atlas.registry.v1.ListServicesRequest
-	(*ListServicesResponse)(nil),    // 10: atlas.registry.v1.ListServicesResponse
-	(*DeleteServiceRequest)(nil),    // 11: atlas.registry.v1.DeleteServiceRequest
-	(*DeleteServiceResponse)(nil),   // 12: atlas.registry.v1.DeleteServiceResponse
-	(*LookupServiceRequest)(nil),    // 13: atlas.registry.v1.LookupServiceRequest
-	(*Member)(nil),                  // 14: atlas.registry.v1.Member
-	(*GetNodeRequest)(nil),          // 15: atlas.registry.v1.GetNodeRequest
-	(*GetNodeResponse)(nil),         // 16: atlas.registry.v1.GetNodeResponse
-	(*ListMembersRequest)(nil),      // 17: atlas.registry.v1.ListMembersRequest
-	(*ListMembersResponse)(nil),     // 18: atlas.registry.v1.ListMembersResponse
-	(*WatchRequest)(nil),            // 19: atlas.registry.v1.WatchRequest
-	(*Event)(nil),                   // 20: atlas.registry.v1.Event
-	(*timestamppb.Timestamp)(nil),   // 21: google.protobuf.Timestamp
-	(*fieldmaskpb.FieldMask)(nil),   // 22: google.protobuf.FieldMask
+	(Health)(0),                       // 0: atlas.registry.v1.Health
+	(MemberState)(0),                  // 1: atlas.registry.v1.MemberState
+	(*Service)(nil),                   // 2: atlas.registry.v1.Service
+	(*ServiceSpec)(nil),               // 3: atlas.registry.v1.ServiceSpec
+	(*RegisterServiceRequest)(nil),    // 4: atlas.registry.v1.RegisterServiceRequest
+	(*RegisterServiceResponse)(nil),   // 5: atlas.registry.v1.RegisterServiceResponse
+	(*UpdateServiceRequest)(nil),      // 6: atlas.registry.v1.UpdateServiceRequest
+	(*HeartbeatRequest)(nil),          // 7: atlas.registry.v1.HeartbeatRequest
+	(*GetServiceRequest)(nil),         // 8: atlas.registry.v1.GetServiceRequest
+	(*ListServicesRequest)(nil),       // 9: atlas.registry.v1.ListServicesRequest
+	(*ListServicesResponse)(nil),      // 10: atlas.registry.v1.ListServicesResponse
+	(*DeleteServiceRequest)(nil),      // 11: atlas.registry.v1.DeleteServiceRequest
+	(*DeleteServiceResponse)(nil),     // 12: atlas.registry.v1.DeleteServiceResponse
+	(*LookupServiceRequest)(nil),      // 13: atlas.registry.v1.LookupServiceRequest
+	(*Member)(nil),                    // 14: atlas.registry.v1.Member
+	(*GetServiceHistoryRequest)(nil),  // 15: atlas.registry.v1.GetServiceHistoryRequest
+	(*HistoryEntry)(nil),              // 16: atlas.registry.v1.HistoryEntry
+	(*GetServiceHistoryResponse)(nil), // 17: atlas.registry.v1.GetServiceHistoryResponse
+	(*GetNodeRequest)(nil),            // 18: atlas.registry.v1.GetNodeRequest
+	(*GetNodeResponse)(nil),           // 19: atlas.registry.v1.GetNodeResponse
+	(*ListMembersRequest)(nil),        // 20: atlas.registry.v1.ListMembersRequest
+	(*ListMembersResponse)(nil),       // 21: atlas.registry.v1.ListMembersResponse
+	(*WatchRequest)(nil),              // 22: atlas.registry.v1.WatchRequest
+	(*Event)(nil),                     // 23: atlas.registry.v1.Event
+	(*timestamppb.Timestamp)(nil),     // 24: google.protobuf.Timestamp
+	(*fieldmaskpb.FieldMask)(nil),     // 25: google.protobuf.FieldMask
 }
 var file_v1_registry_service_proto_depIdxs = []int32{
 	0,  // 0: atlas.registry.v1.Service.health:type_name -> atlas.registry.v1.Health
-	21, // 1: atlas.registry.v1.Service.updated_at:type_name -> google.protobuf.Timestamp
-	21, // 2: atlas.registry.v1.Service.checked_at:type_name -> google.protobuf.Timestamp
-	21, // 3: atlas.registry.v1.Service.heartbeat_at:type_name -> google.protobuf.Timestamp
+	24, // 1: atlas.registry.v1.Service.updated_at:type_name -> google.protobuf.Timestamp
+	24, // 2: atlas.registry.v1.Service.checked_at:type_name -> google.protobuf.Timestamp
+	24, // 3: atlas.registry.v1.Service.heartbeat_at:type_name -> google.protobuf.Timestamp
 	3,  // 4: atlas.registry.v1.RegisterServiceRequest.spec:type_name -> atlas.registry.v1.ServiceSpec
 	2,  // 5: atlas.registry.v1.RegisterServiceResponse.service:type_name -> atlas.registry.v1.Service
 	3,  // 6: atlas.registry.v1.UpdateServiceRequest.spec:type_name -> atlas.registry.v1.ServiceSpec
-	22, // 7: atlas.registry.v1.UpdateServiceRequest.update_mask:type_name -> google.protobuf.FieldMask
+	25, // 7: atlas.registry.v1.UpdateServiceRequest.update_mask:type_name -> google.protobuf.FieldMask
 	0,  // 8: atlas.registry.v1.ListServicesRequest.health:type_name -> atlas.registry.v1.Health
 	2,  // 9: atlas.registry.v1.ListServicesResponse.services:type_name -> atlas.registry.v1.Service
 	1,  // 10: atlas.registry.v1.Member.state:type_name -> atlas.registry.v1.MemberState
-	21, // 11: atlas.registry.v1.Member.since:type_name -> google.protobuf.Timestamp
-	14, // 12: atlas.registry.v1.GetNodeResponse.node:type_name -> atlas.registry.v1.Member
-	14, // 13: atlas.registry.v1.ListMembersResponse.members:type_name -> atlas.registry.v1.Member
-	21, // 14: atlas.registry.v1.Event.at:type_name -> google.protobuf.Timestamp
-	14, // 15: atlas.registry.v1.Event.member:type_name -> atlas.registry.v1.Member
-	2,  // 16: atlas.registry.v1.Event.service:type_name -> atlas.registry.v1.Service
-	4,  // 17: atlas.registry.v1.RegistryService.RegisterService:input_type -> atlas.registry.v1.RegisterServiceRequest
-	6,  // 18: atlas.registry.v1.RegistryService.UpdateService:input_type -> atlas.registry.v1.UpdateServiceRequest
-	7,  // 19: atlas.registry.v1.RegistryService.Heartbeat:input_type -> atlas.registry.v1.HeartbeatRequest
-	8,  // 20: atlas.registry.v1.RegistryService.GetService:input_type -> atlas.registry.v1.GetServiceRequest
-	9,  // 21: atlas.registry.v1.RegistryService.ListServices:input_type -> atlas.registry.v1.ListServicesRequest
-	11, // 22: atlas.registry.v1.RegistryService.DeleteService:input_type -> atlas.registry.v1.DeleteServiceRequest
-	13, // 23: atlas.registry.v1.RegistryService.LookupService:input_type -> atlas.registry.v1.LookupServiceRequest
-	15, // 24: atlas.registry.v1.RegistryService.GetNode:input_type -> atlas.registry.v1.GetNodeRequest
-	17, // 25: atlas.registry.v1.RegistryService.ListMembers:input_type -> atlas.registry.v1.ListMembersRequest
-	19, // 26: atlas.registry.v1.RegistryService.Watch:input_type -> atlas.registry.v1.WatchRequest
-	5,  // 27: atlas.registry.v1.RegistryService.RegisterService:output_type -> atlas.registry.v1.RegisterServiceResponse
-	2,  // 28: atlas.registry.v1.RegistryService.UpdateService:output_type -> atlas.registry.v1.Service
-	2,  // 29: atlas.registry.v1.RegistryService.Heartbeat:output_type -> atlas.registry.v1.Service
-	2,  // 30: atlas.registry.v1.RegistryService.GetService:output_type -> atlas.registry.v1.Service
-	10, // 31: atlas.registry.v1.RegistryService.ListServices:output_type -> atlas.registry.v1.ListServicesResponse
-	12, // 32: atlas.registry.v1.RegistryService.DeleteService:output_type -> atlas.registry.v1.DeleteServiceResponse
-	2,  // 33: atlas.registry.v1.RegistryService.LookupService:output_type -> atlas.registry.v1.Service
-	16, // 34: atlas.registry.v1.RegistryService.GetNode:output_type -> atlas.registry.v1.GetNodeResponse
-	18, // 35: atlas.registry.v1.RegistryService.ListMembers:output_type -> atlas.registry.v1.ListMembersResponse
-	20, // 36: atlas.registry.v1.RegistryService.Watch:output_type -> atlas.registry.v1.Event
-	27, // [27:37] is the sub-list for method output_type
-	17, // [17:27] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	24, // 11: atlas.registry.v1.Member.since:type_name -> google.protobuf.Timestamp
+	24, // 12: atlas.registry.v1.HistoryEntry.at:type_name -> google.protobuf.Timestamp
+	2,  // 13: atlas.registry.v1.HistoryEntry.service:type_name -> atlas.registry.v1.Service
+	16, // 14: atlas.registry.v1.GetServiceHistoryResponse.entries:type_name -> atlas.registry.v1.HistoryEntry
+	14, // 15: atlas.registry.v1.GetNodeResponse.node:type_name -> atlas.registry.v1.Member
+	14, // 16: atlas.registry.v1.ListMembersResponse.members:type_name -> atlas.registry.v1.Member
+	24, // 17: atlas.registry.v1.Event.at:type_name -> google.protobuf.Timestamp
+	14, // 18: atlas.registry.v1.Event.member:type_name -> atlas.registry.v1.Member
+	2,  // 19: atlas.registry.v1.Event.service:type_name -> atlas.registry.v1.Service
+	4,  // 20: atlas.registry.v1.RegistryService.RegisterService:input_type -> atlas.registry.v1.RegisterServiceRequest
+	6,  // 21: atlas.registry.v1.RegistryService.UpdateService:input_type -> atlas.registry.v1.UpdateServiceRequest
+	7,  // 22: atlas.registry.v1.RegistryService.Heartbeat:input_type -> atlas.registry.v1.HeartbeatRequest
+	8,  // 23: atlas.registry.v1.RegistryService.GetService:input_type -> atlas.registry.v1.GetServiceRequest
+	9,  // 24: atlas.registry.v1.RegistryService.ListServices:input_type -> atlas.registry.v1.ListServicesRequest
+	11, // 25: atlas.registry.v1.RegistryService.DeleteService:input_type -> atlas.registry.v1.DeleteServiceRequest
+	13, // 26: atlas.registry.v1.RegistryService.LookupService:input_type -> atlas.registry.v1.LookupServiceRequest
+	18, // 27: atlas.registry.v1.RegistryService.GetNode:input_type -> atlas.registry.v1.GetNodeRequest
+	20, // 28: atlas.registry.v1.RegistryService.ListMembers:input_type -> atlas.registry.v1.ListMembersRequest
+	15, // 29: atlas.registry.v1.RegistryService.GetServiceHistory:input_type -> atlas.registry.v1.GetServiceHistoryRequest
+	22, // 30: atlas.registry.v1.RegistryService.Watch:input_type -> atlas.registry.v1.WatchRequest
+	5,  // 31: atlas.registry.v1.RegistryService.RegisterService:output_type -> atlas.registry.v1.RegisterServiceResponse
+	2,  // 32: atlas.registry.v1.RegistryService.UpdateService:output_type -> atlas.registry.v1.Service
+	2,  // 33: atlas.registry.v1.RegistryService.Heartbeat:output_type -> atlas.registry.v1.Service
+	2,  // 34: atlas.registry.v1.RegistryService.GetService:output_type -> atlas.registry.v1.Service
+	10, // 35: atlas.registry.v1.RegistryService.ListServices:output_type -> atlas.registry.v1.ListServicesResponse
+	12, // 36: atlas.registry.v1.RegistryService.DeleteService:output_type -> atlas.registry.v1.DeleteServiceResponse
+	2,  // 37: atlas.registry.v1.RegistryService.LookupService:output_type -> atlas.registry.v1.Service
+	19, // 38: atlas.registry.v1.RegistryService.GetNode:output_type -> atlas.registry.v1.GetNodeResponse
+	21, // 39: atlas.registry.v1.RegistryService.ListMembers:output_type -> atlas.registry.v1.ListMembersResponse
+	17, // 40: atlas.registry.v1.RegistryService.GetServiceHistory:output_type -> atlas.registry.v1.GetServiceHistoryResponse
+	23, // 41: atlas.registry.v1.RegistryService.Watch:output_type -> atlas.registry.v1.Event
+	31, // [31:42] is the sub-list for method output_type
+	20, // [20:31] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_v1_registry_service_proto_init() }
@@ -1680,7 +1968,7 @@ func file_v1_registry_service_proto_init() {
 	if File_v1_registry_service_proto != nil {
 		return
 	}
-	file_v1_registry_service_proto_msgTypes[18].OneofWrappers = []any{
+	file_v1_registry_service_proto_msgTypes[21].OneofWrappers = []any{
 		(*Event_Member)(nil),
 		(*Event_Service)(nil),
 	}
@@ -1690,7 +1978,7 @@ func file_v1_registry_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_v1_registry_service_proto_rawDesc), len(file_v1_registry_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   19,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -258,12 +258,39 @@ func (c *Client) List(ctx context.Context, filter Filter) ([]Service, error) {
 }
 
 func (c *Client) Lookup(ctx context.Context, name, region, key string) (Service, error) {
+	return c.LookupWithOptions(ctx, name, LookupOptions{Region: region, Key: key})
+}
+
+// LookupOptions refines a routed lookup. Stale, Latency and Tolerance
+// override the node's routing policy for this request only.
+type LookupOptions struct {
+	Region string
+	// Key enables consistent hashing: the same key keeps picking the same
+	// instance while it stays routable.
+	Key  string
+	Tags []string
+	// Stale: "include", "prefer-live" or "exclude" instances whose owning
+	// node is not alive.
+	Stale string
+	// Latency: "nearest" or "off".
+	Latency string
+	// Tolerance treats nodes this close to the nearest as equally near.
+	Tolerance time.Duration
+}
+
+// LookupWithOptions selects one instance using the node's routing rules.
+func (c *Client) LookupWithOptions(ctx context.Context, name string, opts LookupOptions) (Service, error) {
 	query := url.Values{}
-	if region != "" {
-		query.Set("region", region)
+	for key, value := range map[string]string{"region": opts.Region, "key": opts.Key, "stale": opts.Stale, "latency": opts.Latency} {
+		if value != "" {
+			query.Set(key, value)
+		}
 	}
-	if key != "" {
-		query.Set("key", key)
+	for _, tag := range opts.Tags {
+		query.Add("tag", tag)
+	}
+	if opts.Tolerance > 0 {
+		query.Set("tolerance", opts.Tolerance.String())
 	}
 	path := "/v1/lookup/" + url.PathEscape(name)
 	if encoded := query.Encode(); encoded != "" {
@@ -272,6 +299,56 @@ func (c *Client) Lookup(ctx context.Context, name, region, key string) (Service,
 	var service Service
 	err := c.request(ctx, http.MethodGet, path, nil, &service, nil)
 	return service, err
+}
+
+// HistoryEntry is one recorded change; Service is the record after it.
+type HistoryEntry struct {
+	Seq       int64     `json:"seq"`
+	ServiceID string    `json:"service_id"`
+	Name      string    `json:"name"`
+	Revision  uint64    `json:"revision"`
+	Change    string    `json:"change"` // registered, updated, health or deregistered
+	At        time.Time `json:"at"`
+	Service   Service   `json:"service"`
+}
+
+// HistoryPage is one page of history, newest first; NextBefore is zero on
+// the last page.
+type HistoryPage struct {
+	Entries    []HistoryEntry `json:"entries"`
+	NextBefore int64          `json:"next_before"`
+}
+
+// History returns recorded changes to one service, newest first, including
+// after it was deregistered. Pass the previous page's NextBefore as before;
+// limit 0 uses the server default (50).
+func (c *Client) History(ctx context.Context, id string, before int64, limit int) (HistoryPage, error) {
+	return c.history(ctx, "/v1/services/"+url.PathEscape(id)+"/history", url.Values{}, before, limit)
+}
+
+// RecentHistory returns recent changes across services, or for every
+// service called name when name is not empty.
+func (c *Client) RecentHistory(ctx context.Context, name string, before int64, limit int) (HistoryPage, error) {
+	query := url.Values{}
+	if name != "" {
+		query.Set("name", name)
+	}
+	return c.history(ctx, "/v1/history", query, before, limit)
+}
+
+func (c *Client) history(ctx context.Context, path string, query url.Values, before int64, limit int) (HistoryPage, error) {
+	if before > 0 {
+		query.Set("before", strconv.FormatInt(before, 10))
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var page HistoryPage
+	err := c.request(ctx, http.MethodGet, path, nil, &page, nil)
+	return page, err
 }
 
 func (c *Client) Get(ctx context.Context, id string) (Service, error) {

@@ -247,7 +247,10 @@ func (g *grpcRegistry) ListServices(ctx context.Context, input *structpb.Struct)
 
 func (g *grpcRegistry) LookupService(ctx context.Context, input *structpb.Struct) (*structpb.Struct, error) {
 	values := input.AsMap()
-	service, err := g.deps.lookup(ctx, stringField(values, "name"), stringField(values, "region"), stringField(values, "key"), nil)
+	service, err := g.deps.lookup(ctx, lookupRequest{
+		Name: stringField(values, "name"), Region: stringField(values, "region"), Key: stringField(values, "key"),
+		Stale: stringField(values, "stale"), Latency: stringField(values, "latency"), Tolerance: stringField(values, "tolerance"),
+	})
 	if err != nil {
 		return nil, grpcError(err)
 	}

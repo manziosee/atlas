@@ -92,6 +92,26 @@ class Event(TypedDict, total=False):
     service: ServiceInstance
 
 
+class HistoryEntry(TypedDict, total=False):
+    """One recorded change. ``change`` is ``registered``, ``updated``,
+    ``health`` or ``deregistered``; ``service`` is the record after it."""
+
+    seq: int
+    service_id: str
+    name: str
+    revision: int
+    change: str
+    at: str
+    service: ServiceInstance
+
+
+class HistoryPage(TypedDict):
+    """One page of history, newest first; ``next_before`` is 0 on the last."""
+
+    entries: list[HistoryEntry]
+    next_before: int
+
+
 class Page(TypedDict):
     """One page of a service listing; ``next_cursor`` is empty on the last."""
 
@@ -312,9 +332,29 @@ class AtlasClient:
             self.iter_services(name=name, region=region, health=health, version=version, node_id=node_id, tags=tags)
         )
 
-    def lookup(self, name: str, *, region: str = "", key: str = "", tags: list[str] | None = None) -> ServiceInstance:
-        """Select a healthy instance using Atlas routing preferences."""
-        params = [(k, v) for k, v in (("region", region), ("key", key)) if v]
+    def lookup(
+        self,
+        name: str,
+        *,
+        region: str = "",
+        key: str = "",
+        tags: list[str] | None = None,
+        stale: str = "",
+        latency: str = "",
+        tolerance: str = "",
+    ) -> ServiceInstance:
+        """Select a healthy instance using Atlas routing preferences.
+
+        ``stale`` (``include``, ``prefer-live`` or ``exclude`` instances whose
+        owning node is not alive), ``latency`` (``nearest`` or ``off``) and
+        ``tolerance`` (a duration such as ``"10ms"``) override the node's
+        routing policy for this lookup.
+        """
+        params = [
+            (k, v)
+            for k, v in (("region", region), ("key", key), ("stale", stale), ("latency", latency), ("tolerance", tolerance))
+            if v
+        ]
         params += [("tag", tag) for tag in tags or []]
         query = urlencode(params)
         path = f"/v1/lookup/{quote(name, safe='')}" + (f"?{query}" if query else "")
@@ -328,6 +368,34 @@ class AtlasClient:
         """Deregister an instance. Any node accepts this once the owner has
         left the cluster; otherwise call the owner or use an admin token."""
         self._request("DELETE", self._service_path(service_id))
+
+    def history(self, service_id: str, *, before: int = 0, limit: int = 0) -> HistoryPage:
+        """Return recorded changes to one service, newest first, including
+        after it was deregistered. Pass ``next_before`` to continue."""
+        return self._history(f"{self._service_path(service_id)}/history", [], before, limit)
+
+    def recent_history(self, *, name: str = "", before: int = 0, limit: int = 0) -> HistoryPage:
+        """Return recent changes across services, or for one service name."""
+        return self._history("/v1/history", [("name", name)] if name else [], before, limit)
+
+    def iter_history(self, service_id: str) -> Iterator[HistoryEntry]:
+        """Yield every recorded change to one service, newest first."""
+        before = 0
+        while True:
+            page = self.history(service_id, before=before, limit=500)
+            yield from page["entries"]
+            before = page["next_before"]
+            if not before:
+                return
+
+    def _history(self, path: str, params: list[tuple[str, str]], before: int, limit: int) -> HistoryPage:
+        if before:
+            params.append(("before", str(before)))
+        if limit:
+            params.append(("limit", str(limit)))
+        query = urlencode(params)
+        body = self._request("GET", path + (f"?{query}" if query else ""))
+        return {"entries": body.get("entries", []), "next_before": body.get("next_before", 0)}
 
     # --- cluster ------------------------------------------------------------
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/manziosee/atlas/internal/membership"
+	"github.com/manziosee/atlas/internal/routing"
 	"github.com/manziosee/atlas/internal/security"
 )
 
@@ -95,6 +96,13 @@ type Config struct {
 	TrustedProxies      []*net.IPNet
 	HealthCheckInterval time.Duration
 	HealthCheckTimeout  time.Duration
+	// HistoryRetention keeps service change history this long; zero turns
+	// history recording off.
+	HistoryRetention time.Duration
+	// Routing defaults for lookups and DNS; requests may override them.
+	RoutingStalePolicy      string
+	RoutingLatency          string
+	RoutingLatencyTolerance time.Duration
 	// OrphanServiceReap deletes services whose owning node has been absent
 	// from the live member list this long. Zero disables the reaper.
 	OrphanServiceReap time.Duration
@@ -174,6 +182,11 @@ func Load(lookup LookupFunc) (*Config, error) {
 		HealthCheckTimeout:  p.duration("ATLAS_HEALTH_CHECK_TIMEOUT", time.Second),
 		OrphanServiceReap:   p.duration("ATLAS_ORPHAN_SERVICE_REAP", 10*time.Minute),
 
+		HistoryRetention:        p.duration("ATLAS_HISTORY_RETENTION", 7*24*time.Hour),
+		RoutingStalePolicy:      p.str("ATLAS_ROUTING_STALE_POLICY", string(routing.StalePreferLive)),
+		RoutingLatency:          p.str("ATLAS_ROUTING_LATENCY", string(routing.LatencyNearest)),
+		RoutingLatencyTolerance: p.duration("ATLAS_ROUTING_LATENCY_TOLERANCE", 0),
+
 		LogLevel:  p.str("ATLAS_LOG_LEVEL", "info"),
 		LogFormat: p.str("ATLAS_LOG_FORMAT", "json"),
 	}
@@ -210,7 +223,8 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
 	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
-	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
+	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {},
+	"ATLAS_ROUTING_STALE_POLICY": {}, "ATLAS_HISTORY_RETENTION": {}, "ATLAS_ROUTING_LATENCY": {}, "ATLAS_ROUTING_LATENCY_TOLERANCE": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
 }
 
 func readConfigFile(path string) (map[string]string, error) {
@@ -257,6 +271,11 @@ func readConfigFile(path string) (map[string]string, error) {
 	return values, nil
 }
 
+// RoutingPolicy returns the configured lookup policy.
+func (c *Config) RoutingPolicy() (routing.Policy, error) {
+	return routing.ParsePolicy(c.RoutingStalePolicy, c.RoutingLatency, c.RoutingLatencyTolerance)
+}
+
 // Validate checks semantic constraints. It is called by Load.
 func (c *Config) Validate() error {
 	var errs []error
@@ -295,6 +314,12 @@ func (c *Config) Validate() error {
 	}
 	if c.APIAdvertiseAddr != "" && membership.ValidateAPIAddr(c.APIAdvertiseAddr) != nil {
 		add("ATLAS_API_ADVERTISE_ADDR must be an http(s) origin such as http://10.0.0.4:8080, got %q", c.APIAdvertiseAddr)
+	}
+	if c.HistoryRetention < 0 {
+		add("ATLAS_HISTORY_RETENTION must be 0 (off) or a positive duration")
+	}
+	if _, err := c.RoutingPolicy(); err != nil {
+		add("ATLAS_ROUTING_*: %s (stale: include|prefer-live|exclude; latency: nearest|off; tolerance 0-1m)", strings.TrimPrefix(err.Error(), "routing: "))
 	}
 	if c.OrphanServiceReap != 0 && c.OrphanServiceReap < time.Minute {
 		add("ATLAS_ORPHAN_SERVICE_REAP must be 0 (disabled) or at least 1m, so restarting nodes keep their services")

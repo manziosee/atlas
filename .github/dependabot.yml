@@ -13,3 +13,16 @@ updates:
     schedule: { interval: weekly }
     groups:
       actions: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /clients/node
+    schedule: { interval: weekly }
+    groups:
+      node-client: { patterns: ["*"] }
+  - package-ecosystem: maven
+    directory: /clients/java
+    schedule: { interval: weekly }
+    groups:
+      java-client: { patterns: ["*"] }
+  - package-ecosystem: pip
+    directory: /clients/python
+    schedule: { interval: weekly }

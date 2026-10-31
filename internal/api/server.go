@@ -10,6 +10,8 @@
 //	PATCH  /v1/services/{id}                 partial update
 //	DELETE /v1/services/{id}                 deregister
 //	POST   /v1/services/{id}/heartbeat       TTL heartbeat
+//	GET    /v1/services/{id}/history         recorded changes to one service
+//	GET    /v1/history                       recent changes across services
 //	GET    /v1/lookup/{name}                 routed instance selection
 //	GET    /v1/events                        membership and registry event stream
 //	*      /v1/admin/...                     admin operations (admin scope)
@@ -64,6 +66,8 @@ type Deps struct {
 	// Forwarder sends owner-only writes to the owning node's HTTP API. Nil
 	// disables forwarding; such writes then return 409 not_owner.
 	Forwarder *http.Client
+	// Routing is the default lookup policy; requests may override it.
+	Routing routing.Policy
 }
 
 // NewHandler builds the full middleware chain and routes.
@@ -115,6 +119,8 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("PATCH /v1/services/{id}", d.patchService)
 	v1.HandleFunc("DELETE /v1/services/{id}", d.deleteService)
 	v1.HandleFunc("POST /v1/services/{id}/heartbeat", d.heartbeat)
+	v1.HandleFunc("GET /v1/services/{id}/history", d.serviceHistory)
+	v1.HandleFunc("GET /v1/history", d.recentHistory)
 	v1.HandleFunc("GET /v1/events", d.streamEvents)
 	v1.HandleFunc("GET /v1/admin/credentials", d.listCredentials)
 	v1.HandleFunc("POST /v1/admin/backup", d.backup)

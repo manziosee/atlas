@@ -92,12 +92,17 @@ func run() error {
 		AllowedNodeIDs:   cfg.AllowedNodeIDs,
 		Services:         registry,
 	}, tr, log)
+	routingPolicy, err := cfg.RoutingPolicy()
+	if err != nil {
+		return err
+	}
 	var dnsServer *dnsdiscovery.Server
 	if cfg.DNSAddr != "" {
 		dnsServer, err = dnsdiscovery.New(registry, cfg.DNSZone, cfg.DNSTTL)
 		if err != nil {
 			return err
 		}
+		dnsServer.SetStalePolicy(routingPolicy.Stale, memberAlive(ml))
 	}
 
 	broker := events.NewBroker(4096)
@@ -112,6 +117,8 @@ func run() error {
 	})
 	wg.Go(func() { expireTTLServices(ctx, registry, cfg.NodeID, log) })
 	wg.Go(func() { reapOrphanedServices(ctx, registry, ml, cfg.OrphanServiceReap, log) })
+	registry.SetHistoryEnabled(cfg.HistoryRetention > 0)
+	wg.Go(func() { pruneHistory(ctx, registry, cfg.HistoryRetention, log) })
 	// --- HTTP API ------------------------------------------------------
 	limiter := security.NewRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies...)
 	wg.Go(func() { limiter.Run(ctx) })
@@ -134,6 +141,7 @@ func run() error {
 		Events:      broker,
 		Replay:      flyReplay(cfg.NodeID),
 		Forwarder:   forwarder,
+		Routing:     routingPolicy,
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -292,7 +300,9 @@ func restartRequired(old, next *config.Config) bool {
 		old.MaxClockSkew != next.MaxClockSkew || old.HTTPAddr != next.HTTPAddr || old.APIAdvertiseAddr != next.APIAdvertiseAddr || old.GRPCAddr != next.GRPCAddr ||
 		old.MetricsAddr != next.MetricsAddr || old.PprofAddr != next.PprofAddr || old.DNSAddr != next.DNSAddr || old.DNSZone != next.DNSZone || old.DNSTTL != next.DNSTTL ||
 		old.TLS != next.TLS || old.HealthCheckInterval != next.HealthCheckInterval ||
-		old.HealthCheckTimeout != next.HealthCheckTimeout || old.OrphanServiceReap != next.OrphanServiceReap || old.LogFormat != next.LogFormat
+		old.HealthCheckTimeout != next.HealthCheckTimeout || old.OrphanServiceReap != next.OrphanServiceReap || old.HistoryRetention != next.HistoryRetention ||
+		old.RoutingStalePolicy != next.RoutingStalePolicy || old.RoutingLatency != next.RoutingLatency ||
+		old.RoutingLatencyTolerance != next.RoutingLatencyTolerance || old.LogFormat != next.LogFormat
 }
 
 func serve(srv *http.Server, tls bool) error {
@@ -416,6 +426,21 @@ func joinLoop(ctx context.Context, ml *membership.Memberlist, seeds []string, lo
 			return
 		case <-time.After(wait):
 		}
+	}
+}
+
+// memberAlive reports whether a node is this node or a live or suspect peer.
+func memberAlive(ml *membership.Memberlist) func(string) bool {
+	return func(id string) bool {
+		if id == ml.LocalNode().ID {
+			return true
+		}
+		for _, member := range ml.Members() {
+			if member.ID == id {
+				return member.State == membership.StateAlive || member.State == membership.StateSuspect
+			}
+		}
+		return false
 	}
 }
 

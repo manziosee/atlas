@@ -53,6 +53,27 @@ func expireTTLServices(ctx context.Context, registry *storage.Store, nodeID stri
 	}
 }
 
+// pruneHistory drops service history older than retention every hour.
+func pruneHistory(ctx context.Context, registry *storage.Store, retention time.Duration, log *slog.Logger) {
+	if retention <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		if removed, err := registry.PruneHistory(ctx, time.Now().Add(-retention)); err != nil && ctx.Err() == nil {
+			log.Warn("could not prune service history", "err", err)
+		} else if removed > 0 {
+			log.Info("pruned service history", "entries", removed)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // orphanReaper deletes services whose owner has been missing from the live
 // member list for longer than after. Only the live member with the lowest ID
 // reaps, so one node normally writes each tombstone; duplicates from a brief

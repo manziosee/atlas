@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Atlas Node API
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Authenticated HTTP API for cluster membership and the replicated service
     registry. Every node serves the same API, and any node accepts any
@@ -206,14 +206,56 @@ paths:
     get:
       tags: [registry]
       summary: Select one healthy service instance
+      description: >-
+        Order of rules: never draining or unhealthy instances; the stale-record
+        policy; healthy before unknown health; the requested region; the
+        latency policy; then consistent hashing on `key`, or round-robin.
+        `stale`, `latency` and `tolerance` override the node's
+        ATLAS_ROUTING_* defaults for this request only.
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
         - { in: query, name: region, schema: { type: string, maxLength: 64 } }
         - { in: query, name: key, description: Stable consistent-hash key, schema: { type: string, maxLength: 256 } }
         - { in: query, name: tag, style: form, explode: true, schema: { type: array, items: { type: string } } }
+        - in: query
+          name: stale
+          description: >-
+            Instances whose owning node is not alive: include them like any other,
+            prefer-live (use them only when no live-owner instance exists), or exclude them.
+          schema: { type: string, enum: [include, prefer-live, exclude] }
+        - { in: query, name: latency, description: Rank by measured node latency (nearest) or ignore it (off), schema: { type: string, enum: [nearest, off] } }
+        - { in: query, name: tolerance, description: 'With latency=nearest, nodes within this duration of the nearest count as equal, for example 10ms', schema: { type: string } }
       responses:
         '200': { $ref: '#/components/responses/Service' }
+        '400': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /v1/services/{id}/history:
+    get:
+      tags: [registry]
+      summary: Recorded changes to one service, newest first
+      description: >-
+        This node's record of every committed change to the service, its own and
+        those learned from peers, kept after deregistration. Up to 100 entries per
+        service, for ATLAS_HISTORY_RETENTION (7 days by default). A replica that
+        merged several revisions at once records only the latest.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/HistoryLimit' }
+        - { $ref: '#/components/parameters/HistoryBefore' }
+      responses:
+        '200': { $ref: '#/components/responses/History' }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/history:
+    get:
+      tags: [registry]
+      summary: Recent changes across services, newest first
+      parameters:
+        - { in: query, name: name, description: Only services with this name, schema: { type: string, maxLength: 128 } }
+        - { $ref: '#/components/parameters/HistoryLimit' }
+        - { $ref: '#/components/parameters/HistoryBefore' }
+      responses:
+        '200': { $ref: '#/components/responses/History' }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/events:
     get:
       tags: [events]
@@ -304,12 +346,25 @@ components:
         Missing or expired credentials receive 401 unauthorized; credentials
         without the required scope receive 403 insufficient_scope.
   parameters:
+    HistoryLimit: { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+    HistoryBefore: { in: query, name: before, description: next_before from the previous page, schema: { type: integer, minimum: 1 } }
     IfMatch:
       in: header
       name: If-Match
       description: The ETag (revision) the change is based on, for example "3".
       schema: { type: string }
   responses:
+    History:
+      description: One page of history entries, newest first.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [count, entries]
+            properties:
+              count: { type: integer }
+              entries: { type: array, items: { $ref: '#/components/schemas/HistoryEntry' } }
+              next_before: { type: integer, description: Present when older entries exist }
     Service:
       description: The service instance. The ETag header carries its revision.
       headers:
@@ -392,6 +447,16 @@ components:
         updated_at: { type: string, format: date-time }
         checked_at: { type: string, format: date-time, description: Last health check (owner node only) }
         heartbeat_at: { type: string, format: date-time, description: Last heartbeat (owner node only) }
+    HistoryEntry:
+      type: object
+      properties:
+        seq: { type: integer, description: Orders entries on the answering node only }
+        service_id: { type: string }
+        name: { type: string }
+        revision: { type: integer }
+        change: { type: string, enum: [registered, updated, health, deregistered] }
+        at: { type: string, format: date-time }
+        service: { $ref: '#/components/schemas/Service' }
     Member:
       type: object
       properties:

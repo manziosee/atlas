@@ -30,6 +30,8 @@ service RegistryService {
   rpc LookupService(LookupServiceRequest) returns (Service);
   rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
   rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  // GetServiceHistory returns this node's record of changes, newest first.
+  rpc GetServiceHistory(GetServiceHistoryRequest) returns (GetServiceHistoryResponse);
   // Watch streams membership and registry events. Resume with last_event_id;
   // an event of type "reset" means the gap could not be replayed.
   rpc Watch(WatchRequest) returns (stream Event);
@@ -155,6 +157,13 @@ message LookupServiceRequest {
   // Stable routing key for consistent hashing.
   string key = 3;
   repeated string tags = 4;
+  // Overrides of the node's routing policy for this lookup; empty keeps it.
+  // stale_policy: include, prefer-live or exclude (instances whose owner
+  // node is not alive). latency: nearest or off. latency_tolerance: a
+  // duration such as "10ms"; nodes this close to the nearest count as equal.
+  string stale_policy = 5;
+  string latency = 6;
+  string latency_tolerance = 7;
 }
 
 message Member {
@@ -166,6 +175,37 @@ message Member {
   google.protobuf.Timestamp since = 6;
   // Base URL of the member's HTTP API, used to forward owner-only writes.
   string api_addr = 7;
+}
+
+message GetServiceHistoryRequest {
+  // One service (history survives deletion), or every service named `name`,
+  // or every service when both are empty.
+  string service_id = 1;
+  string name = 2;
+  // 1-500; 50 when zero.
+  int32 page_size = 3;
+  // next_before from the previous page.
+  int64 before = 4;
+}
+
+message HistoryEntry {
+  // Orders entries on the answering node only.
+  int64 seq = 1;
+  string service_id = 2;
+  string name = 3;
+  uint64 revision = 4;
+  // registered, updated, health or deregistered.
+  string change = 5;
+  google.protobuf.Timestamp at = 6;
+  // The record as it was after the change.
+  Service service = 7;
+  bool deleted = 8;
+}
+
+message GetServiceHistoryResponse {
+  repeated HistoryEntry entries = 1;
+  // Zero on the last page.
+  int64 next_before = 2;
 }
 
 message GetNodeRequest {}

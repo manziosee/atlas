@@ -36,8 +36,8 @@ class AtlasClientTest(unittest.TestCase):
 
     def test_idempotent_registration_update_and_delete(self) -> None:
         name = unique("py")
-        first = self.client.register(name, "10.9.0.1:80", idempotency_key="deploy-1", tags=["py"])
-        again = self.client.register(name, "10.9.0.1:80", idempotency_key="deploy-1", tags=["py"])
+        first = self.client.register(name, "10.9.0.1:80", idempotency_key=f"deploy-{name}", tags=["py"])
+        again = self.client.register(name, "10.9.0.1:80", idempotency_key=f"deploy-{name}", tags=["py"])
         self.assertEqual(first["id"], again["id"])
         self.assertEqual(again["revision"], 1)
 
@@ -84,6 +84,23 @@ class AtlasClientTest(unittest.TestCase):
         self.assertNotIn("draining", self.client.undrain(tcp["id"]))
         with self.assertRaises(AtlasError) as bad:
             self.client.register(unique("bad"), "10.9.5.3:80", unhealthy_threshold=2)
+        self.assertEqual(bad.exception.code, "validation_failed")
+
+    def test_history_and_lookup_overrides(self) -> None:
+        name = unique("hist")
+        created = self.client.register(name, "10.9.6.1:80")
+        self.client.update(created["id"], version="2")
+        page = self.client.history(created["id"], limit=1)
+        self.assertEqual(page["entries"][0]["change"], "updated")
+        self.assertTrue(page["next_before"])
+        changes = [entry["change"] for entry in self.client.iter_history(created["id"])]
+        self.assertEqual(changes, ["updated", "registered"])
+        self.assertEqual(len(self.client.recent_history(name=name)["entries"]), 2)
+
+        picked = self.client.lookup(name, stale="exclude", latency="off", tolerance="5ms")
+        self.assertEqual(picked["id"], created["id"])
+        with self.assertRaises(AtlasError) as bad:
+            self.client.lookup(name, stale="sometimes")
         self.assertEqual(bad.exception.code, "validation_failed")
 
     def test_paging_and_filters(self) -> None:

@@ -306,7 +306,9 @@ extra. If the owner is alive but not answering, the response is
 | `PATCH /v1/services/{id}` | Change some fields, for example `{"draining": true}`. Send `If-Match: "<revision>"` to reject the change if someone else updated it first (`412 precondition_failed`). |
 | `POST /v1/services/{id}/heartbeat` | Keep a TTL instance healthy. |
 | `DELETE /v1/services/{id}` | Deregister. |
-| `GET /v1/lookup/{name}` | Select one instance by routing rules (`region`, `key`, `tag`). |
+| `GET /v1/lookup/{name}` | Select one instance by routing rules (`region`, `key`, `tag`, and the per-request `stale`, `latency` and `tolerance` overrides). |
+| `GET /v1/services/{id}/history` | Every recorded change to one service, newest first, even after it was deregistered. |
+| `GET /v1/history?name=` | Recent changes across services, or for one service name. |
 | `GET /v1/node`, `GET /v1/members` | This node, and the cluster as this node sees it. |
 | `GET /v1/events` | Membership and registry events as Server-Sent Events, resumable with `Last-Event-ID`. |
 | `GET /v1/admin/credentials` | Configured credentials by fingerprint, scopes and expiry, never the secrets. |
@@ -381,7 +383,28 @@ preferring the requested region:
 - Unknown-health instances are used only when no healthy instance exists.
 - With a `key`, selection uses consistent hashing; without one, it's
   round-robin.
-- Unhealthy instances are never returned.
+- Unhealthy and draining instances are never returned.
+
+**Routing policies.** Two policies, set per node and overridable per lookup,
+decide the rest:
+
+| Policy | Setting / query | Values |
+|--------|-----------------|--------|
+| Stale records: instances whose owning node isn't alive (their process may be gone, but the record lives until the owner returns or is reaped) | `ATLAS_ROUTING_STALE_POLICY` / `?stale=` | `prefer-live` (default): use them only when no live-owner instance exists. `exclude`: never. `include`: treat them like any other. |
+| Latency: measured round-trip time to each owning node | `ATLAS_ROUTING_LATENCY` / `?latency=` | `nearest` (default): only the nearest nodes. `off`: ignore latency. |
+| Latency tolerance | `ATLAS_ROUTING_LATENCY_TOLERANCE` / `?tolerance=` | Nodes within this duration of the nearest count as equally near, so load spreads across them (default `0`). |
+
+A node's own instances always count as nearest. DNS answers follow the same
+stale-record policy.
+
+**History.** Every node records each committed change to a service (registered,
+updated, health, deregistered) with the record as it was afterwards. That
+includes changes learned from peers, and history survives deregistration. It
+keeps up to 100 entries per service for `ATLAS_HISTORY_RETENTION` (7 days by
+default). Answer "what changed before the outage?" with
+`GET /v1/services/{id}/history`, or `GET /v1/history?name=payments` across a
+whole service. A node that merged several revisions at once records only the
+latest, so history can differ slightly between nodes.
 
 **gRPC.** The typed `atlas.registry.v1.RegistryService` in
 [`api/v1/registry_service.proto`](api/v1/registry_service.proto) mirrors the
@@ -514,9 +537,77 @@ err = client.WatchWithOptions(ctx, atlas.WatchOptions{Kinds: []string{"service"}
 ```
 
 `List` follows every page; `ListPage` returns one. `Update`, `Replace`,
-`Drain`, `Undrain`, `Delete`, `Node`, `Members`, `Credentials`, `Backup` and
-`EvictNode` cover the rest of the API, and `*atlas.APIError` carries the
-server's `Code`, `RequestID` and `OwnerNode`.
+`Drain`, `Undrain`, `Delete`, `History`, `RecentHistory`, `LookupWithOptions`
+(routing overrides), `Node`, `Members`, `Credentials`, `Backup` and `EvictNode`
+cover the rest of the API, and `*atlas.APIError` carries the server's `Code`,
+`RequestID` and `OwnerNode`.
+
+### Node.js / TypeScript client
+
+[`clients/node`](clients/node) is written in TypeScript and has no runtime
+dependencies: it uses the `fetch` built into Node.js 20+. It covers the whole
+API, including history, routing overrides and a watch stream that resumes
+after disconnects.
+
+```bash
+cd clients/node && npm ci && npm run build
+```
+
+```ts
+import { hostname } from "node:os";
+import { AtlasClient, AtlasError } from "@manziosee/atlas-client";
+
+const atlas = new AtlasClient("https://atlas.example:8080", process.env.ATLAS_TOKEN!);
+const me = await atlas.register({ name: "payments", address: "10.0.0.7:8443", ttl_seconds: 15 },
+  { idempotencyKey: `payments-${hostname()}` });
+setInterval(() => atlas.heartbeat(me.id).catch(console.error), 5_000);
+
+const instance = await atlas.lookup("payments", { region: "eu", stale: "exclude" });
+try {
+  await atlas.update(me.id, { version: "2.0.0" }, me.revision);
+} catch (error) {
+  if (error instanceof AtlasError && error.code === "precondition_failed") { /* re-read and retry */ }
+}
+for await (const event of atlas.watch({ kinds: ["service"], service: "payments" })) {
+  console.log(event.type, event.service?.address);
+}
+```
+
+To trust a private CA, set `NODE_EXTRA_CA_CERTS`, or pass your own `fetch` in
+the client options.
+
+### Java client
+
+[`clients/java`](clients/java) targets Java 17+, uses `java.net.http` and has
+no runtime dependencies; it includes a small JSON reader and writer.
+
+```bash
+cd clients/java && mvn -B install
+```
+
+```java
+AtlasClient atlas = new AtlasClient("https://atlas.example:8080", System.getenv("ATLAS_TOKEN"));
+Service me = atlas.register(new ServiceSpec("payments", "10.0.0.7:8443").ttlSeconds(15),
+    null, "payments-" + InetAddress.getLocalHost().getHostName());
+atlas.heartbeat(me.id());
+
+Service instance = atlas.lookup("payments", new LookupOptions().region("eu").stale("exclude"));
+try {
+  atlas.update(me.id(), new ServicePatch().version("2.0.0"), me.revision());
+} catch (AtlasException e) {
+  if (e.code().equals("precondition_failed")) { /* re-read and retry */ }
+}
+atlas.watch("service", "payments", null, true, event -> {
+  System.out.println(event.type() + " " + event.service().address());
+  return true; // false stops watching
+});
+```
+
+For a private CA or mutual TLS, pass an `HttpClient` built with your
+`SSLContext`.
+
+All four clients (Go, Python, Node.js, Java) run their tests against a freshly
+started node in CI, using [`scripts/start-test-node.sh`](scripts/start-test-node.sh).
 
 ### Client-side load balancing
 
@@ -718,6 +809,9 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_DB_PATH` | `data/atlas.db` | Per-node SQLite file for service registry persistence. |
 | `ATLAS_HEALTH_CHECK_INTERVAL` / `_TIMEOUT` | `5s` / `1s` | Default probe interval (a service can set `check_interval_seconds`) and the deadline for each probe. Up to 16 probes run at once. |
 | `ATLAS_ORPHAN_SERVICE_REAP` | `10m` | Delete services whose owning node has been gone this long; `0` disables. Minimum `1m`, so a restarting node keeps its services. |
+| `ATLAS_ROUTING_STALE_POLICY` | `prefer-live` | How lookups and DNS treat instances whose owning node isn't alive: `include`, `prefer-live` or `exclude`. |
+| `ATLAS_ROUTING_LATENCY` / `_TOLERANCE` | `nearest` / `0` | Prefer the nearest measured nodes (`nearest`) or ignore latency (`off`); the tolerance makes nodes this close to the nearest count as equal. |
+| `ATLAS_HISTORY_RETENTION` | `168h` | How long service change history is kept; `0` turns history off. |
 | `ATLAS_TLS_CLIENT_AUTH` | `false` | Require client certificates (mTLS). |
 | `ATLAS_PROBE_INTERVAL` / `_TIMEOUT` | `1s` / `500ms` | Failure-detector timing. |
 | `ATLAS_SUSPICION_TIMEOUT` | `5s` | Time a suspect has to refute. |
@@ -839,6 +933,8 @@ that region beyond one Machine, and keep independent database backups.
 atlas/
 ├── api/v1/                 # OpenAPI spec, gossip + gRPC protos, generated typed gRPC SDK
 ├── clients/python/         # Python client (sync + asyncio) and its live-node tests
+├── clients/node/           # TypeScript client for Node.js 20+, no runtime dependencies
+├── clients/java/           # Java 17+ client on java.net.http, no runtime dependencies
 ├── pkg/atlas/              # public Go HTTP client
 ├── cmd/
 │   ├── atlas-node/         # the node daemon, TTL expiry and orphan reaper loops
@@ -911,8 +1007,10 @@ atlas/
   structured error codes, and an asyncio client, tested against a live node in CI.
 - [x] **Kubernetes integration:** Kustomize deploys expose Atlas DNS to opted-in
   namespaces; importing native Kubernetes Services still needs a controller.
-- [ ] **Adoption follow-up:** Java/Node clients, service-history API, and
-  configurable stale-record and latency-routing policies.
+- [x] **Adoption follow-up:** Node.js/TypeScript and Java clients with no runtime
+  dependencies, tested against a live node in CI; a service-history API
+  (`/v1/services/{id}/history`, `/v1/history`, gRPC `GetServiceHistory`); and
+  configurable stale-record and latency-routing policies, per node and per lookup.
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
   per-peer EWMA probe latency, nearest measured instance, consistent hashing,
   and round-robin fallback.
