@@ -102,7 +102,9 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		dnsServer.SetStalePolicy(routingPolicy.Stale, memberAlive(ml))
+		dnsServer.SetStalePolicy(routingPolicy.Stale, func() map[string]bool {
+			return membership.LiveSet(ml.LocalNode(), ml.Members())
+		})
 	}
 
 	broker := events.NewBroker(4096)
@@ -426,21 +428,6 @@ func joinLoop(ctx context.Context, ml *membership.Memberlist, seeds []string, lo
 			return
 		case <-time.After(wait):
 		}
-	}
-}
-
-// memberAlive reports whether a node is this node or a live or suspect peer.
-func memberAlive(ml *membership.Memberlist) func(string) bool {
-	return func(id string) bool {
-		if id == ml.LocalNode().ID {
-			return true
-		}
-		for _, member := range ml.Members() {
-			if member.ID == id {
-				return member.State == membership.StateAlive || member.State == membership.StateSuspect
-			}
-		}
-		return false
 	}
 }
 

@@ -91,8 +91,8 @@ describe("AtlasClient against a live node", live, () => {
     await atlas.update(service.id, { version: "2" });
     const first = await atlas.history(service.id, { limit: 1 });
     assert.equal(first.items[0]?.change, "updated");
-    assert.ok(first.next);
-    const rest = await atlas.history(service.id, { before: Number(first.next) });
+    assert.equal(typeof first.nextBefore, "number");
+    const rest = await atlas.history(service.id, { before: first.nextBefore });
     assert.deepEqual(rest.items.map((entry) => entry.change), ["registered"]);
     assert.equal((await atlas.recentHistory({ name })).items.length, 2);
   });

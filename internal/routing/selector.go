@@ -123,39 +123,7 @@ func (s *Selector) SelectWithLatency(services []storage.Service, region, key str
 // latency policy, and finally consistent hashing on Key or round-robin.
 func (s *Selector) Choose(services []storage.Service, opts Options) (storage.Service, error) {
 	policy := opts.Policy
-	if policy.Stale == "" {
-		policy.Stale = StalePreferLive
-	}
-	routable := make([]storage.Service, 0, len(services))
-	for _, service := range services {
-		if service.Routable() {
-			routable = append(routable, service)
-		}
-	}
-	if opts.OwnerAlive != nil && policy.Stale != StaleInclude {
-		live := make([]storage.Service, 0, len(routable))
-		for _, service := range routable {
-			if opts.OwnerAlive(service.NodeID) {
-				live = append(live, service)
-			}
-		}
-		if len(live) > 0 || policy.Stale == StaleExclude {
-			routable = live
-		}
-	}
-	available := make([]storage.Service, 0, len(routable))
-	for _, service := range routable {
-		if service.Health == storage.HealthHealthy {
-			available = append(available, service)
-		}
-	}
-	if len(available) == 0 {
-		for _, service := range routable {
-			if service.Health == storage.HealthUnknown {
-				available = append(available, service)
-			}
-		}
-	}
+	available := Candidates(services, opts.OwnerAlive, policy.Stale)
 	if len(available) == 0 {
 		return storage.Service{}, ErrNoInstance
 	}
@@ -174,6 +142,46 @@ func (s *Selector) Choose(services []storage.Service, opts Options) (storage.Ser
 		available = nearest(available, opts.Latency, policy.Tolerance)
 	}
 	return s.pick(available, opts.Key)
+}
+
+// Candidates returns the instances eligible for traffic, before region and
+// latency preferences: routable ones (never draining or unhealthy), then the
+// stale policy, then healthy ones or, if none is healthy, unknown-health
+// ones. Lookups and DNS both use it, so they always agree. A nil ownerAlive
+// treats every owner as alive; an empty stale policy means prefer-live.
+func Candidates(services []storage.Service, ownerAlive func(nodeID string) bool, stale StalePolicy) []storage.Service {
+	if stale == "" {
+		stale = StalePreferLive
+	}
+	routable := make([]storage.Service, 0, len(services))
+	for _, service := range services {
+		if service.Routable() {
+			routable = append(routable, service)
+		}
+	}
+	if ownerAlive != nil && stale != StaleInclude {
+		live := make([]storage.Service, 0, len(routable))
+		for _, service := range routable {
+			if ownerAlive(service.NodeID) {
+				live = append(live, service)
+			}
+		}
+		if len(live) > 0 || stale == StaleExclude {
+			routable = live
+		}
+	}
+	for _, health := range []storage.Health{storage.HealthHealthy, storage.HealthUnknown} {
+		tier := make([]storage.Service, 0, len(routable))
+		for _, service := range routable {
+			if service.Health == health {
+				tier = append(tier, service)
+			}
+		}
+		if len(tier) > 0 {
+			return tier
+		}
+	}
+	return nil
 }
 
 // nearest keeps candidates within tolerance of the best measured latency.

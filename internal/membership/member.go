@@ -31,6 +31,23 @@ func (s State) String() string {
 	return "unknown"
 }
 
+// Live reports whether a member in this state may still be serving: alive,
+// or suspect but not yet declared dead.
+func (s State) Live() bool { return s == StateAlive || s == StateSuspect }
+
+// LiveSet returns the IDs of self and every live member. Routing, DNS and
+// write forwarding all decide "is the owner still there?" with it.
+func LiveSet(self Member, members []Member) map[string]bool {
+	live := make(map[string]bool, len(members)+1)
+	live[self.ID] = true
+	for _, member := range members {
+		if member.State.Live() {
+			live[member.ID] = true
+		}
+	}
+	return live
+}
+
 // MarshalText implements encoding.TextMarshaler.
 func (s State) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 

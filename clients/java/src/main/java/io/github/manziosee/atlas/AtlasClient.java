@@ -3,6 +3,7 @@ package io.github.manziosee.atlas;
 import io.github.manziosee.atlas.Types.Event;
 import io.github.manziosee.atlas.Types.Filter;
 import io.github.manziosee.atlas.Types.HistoryEntry;
+import io.github.manziosee.atlas.Types.HistoryPage;
 import io.github.manziosee.atlas.Types.LookupOptions;
 import io.github.manziosee.atlas.Types.Member;
 import io.github.manziosee.atlas.Types.NodeInfo;
@@ -159,12 +160,12 @@ public final class AtlasClient {
   }
 
   /** Recorded changes to one service, newest first; before 0 starts at the newest. */
-  public Page<HistoryEntry> history(String id, long before, int limit) {
+  public HistoryPage history(String id, long before, int limit) {
     return historyPage(servicePath(id) + "/history", new ArrayList<>(), before, limit);
   }
 
   /** Recent changes across services, or for every service called {@code name} (may be null). */
-  public Page<HistoryEntry> recentHistory(String name, long before, int limit) {
+  public HistoryPage recentHistory(String name, long before, int limit) {
     List<String[]> query = new ArrayList<>();
     if (name != null && !name.isEmpty()) query.add(new String[] {"name", name});
     return historyPage("/v1/history", query, before, limit);
@@ -264,14 +265,13 @@ public final class AtlasClient {
 
   // --- transport ----------------------------------------------------------
 
-  private Page<HistoryEntry> historyPage(String path, List<String[]> query, long before, int limit) {
+  private HistoryPage historyPage(String path, List<String[]> query, long before, int limit) {
     if (before > 0) query.add(new String[] {"before", String.valueOf(before)});
     if (limit > 0) query.add(new String[] {"limit", String.valueOf(limit)});
     Map<String, Object> body = object("GET", path, query, null, Map.of());
     List<HistoryEntry> items = new ArrayList<>();
     for (Map<String, Object> m : Types.objects(body, "entries")) items.add(HistoryEntry.from(m));
-    long next = Types.num(body, "next_before");
-    return new Page<>(items, next == 0 ? null : String.valueOf(next));
+    return new HistoryPage(items, Types.num(body, "next_before"));
   }
 
   private Map<String, Object> object(String method, String path, List<String[]> query, Object body, Map<String, String> headers) {

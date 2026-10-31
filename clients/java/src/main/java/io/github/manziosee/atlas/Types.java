@@ -75,6 +75,9 @@ public final class Types {
     }
   }
 
+  /** One page of history, newest first; {@code nextBefore} is 0 on the last page. */
+  public record HistoryPage(List<HistoryEntry> items, long nextBefore) {}
+
   /** One page of results; {@code next} is null on the last page. */
   public record Page<T>(List<T> items, String next) {}
 

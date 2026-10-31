@@ -23,8 +23,14 @@ func TestHistoryRecordsEveryChangeNewestFirst(t *testing.T) {
 	if err := store.Delete(ctx, service.ID, "n"); err != nil {
 		t.Fatal(err)
 	}
-	// An unchanged re-registration and a checked-at update are not changes.
 	if _, err := store.Register(ctx, Service{ID: "other", Name: "other", NodeID: "n", Address: "10.0.0.2:80"}); err != nil {
+		t.Fatal(err)
+	}
+	// An unchanged re-registration and a checked-at update are not changes.
+	if _, outcome, err := store.Upsert(ctx, Service{ID: "other", Name: "other", NodeID: "n", Address: "10.0.0.2:80"}); err != nil || outcome != Unchanged {
+		t.Fatalf("identical re-registration = %v %v", outcome, err)
+	}
+	if err := store.SetHealth(ctx, "other", "n", HealthUnknown, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,5 +108,34 @@ func TestHistoryIncludesReplicatedChanges(t *testing.T) {
 	entries, _, err := store.History(ctx, HistoryFilter{ServiceID: "r", Limit: 5})
 	if err != nil || len(entries) != 1 || entries[0].Revision != 3 || entries[0].Service.NodeID != "m" {
 		t.Fatalf("replicated history = %+v %v", entries, err)
+	}
+}
+
+func TestFailedHistoryWriteStoresNothing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	notified := 0
+	store.OnChange(func(Change) { notified++ })
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE service_history`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Register(ctx, Service{ID: "atomic", Name: "atomic", NodeID: "n", Address: "10.0.0.1:80"}); err == nil {
+		t.Fatal("registration succeeded although its history could not be written")
+	}
+	if _, err := store.Get(ctx, "atomic"); err == nil {
+		t.Fatal("the service was stored without its history entry")
+	}
+	if notified != 0 {
+		t.Fatalf("listeners ran %d times for a write that was rolled back", notified)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	store.SetHistoryEnabled(false)
+	if _, err := store.Register(cancelled, Service{ID: "cancelled", Name: "c", NodeID: "n", Address: "10.0.0.2:80"}); err == nil {
+		t.Fatal("registration succeeded with a cancelled context")
+	}
+	if _, err := store.Get(ctx, "cancelled"); err == nil || notified != 0 {
+		t.Fatalf("a cancelled write was stored or notified (notified=%d)", notified)
 	}
 }

@@ -42,32 +42,34 @@ type Server struct {
 	ttl      uint32
 	next     atomic.Uint64
 
-	ownerAlive func(nodeID string) bool
-	stale      routing.StalePolicy
+	liveNodes func() map[string]bool
+	stale     routing.StalePolicy
 }
 
-// SetStalePolicy makes answers follow the lookup stale-record policy:
-// instances whose owner is not alive are dropped (exclude) or used only when
-// no live-owner instance exists (prefer-live). Call it before Serve.
-func (s *Server) SetStalePolicy(policy routing.StalePolicy, ownerAlive func(nodeID string) bool) {
-	s.stale, s.ownerAlive = policy, ownerAlive
+// SetStalePolicy makes answers follow the lookup stale-record policy for
+// instances whose owner is not alive: exclude drops them, prefer-live uses
+// them only when no live-owner instance exists. liveNodes returns the live
+// node IDs; it is called once per query. Call SetStalePolicy before Serve.
+func (s *Server) SetStalePolicy(policy routing.StalePolicy, liveNodes func() map[string]bool) {
+	s.stale, s.liveNodes = policy, liveNodes
 }
 
-// preferLive applies the stale policy to routable instances.
-func (s *Server) preferLive(services []storage.Service) []storage.Service {
-	if s.ownerAlive == nil || s.stale == "" || s.stale == routing.StaleInclude {
-		return services
+// ownerAlive snapshots membership for one query; nil means every owner counts
+// as alive.
+func (s *Server) ownerAlive() func(string) bool {
+	if s.liveNodes == nil {
+		return nil
 	}
-	live := make([]storage.Service, 0, len(services))
-	for _, service := range services {
-		if s.ownerAlive(service.NodeID) {
-			live = append(live, service)
-		}
+	live := s.liveNodes()
+	return func(nodeID string) bool { return live[nodeID] }
+}
+
+// excludeOnly is the stale policy for a single named instance.
+func (s *Server) excludeOnly() routing.StalePolicy {
+	if s.stale == routing.StaleExclude {
+		return routing.StaleExclude
 	}
-	if len(live) > 0 || s.stale == routing.StaleExclude {
-		return live
-	}
-	return services
+	return routing.StaleInclude
 }
 
 func New(registry Registry, zone string, ttl time.Duration) (*Server, error) {
@@ -251,7 +253,9 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 	}
 	if id, ok := s.parseInstanceName(q.Name.String()); ok {
 		service, err := s.registry.Get(ctx, id)
-		if err != nil || !service.Routable() {
+		// An instance name names one instance, so prefer-live has nothing to
+		// prefer; exclude still hides an instance whose owner is gone.
+		if err != nil || len(routing.Candidates([]storage.Service{service}, s.ownerAlive(), s.excludeOnly())) == 0 {
 			response.RCode = dnsmessage.RCodeNameError
 			return pack(response)
 		}
@@ -280,20 +284,9 @@ func (s *Server) answer(ctx context.Context, packet []byte) []byte {
 		response.RCode = dnsmessage.RCodeServerFailure
 		return pack(response)
 	}
-	services = s.preferLive(services)
-	filtered := make([]storage.Service, 0, len(services))
-	for _, service := range services {
-		if service.Health == storage.HealthHealthy && service.Routable() {
-			filtered = append(filtered, service)
-		}
-	}
-	if len(filtered) == 0 {
-		for _, service := range services {
-			if service.Health == storage.HealthUnknown && service.Routable() {
-				filtered = append(filtered, service)
-			}
-		}
-	}
+	// The same eligibility rules as /v1/lookup: routable, stale policy, then
+	// healthy before unknown health.
+	filtered := routing.Candidates(services, s.ownerAlive(), s.stale)
 	if len(filtered) == 0 {
 		response.RCode = dnsmessage.RCodeNameError
 		return pack(response)

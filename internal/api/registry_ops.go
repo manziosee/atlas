@@ -321,8 +321,11 @@ func (d Deps) lookup(ctx context.Context, req lookupRequest) (storage.Service, e
 	if err != nil {
 		return storage.Service{}, err
 	}
+	// One membership snapshot per lookup, not one per candidate.
+	live := membership.LiveSet(d.Cluster.LocalNode(), d.Cluster.Members())
 	return d.Selector.Choose(services, routing.Options{
-		Region: req.Region, Key: req.Key, Latency: d.nodeLatency, OwnerAlive: d.ownerAlive, Policy: policy,
+		Region: req.Region, Key: req.Key, Latency: d.nodeLatency,
+		OwnerAlive: func(nodeID string) bool { return live[nodeID] }, Policy: policy,
 	})
 }
 
@@ -378,7 +381,7 @@ func (d Deps) member(nodeID string) (membership.Member, bool) {
 	}
 	for _, member := range d.Cluster.Members() {
 		if member.ID == nodeID {
-			return member, member.State == membership.StateAlive || member.State == membership.StateSuspect
+			return member, member.State.Live()
 		}
 	}
 	return membership.Member{}, false

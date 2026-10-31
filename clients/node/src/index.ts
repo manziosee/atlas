@@ -98,6 +98,13 @@ export interface HistoryEntry {
   service: Service;
 }
 
+/** One page of history, newest first. */
+export interface HistoryPage {
+  items: HistoryEntry[];
+  /** Pass as `before` for older entries; undefined on the last page. */
+  nextBefore?: number;
+}
+
 export interface Page<T> {
   items: T[];
   /** Pass to the next call; undefined on the last page. */
@@ -274,12 +281,12 @@ export class AtlasClient {
   }
 
   /** Recorded changes to one service, newest first, including after deletion. */
-  async history(id: string, options: { before?: number; limit?: number } = {}): Promise<Page<HistoryEntry>> {
+  async history(id: string, options: { before?: number; limit?: number } = {}): Promise<HistoryPage> {
     return this.historyPage(`${servicePath(id)}/history`, [], options);
   }
 
   /** Recent changes across services, or for every service called `name`. */
-  async recentHistory(options: { name?: string; before?: number; limit?: number } = {}): Promise<Page<HistoryEntry>> {
+  async recentHistory(options: { name?: string; before?: number; limit?: number } = {}): Promise<HistoryPage> {
     return this.historyPage("/v1/history", options.name ? [["name", options.name]] : [], options);
   }
 
@@ -339,11 +346,11 @@ export class AtlasClient {
 
   // --- transport ----------------------------------------------------------
 
-  private async historyPage(path: string, query: Query, options: { before?: number; limit?: number }): Promise<Page<HistoryEntry>> {
+  private async historyPage(path: string, query: Query, options: { before?: number; limit?: number }): Promise<HistoryPage> {
     if (options.before) query.push(["before", String(options.before)]);
     if (options.limit) query.push(["limit", String(options.limit)]);
     const body = await this.request<{ entries: HistoryEntry[]; next_before?: number }>("GET", path, query);
-    return { items: body.entries ?? [], next: body.next_before ? String(body.next_before) : undefined };
+    return { items: body.entries ?? [], nextBefore: body.next_before || undefined };
   }
 
   private async request<T>(method: string, path: string, query: Query = [], body?: unknown, headers: Record<string, string> = {}): Promise<T> {

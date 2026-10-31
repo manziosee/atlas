@@ -68,8 +68,9 @@ func (s *Store) SetHistoryEnabled(enabled bool) {
 	s.historyOff.Store(!enabled)
 }
 
-// recordHistory appends change to the history. Callers hold s.mu.
-func (s *Store) recordHistory(ctx context.Context, change Change) error {
+// recordHistory appends change to the history inside the write's
+// transaction. Callers hold s.mu.
+func (s *Store) recordHistory(ctx context.Context, ex execer, change Change) error {
 	if s.historyOff.Load() {
 		return nil
 	}
@@ -83,11 +84,11 @@ func (s *Store) recordHistory(ctx context.Context, change Change) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO service_history (service_id, name, revision, change, at, record) VALUES (?,?,?,?,?,?)`,
+	if _, err := ex.ExecContext(ctx, `INSERT INTO service_history (service_id, name, revision, change, at, record) VALUES (?,?,?,?,?,?)`,
 		snapshot.ID, snapshot.Name, snapshot.Revision, kind, snapshot.UpdatedAt.UnixNano(), string(encoded)); err != nil {
 		return fmt.Errorf("storage: record history: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM service_history WHERE service_id = ? AND seq NOT IN
+	_, err = ex.ExecContext(ctx, `DELETE FROM service_history WHERE service_id = ? AND seq NOT IN
  (SELECT seq FROM service_history WHERE service_id = ? ORDER BY seq DESC LIMIT ?)`, snapshot.ID, snapshot.ID, historyPerService)
 	if err != nil {
 		return fmt.Errorf("storage: trim history: %w", err)

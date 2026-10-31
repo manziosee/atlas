@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import io.github.manziosee.atlas.Types.Event;
 import io.github.manziosee.atlas.Types.Filter;
 import io.github.manziosee.atlas.Types.HistoryEntry;
+import io.github.manziosee.atlas.Types.HistoryPage;
 import io.github.manziosee.atlas.Types.LookupOptions;
 import io.github.manziosee.atlas.Types.Page;
 import io.github.manziosee.atlas.Types.Service;
@@ -131,12 +132,12 @@ class AtlasClientTest {
     String name = unique("hist");
     Service service = atlas.register(new ServiceSpec(name, "10.7.4.1:80"));
     atlas.update(service.id(), new ServicePatch().version("2"), 0);
-    Page<HistoryEntry> first = atlas.history(service.id(), 0, 1);
+    HistoryPage first = atlas.history(service.id(), 0, 1);
     assertEquals("updated", first.items().get(0).change());
-    assertNotNull(first.next());
-    Page<HistoryEntry> rest = atlas.history(service.id(), Long.parseLong(first.next()), 0);
+    assertTrue(first.nextBefore() > 0);
+    HistoryPage rest = atlas.history(service.id(), first.nextBefore(), 0);
     assertEquals(List.of("registered"), rest.items().stream().map(HistoryEntry::change).toList());
-    assertNull(rest.next());
+    assertEquals(0, rest.nextBefore());
     assertEquals(2, atlas.recentHistory(name, 0, 0).items().size());
   }
 

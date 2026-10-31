@@ -731,14 +731,25 @@ func canonicalReplicatedService(service Service) Service {
 }
 
 // write persists service and notifies change listeners. Callers hold s.mu.
+// The record and its history entry commit in one transaction, and listeners
+// (events, replication) run only after the commit. So a write is either fully
+// stored, history included, with its notification sent, or not stored at all.
 func (s *Store) write(ctx context.Context, before *Service, service Service) (Service, error) {
-	stored, err := s.put(ctx, service)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Service{}, fmt.Errorf("storage: start write: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stored, err := s.put(ctx, tx, service)
 	if err != nil {
 		return Service{}, err
 	}
 	change := Change{Before: before, After: stored}
-	if err := s.recordHistory(ctx, change); err != nil {
+	if err := s.recordHistory(ctx, tx, change); err != nil {
 		return Service{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Service{}, fmt.Errorf("storage: commit write: %w", err)
 	}
 	s.listenersMu.RLock()
 	for _, listener := range s.listeners {
@@ -748,7 +759,12 @@ func (s *Store) write(ctx context.Context, before *Service, service Service) (Se
 	return stored, nil
 }
 
-func (s *Store) put(ctx context.Context, service Service) (Service, error) {
+// execer runs a statement on the database or inside a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *Store) put(ctx context.Context, ex execer, service Service) (Service, error) {
 	tags, err := json.Marshal(service.Tags)
 	if err != nil {
 		return Service{}, fmt.Errorf("storage: encode tags: %w", err)
@@ -760,7 +776,7 @@ func (s *Store) put(ctx context.Context, service Service) (Service, error) {
 	if service.Deleted {
 		deleted = 1
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = ex.ExecContext(ctx, `
 INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
  check_interval_seconds,unhealthy_threshold,healthy_threshold,draining)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
