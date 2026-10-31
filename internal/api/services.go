@@ -113,7 +113,10 @@ func (d Deps) listServices(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) lookupService(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	service, err := d.lookup(r.Context(), r.PathValue("name"), query.Get("region"), query.Get("key"), query["tag"])
+	service, err := d.lookup(r.Context(), lookupRequest{
+		Name: r.PathValue("name"), Region: query.Get("region"), Key: query.Get("key"), Tags: query["tag"],
+		Stale: query.Get("stale"), Latency: query.Get("latency"), Tolerance: query.Get("tolerance"),
+	})
 	d.writeServiceResult(w, r, service, storage.Updated, err)
 }
 

@@ -12,7 +12,7 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from typing import Any, TypeVar
 
-from .client import AtlasClient, Event, Member, Page, ServiceInstance
+from .client import AtlasClient, Event, HistoryPage, Member, Page, ServiceInstance
 
 T = TypeVar("T")
 
@@ -60,6 +60,12 @@ class AsyncAtlasClient:
 
     async def delete(self, service_id: str) -> None:
         await self._call(self._client.delete, service_id)
+
+    async def history(self, service_id: str, **options: Any) -> HistoryPage:
+        return await self._call(self._client.history, service_id, **options)
+
+    async def recent_history(self, **options: Any) -> HistoryPage:
+        return await self._call(self._client.recent_history, **options)
 
     async def node(self) -> dict[str, Any]:
         return await self._call(self._client.node)

@@ -124,11 +124,31 @@ func (t *typedRegistry) DeleteService(ctx context.Context, req *atlasv1.DeleteSe
 }
 
 func (t *typedRegistry) LookupService(ctx context.Context, req *atlasv1.LookupServiceRequest) (*atlasv1.Service, error) {
-	service, err := t.deps.lookup(ctx, req.GetName(), req.GetRegion(), req.GetKey(), req.GetTags())
+	service, err := t.deps.lookup(ctx, lookupRequest{
+		Name: req.GetName(), Region: req.GetRegion(), Key: req.GetKey(), Tags: req.GetTags(),
+		Stale: req.GetStalePolicy(), Latency: req.GetLatency(), Tolerance: req.GetLatencyTolerance(),
+	})
 	if err != nil {
 		return nil, grpcError(err)
 	}
 	return serviceToProto(service), nil
+}
+
+func (t *typedRegistry) GetServiceHistory(ctx context.Context, req *atlasv1.GetServiceHistoryRequest) (*atlasv1.GetServiceHistoryResponse, error) {
+	entries, next, err := t.deps.history(ctx, storage.HistoryFilter{
+		ServiceID: req.GetServiceId(), Name: req.GetName(), Limit: int(req.GetPageSize()), Before: req.GetBefore(),
+	})
+	if err != nil {
+		return nil, grpcError(err)
+	}
+	response := &atlasv1.GetServiceHistoryResponse{NextBefore: next, Entries: make([]*atlasv1.HistoryEntry, 0, len(entries))}
+	for _, entry := range entries {
+		response.Entries = append(response.Entries, &atlasv1.HistoryEntry{
+			Seq: entry.Seq, ServiceId: entry.ServiceID, Name: entry.Name, Revision: entry.Revision, Change: entry.Change,
+			At: timestamp(entry.At), Service: serviceToProto(entry.Service), Deleted: entry.Service.Deleted,
+		})
+	}
+	return response, nil
 }
 
 func (t *typedRegistry) GetNode(context.Context, *atlasv1.GetNodeRequest) (*atlasv1.GetNodeResponse, error) {

@@ -50,30 +50,13 @@ func FromMember(event membership.Event) Event {
 // FromServiceChange classifies a committed registry write. It reports false
 // for writes clients cannot observe, such as a tombstone for an unknown ID.
 func FromServiceChange(change storage.Change) (Event, bool) {
-	after := change.After
-	wasActive := change.Before != nil && !change.Before.Deleted
-	var kind string
-	switch {
-	case after.Deleted && wasActive:
-		kind = ServiceDeregistered
-	case after.Deleted:
+	kind, ok := change.Kind()
+	if !ok {
 		return Event{}, false
-	case !wasActive:
-		kind = ServiceRegistered
-	case change.Before.Health != after.Health && sameMetadata(*change.Before, after):
-		kind = ServiceHealth
-	default:
-		kind = ServiceUpdated
 	}
+	after := change.After
 	after.CheckedAt, after.HeartbeatAt = time.Time{}, time.Time{}
-	return Event{Type: kind, Kind: KindService, At: after.UpdatedAt, Service: &after}, true
-}
-
-func sameMetadata(a, b storage.Service) bool {
-	return a.Name == b.Name && a.Address == b.Address && a.Region == b.Region && a.Version == b.Version &&
-		strings.Join(a.Tags, "\x00") == strings.Join(b.Tags, "\x00") && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds &&
-		a.CheckIntervalSeconds == b.CheckIntervalSeconds && a.UnhealthyThreshold == b.UnhealthyThreshold &&
-		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining
+	return Event{Type: "service." + kind, Kind: KindService, At: after.UpdatedAt, Service: &after}, true
 }
 
 // Broker assigns event IDs, keeps a ring of recent events and delivers them to

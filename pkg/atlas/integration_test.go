@@ -181,3 +181,35 @@ func TestWatchResumesAfterDisconnect(t *testing.T) {
 		t.Fatalf("callback error = %v, want it returned unchanged", err)
 	}
 }
+
+func TestHistoryAndLookupOptions(t *testing.T) {
+	client := newLiveClient(t)
+	ctx := context.Background()
+	if _, err := client.Register(ctx, RegisterRequest{ID: "h-go", Name: "history-go", Address: "10.4.0.1:80", Tags: []string{"a"}}); err != nil {
+		t.Fatal(err)
+	}
+	version := "2"
+	if _, err := client.Update(ctx, "h-go", ServicePatch{Version: &version}, 0); err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.History(ctx, "h-go", 0, 1)
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Change != "updated" || page.NextBefore == 0 {
+		t.Fatalf("History first page = %+v %v", page, err)
+	}
+	rest, err := client.History(ctx, "h-go", page.NextBefore, 0)
+	if err != nil || len(rest.Entries) != 1 || rest.Entries[0].Change != "registered" || rest.NextBefore != 0 {
+		t.Fatalf("History second page = %+v %v", rest, err)
+	}
+	recent, err := client.RecentHistory(ctx, "history-go", 0, 10)
+	if err != nil || len(recent.Entries) != 2 {
+		t.Fatalf("RecentHistory = %+v %v", recent, err)
+	}
+
+	picked, err := client.LookupWithOptions(ctx, "history-go", LookupOptions{Tags: []string{"a"}, Stale: "exclude", Latency: "off", Tolerance: 5 * time.Millisecond})
+	if err != nil || picked.ID != "h-go" {
+		t.Fatalf("LookupWithOptions = %+v %v", picked, err)
+	}
+	if _, err := client.LookupWithOptions(ctx, "history-go", LookupOptions{Stale: "sometimes"}); !IsCode(err, "validation_failed") {
+		t.Fatalf("invalid stale policy err = %v", err)
+	}
+}

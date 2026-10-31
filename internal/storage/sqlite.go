@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -195,6 +196,8 @@ type Store struct {
 
 	listenersMu sync.RWMutex
 	listeners   []func(Change)
+
+	historyOff atomic.Bool
 }
 
 // Change describes one committed write. Before is nil for a new record.
@@ -252,7 +255,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -284,6 +287,20 @@ ALTER TABLE services ADD COLUMN check_interval_seconds INTEGER NOT NULL DEFAULT 
 ALTER TABLE services ADD COLUMN unhealthy_threshold INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE services ADD COLUMN healthy_threshold INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE services ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;
+`,
+	4: `
+CREATE TABLE IF NOT EXISTS service_history (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  service_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  change TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS service_history_service ON service_history(service_id, seq);
+CREATE INDEX IF NOT EXISTS service_history_name ON service_history(name, seq);
+CREATE INDEX IF NOT EXISTS service_history_at ON service_history(at);
 `,
 }
 
@@ -719,9 +736,13 @@ func (s *Store) write(ctx context.Context, before *Service, service Service) (Se
 	if err != nil {
 		return Service{}, err
 	}
+	change := Change{Before: before, After: stored}
+	if err := s.recordHistory(ctx, change); err != nil {
+		return Service{}, err
+	}
 	s.listenersMu.RLock()
 	for _, listener := range s.listeners {
-		listener(Change{Before: before, After: stored})
+		listener(change)
 	}
 	s.listenersMu.RUnlock()
 	return stored, nil

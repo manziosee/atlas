@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/manziosee/atlas/internal/membership"
+	"github.com/manziosee/atlas/internal/routing"
 	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/storage"
 )
@@ -296,21 +297,67 @@ func validateFilter(filter storage.Filter) error {
 	return nil
 }
 
-func (d Deps) lookup(ctx context.Context, name, region, key string, tags []string) (storage.Service, error) {
+// lookupRequest is one routed lookup. Stale, Latency and Tolerance override
+// the node's routing policy for this request when set.
+type lookupRequest struct {
+	Name, Region, Key string
+	Tags              []string
+	Stale, Latency    string
+	Tolerance         string
+}
+
+func (d Deps) lookup(ctx context.Context, req lookupRequest) (storage.Service, error) {
 	if d.Registry == nil || d.Selector == nil {
 		return storage.Service{}, errRegistryUnavailable
 	}
-	if name == "" || len(name) > 128 || len(region) > 64 || len(key) > 256 || len(tags) > maxTagFilters {
+	if req.Name == "" || len(req.Name) > 128 || len(req.Region) > 64 || len(req.Key) > 256 || len(req.Tags) > maxTagFilters {
 		return storage.Service{}, invalid("lookup parameters are missing or exceed limits")
 	}
-	services, err := d.Registry.List(ctx, storage.Filter{Name: name, Tags: tags})
+	policy, err := d.lookupPolicy(req)
 	if err != nil {
 		return storage.Service{}, err
 	}
-	return d.Selector.SelectWithLatency(services, region, key, d.nodeLatency)
+	services, err := d.Registry.List(ctx, storage.Filter{Name: req.Name, Tags: req.Tags})
+	if err != nil {
+		return storage.Service{}, err
+	}
+	return d.Selector.Choose(services, routing.Options{
+		Region: req.Region, Key: req.Key, Latency: d.nodeLatency, OwnerAlive: d.ownerAlive, Policy: policy,
+	})
 }
 
+// lookupPolicy applies a request's overrides to the node's routing policy.
+func (d Deps) lookupPolicy(req lookupRequest) (routing.Policy, error) {
+	base := d.Routing
+	stale, latency, tolerance := string(base.Stale), string(base.Latency), base.Tolerance
+	if req.Stale != "" {
+		stale = req.Stale
+	}
+	if req.Latency != "" {
+		latency = req.Latency
+	}
+	if req.Tolerance != "" {
+		parsed, err := time.ParseDuration(req.Tolerance)
+		if err != nil {
+			return routing.Policy{}, invalid("tolerance must be a duration such as 10ms")
+		}
+		tolerance = parsed
+	}
+	policy, err := routing.ParsePolicy(stale, latency, tolerance)
+	if err != nil {
+		return routing.Policy{}, invalid("%s", strings.TrimPrefix(err.Error(), "routing: "))
+	}
+	return policy, nil
+}
+
+// selfLatency stands in for the local node, which never probes itself: its
+// own instances are always the nearest.
+const selfLatency = time.Microsecond
+
 func (d Deps) nodeLatency(nodeID string) time.Duration {
+	if nodeID == d.Cluster.LocalNode().ID {
+		return selfLatency
+	}
 	if reader, ok := d.Cluster.(interface{ Latency(string) time.Duration }); ok {
 		return reader.Latency(nodeID)
 	}

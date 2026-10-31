@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -552,5 +553,96 @@ func TestHealthCheckOptionsAndDraining(t *testing.T) {
 	}
 	if rec := h.do(http.MethodPatch, "/v1/services/"+blue.ID, writeToken, `{"draining":false}`); !strings.Contains(rec.Body.String(), `"health"`) || strings.Contains(rec.Body.String(), `"draining":true`) {
 		t.Fatalf("undrain = %s", rec.Body.String())
+	}
+}
+
+func TestLookupRoutingPolicies(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	h.cluster.peers = []membership.Member{{ID: "n3", Addr: "10.0.0.3:7946", State: membership.StateDead}}
+	if _, err := h.store.Register(ctx, storage.Service{ID: "orphan", Name: "jobs", NodeID: "n3", Address: "10.0.8.1:80", Health: storage.HealthHealthy}); err != nil {
+		t.Fatal(err)
+	}
+	local, _ := h.register(`{"id":"local","name":"jobs","address":"10.0.8.2:80"}`)
+
+	picked := func(query string) map[string]int {
+		seen := map[string]int{}
+		for range 8 {
+			rec := h.do(http.MethodGet, "/v1/lookup/jobs"+query, readToken, "")
+			if rec.Code != http.StatusOK {
+				seen[rec.errorCode(t)]++
+				continue
+			}
+			var s storage.Service
+			rec.json(t, &s)
+			seen[s.ID]++
+		}
+		return seen
+	}
+	if got := picked(""); got[local.ID] != 8 {
+		t.Fatalf("default prefer-live = %v, want only the instance with a live owner", got)
+	}
+	if got := picked("?stale=include"); got["orphan"] != 8 {
+		t.Fatalf("stale=include = %v, want the healthy orphan", got)
+	}
+	h.do(http.MethodDelete, "/v1/services/"+local.ID, writeToken, "")
+	if got := picked("?stale=exclude"); got[httperr.CodeNoHealthyInstance] != 8 {
+		t.Fatalf("stale=exclude with only stale instances = %v", got)
+	}
+	if got := picked(""); got["orphan"] != 8 {
+		t.Fatalf("prefer-live falls back to stale instances: %v", got)
+	}
+	for _, bad := range []string{"?stale=sometimes", "?latency=fastest", "?tolerance=soon"} {
+		if rec := h.do(http.MethodGet, "/v1/lookup/jobs"+bad, readToken, ""); rec.Code != http.StatusBadRequest {
+			t.Errorf("lookup%s = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
+func TestServiceHistoryAPI(t *testing.T) {
+	h := newHarness(t, nil)
+	service, _ := h.register(`{"id":"hist-1","name":"ledger","address":"10.0.9.1:80"}`)
+	h.do(http.MethodPatch, "/v1/services/hist-1", writeToken, `{"version":"2"}`)
+	h.do(http.MethodPatch, "/v1/services/hist-1", writeToken, `{"draining":true}`)
+	h.do(http.MethodDelete, "/v1/services/hist-1", writeToken, "")
+	h.register(`{"name":"other","address":"10.0.9.2:80"}`)
+
+	type page struct {
+		Count      int                    `json:"count"`
+		Entries    []storage.HistoryEntry `json:"entries"`
+		NextBefore int64                  `json:"next_before"`
+	}
+	var full page
+	rec := h.do(http.MethodGet, "/v1/services/"+service.ID+"/history", readToken, "")
+	rec.json(t, &full)
+	if rec.Code != http.StatusOK || full.Count != 4 || full.Entries[0].Change != storage.ChangeDeregistered || full.Entries[3].Change != storage.ChangeRegistered {
+		t.Fatalf("history = %d %+v", rec.Code, full)
+	}
+	if full.Entries[1].Service.Draining != true || full.Entries[2].Service.Version != "2" {
+		t.Fatalf("history snapshots = %+v", full.Entries)
+	}
+
+	var first, second page
+	h.do(http.MethodGet, "/v1/services/"+service.ID+"/history?limit=3", readToken, "").json(t, &first)
+	if first.Count != 3 || first.NextBefore == 0 {
+		t.Fatalf("first page = %+v", first)
+	}
+	h.do(http.MethodGet, fmt.Sprintf("/v1/services/%s/history?limit=3&before=%d", service.ID, first.NextBefore), readToken, "").json(t, &second)
+	if second.Count != 1 || second.NextBefore != 0 || second.Entries[0].Change != storage.ChangeRegistered {
+		t.Fatalf("second page = %+v", second)
+	}
+
+	var byName page
+	h.do(http.MethodGet, "/v1/history?name=other", readToken, "").json(t, &byName)
+	if byName.Count != 1 || byName.Entries[0].Name != "other" {
+		t.Fatalf("history by name = %+v", byName)
+	}
+	for _, bad := range []string{"?limit=0", "?limit=501", "?before=-1", "?before=x"} {
+		if rec := h.do(http.MethodGet, "/v1/history"+bad, readToken, ""); rec.Code != http.StatusBadRequest || rec.errorCode(t) != httperr.CodeValidation {
+			t.Errorf("GET /v1/history%s = %d", bad, rec.Code)
+		}
+	}
+	if rec := h.do(http.MethodGet, "/v1/history", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous history = %d", rec.Code)
 	}
 }

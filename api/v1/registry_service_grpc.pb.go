@@ -19,16 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RegistryService_RegisterService_FullMethodName = "/atlas.registry.v1.RegistryService/RegisterService"
-	RegistryService_UpdateService_FullMethodName   = "/atlas.registry.v1.RegistryService/UpdateService"
-	RegistryService_Heartbeat_FullMethodName       = "/atlas.registry.v1.RegistryService/Heartbeat"
-	RegistryService_GetService_FullMethodName      = "/atlas.registry.v1.RegistryService/GetService"
-	RegistryService_ListServices_FullMethodName    = "/atlas.registry.v1.RegistryService/ListServices"
-	RegistryService_DeleteService_FullMethodName   = "/atlas.registry.v1.RegistryService/DeleteService"
-	RegistryService_LookupService_FullMethodName   = "/atlas.registry.v1.RegistryService/LookupService"
-	RegistryService_GetNode_FullMethodName         = "/atlas.registry.v1.RegistryService/GetNode"
-	RegistryService_ListMembers_FullMethodName     = "/atlas.registry.v1.RegistryService/ListMembers"
-	RegistryService_Watch_FullMethodName           = "/atlas.registry.v1.RegistryService/Watch"
+	RegistryService_RegisterService_FullMethodName   = "/atlas.registry.v1.RegistryService/RegisterService"
+	RegistryService_UpdateService_FullMethodName     = "/atlas.registry.v1.RegistryService/UpdateService"
+	RegistryService_Heartbeat_FullMethodName         = "/atlas.registry.v1.RegistryService/Heartbeat"
+	RegistryService_GetService_FullMethodName        = "/atlas.registry.v1.RegistryService/GetService"
+	RegistryService_ListServices_FullMethodName      = "/atlas.registry.v1.RegistryService/ListServices"
+	RegistryService_DeleteService_FullMethodName     = "/atlas.registry.v1.RegistryService/DeleteService"
+	RegistryService_LookupService_FullMethodName     = "/atlas.registry.v1.RegistryService/LookupService"
+	RegistryService_GetNode_FullMethodName           = "/atlas.registry.v1.RegistryService/GetNode"
+	RegistryService_ListMembers_FullMethodName       = "/atlas.registry.v1.RegistryService/ListMembers"
+	RegistryService_GetServiceHistory_FullMethodName = "/atlas.registry.v1.RegistryService/GetServiceHistory"
+	RegistryService_Watch_FullMethodName             = "/atlas.registry.v1.RegistryService/Watch"
 )
 
 // RegistryServiceClient is the client API for RegistryService service.
@@ -58,6 +59,8 @@ type RegistryServiceClient interface {
 	LookupService(ctx context.Context, in *LookupServiceRequest, opts ...grpc.CallOption) (*Service, error)
 	GetNode(ctx context.Context, in *GetNodeRequest, opts ...grpc.CallOption) (*GetNodeResponse, error)
 	ListMembers(ctx context.Context, in *ListMembersRequest, opts ...grpc.CallOption) (*ListMembersResponse, error)
+	// GetServiceHistory returns this node's record of changes, newest first.
+	GetServiceHistory(ctx context.Context, in *GetServiceHistoryRequest, opts ...grpc.CallOption) (*GetServiceHistoryResponse, error)
 	// Watch streams membership and registry events. Resume with last_event_id;
 	// an event of type "reset" means the gap could not be replayed.
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
@@ -161,6 +164,16 @@ func (c *registryServiceClient) ListMembers(ctx context.Context, in *ListMembers
 	return out, nil
 }
 
+func (c *registryServiceClient) GetServiceHistory(ctx context.Context, in *GetServiceHistoryRequest, opts ...grpc.CallOption) (*GetServiceHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetServiceHistoryResponse)
+	err := c.cc.Invoke(ctx, RegistryService_GetServiceHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *registryServiceClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &RegistryService_ServiceDesc.Streams[0], RegistryService_Watch_FullMethodName, cOpts...)
@@ -207,6 +220,8 @@ type RegistryServiceServer interface {
 	LookupService(context.Context, *LookupServiceRequest) (*Service, error)
 	GetNode(context.Context, *GetNodeRequest) (*GetNodeResponse, error)
 	ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error)
+	// GetServiceHistory returns this node's record of changes, newest first.
+	GetServiceHistory(context.Context, *GetServiceHistoryRequest) (*GetServiceHistoryResponse, error)
 	// Watch streams membership and registry events. Resume with last_event_id;
 	// an event of type "reset" means the gap could not be replayed.
 	Watch(*WatchRequest, grpc.ServerStreamingServer[Event]) error
@@ -246,6 +261,9 @@ func (UnimplementedRegistryServiceServer) GetNode(context.Context, *GetNodeReque
 }
 func (UnimplementedRegistryServiceServer) ListMembers(context.Context, *ListMembersRequest) (*ListMembersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListMembers not implemented")
+}
+func (UnimplementedRegistryServiceServer) GetServiceHistory(context.Context, *GetServiceHistoryRequest) (*GetServiceHistoryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetServiceHistory not implemented")
 }
 func (UnimplementedRegistryServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[Event]) error {
 	return status.Errorf(codes.Unimplemented, "method Watch not implemented")
@@ -433,6 +451,24 @@ func _RegistryService_ListMembers_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RegistryService_GetServiceHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetServiceHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServiceServer).GetServiceHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RegistryService_GetServiceHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServiceServer).GetServiceHistory(ctx, req.(*GetServiceHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RegistryService_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -486,6 +522,10 @@ var RegistryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListMembers",
 			Handler:    _RegistryService_ListMembers_Handler,
+		},
+		{
+			MethodName: "GetServiceHistory",
+			Handler:    _RegistryService_GetServiceHistory_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

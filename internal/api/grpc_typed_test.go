@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -172,4 +173,24 @@ func waitSubscribed(t *testing.T, broker *events.Broker) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("no subscriber attached")
+}
+
+func TestTypedGRPCServiceHistory(t *testing.T) {
+	h := newHarness(t, nil)
+	client := typedClient(t, h)
+	ctx := withToken(context.Background(), readToken)
+	h.register(`{"id":"g-hist","name":"grpc-hist","address":"10.0.9.3:80"}`)
+	h.do(http.MethodPatch, "/v1/services/g-hist", writeToken, `{"version":"9"}`)
+
+	resp, err := client.GetServiceHistory(ctx, &atlasv1.GetServiceHistoryRequest{ServiceId: "g-hist", PageSize: 1})
+	if err != nil || len(resp.GetEntries()) != 1 || resp.GetEntries()[0].GetChange() != "updated" || resp.GetNextBefore() == 0 {
+		t.Fatalf("first page = %v %v", resp, err)
+	}
+	rest, err := client.GetServiceHistory(ctx, &atlasv1.GetServiceHistoryRequest{ServiceId: "g-hist", Before: resp.GetNextBefore()})
+	if err != nil || len(rest.GetEntries()) != 1 || rest.GetEntries()[0].GetService().GetVersion() != "" || rest.GetNextBefore() != 0 {
+		t.Fatalf("second page = %v %v", rest, err)
+	}
+	if _, err := client.GetServiceHistory(ctx, &atlasv1.GetServiceHistoryRequest{PageSize: 900}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("oversized page = %v", err)
+	}
 }
