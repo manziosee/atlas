@@ -219,6 +219,40 @@ The threat model, known limitations and how to report a vulnerability are in
 
 ## Quick start
 
+### One container, no setup
+
+```bash
+docker run --rm -p 8080:8080 -p 5353:5353/udp ghcr.io/manziosee/atlas:edge
+```
+
+With nothing configured, the node starts in **dev mode**. It generates a gossip
+key and an API token, then prints the token, a dashboard link with the token
+already filled in, and a `curl` example. It also turns on DNS on port 5353.
+Mount a volume on `/data` to keep the same token across restarts.
+
+Dev mode switches itself off as soon as anything real is configured:
+`ATLAS_ENV=production`, a gossip key, API tokens or credentials, or seeds.
+A real deployment that forgets one secret therefore still fails at startup
+rather than running with generated ones. `ATLAS_DEV=false` turns dev mode off
+explicitly.
+
+`:edge` is built from every push to `main`. Release tags publish `:latest`
+and versioned images.
+
+### Register containers without code changes
+
+`atlas-agent`, which ships in the same image, watches the Docker socket and
+registers every container labeled `atlas.name=<service>`. It handles health,
+draining on stop and removal on exit. See
+**[docs/DOCKER_AGENT.md](docs/DOCKER_AGENT.md)** and the runnable example in
+[`deploy/docker-agent/`](deploy/docker-agent/compose.yaml).
+
+```bash
+docker run -d --label atlas.name=payments --label atlas.health=/healthz payments:1.4.2
+```
+
+### Three-node cluster
+
 **Prerequisites:** Docker (with Compose v2), Go 1.26+ (for local builds),
 OpenSSL and Bash (Git Bash works on Windows).
 
@@ -793,6 +827,7 @@ TLS mode, and timing changes require a restart.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_ENV` | `development` | `production` enforces TLS. |
+| `ATLAS_DEV` | `auto` | Dev mode generates the gossip key and an API token into `dev-credentials.json` next to the database, enables DNS on `:5353`, and prints a start banner. `auto` enables it only in development with no key, credentials or seeds configured; `true` forces it (refused in production); `false` disables it. |
 | `ATLAS_NODE_ID` | hostname | Unique node name. |
 | `ATLAS_REGION` | `local` / `FLY_REGION` | Used for region-aware routing. |
 | `ATLAS_SEEDS` | — | `host:port` list; DNS names may resolve to many nodes. |
@@ -938,12 +973,14 @@ atlas/
 ├── pkg/atlas/              # public Go HTTP client
 ├── cmd/
 │   ├── atlas-node/         # the node daemon, TTL expiry and orphan reaper loops
-│   └── atlas-cli/          # operator CLI (members, services, watch, evict, backup, ...)
+│   ├── atlas-cli/          # operator CLI (members, services, watch, evict, backup, ...)
+│   └── atlas-agent/        # Docker-label agent: registers labeled containers
 ├── internal/
 │   ├── api/                # HTTP + gRPC handlers, admin routes, middleware chain
 │   ├── events/             # event broker: IDs, backlog, Last-Event-ID resume
 │   ├── httperr/            # JSON error bodies with stable codes
-│   ├── config/             # env config, fail-closed validation
+│   ├── config/             # env config, fail-closed validation, dev mode
+│   ├── dockeragent/        # Docker Engine API client and container lifecycle sync
 │   ├── membership/         # SWIM failure detector + state machine
 │   ├── transport/          # encrypted UDP
 │   ├── security/           # keyring, TLS/mTLS, auth, rate limit, headers
@@ -956,6 +993,7 @@ atlas/
 ├── deploy/
 │   ├── k8s/                # Kustomize base + dev/production overlays
 │   ├── fly/                # Fly.io multi-region config
+│   ├── docker-agent/       # Compose example: node + Docker-label agent
 │   ├── prometheus/         # scrape config + alert rules
 │   ├── grafana/            # provisioned datasource + dashboard
 │   └── certs/              # generated local certs (git-ignored)
@@ -1011,6 +1049,10 @@ atlas/
   dependencies, tested against a live node in CI; a service-history API
   (`/v1/services/{id}/history`, `/v1/history`, gRPC `GetServiceHistory`); and
   configurable stale-record and latency-routing policies, per node and per lookup.
+- [x] **Adoption follow-up:** zero-setup dev mode (`docker run` prints a token
+  and dashboard link), an `:edge` image from `main`, and `atlas-agent`, which
+  registers Docker containers from `atlas.*` labels with health, draining and
+  reconciliation.
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
   per-peer EWMA probe latency, nearest measured instance, consistent hashing,
   and round-robin fallback.

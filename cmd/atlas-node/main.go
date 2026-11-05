@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -188,6 +189,9 @@ func run() error {
 		})
 	}
 
+	if cfg.Dev != nil {
+		printDevBanner(os.Stderr, cfg)
+	}
 	log.Info("atlas node started",
 		"version", version.String(),
 		"env", cfg.Env,
@@ -316,6 +320,31 @@ func serve(srv *http.Server, tls bool) error {
 		return nil
 	}
 	return err
+}
+
+// printDevBanner tells someone who just ran the image how to use it.
+func printDevBanner(w io.Writer, cfg *config.Config) {
+	_, port, err := net.SplitHostPort(cfg.HTTPAddr)
+	if err != nil {
+		port = "8080"
+	}
+	base := "http://localhost:" + port
+	token := cfg.Dev.Token
+	if token == "" {
+		token = "<your configured token>"
+	}
+	_, _ = fmt.Fprintf(w, `
+  Atlas is running in dev mode: a single node with generated secrets.
+  Not for production. Secrets are kept in %s
+
+  API token  %s
+  Dashboard  %s/dashboard/#token=%s
+  Try it     curl -H "Authorization: Bearer %s" %s/v1/members
+`, cfg.Dev.CredentialsPath, token, base, token, token, base)
+	if _, dnsPort, err := net.SplitHostPort(cfg.DNSAddr); err == nil {
+		_, _ = fmt.Fprintf(w, "  DNS        dig @127.0.0.1 -p %s <service>.%s (in Docker, publish %s/udp)\n", dnsPort, cfg.DNSZone, dnsPort)
+	}
+	_, _ = fmt.Fprintln(w)
 }
 
 // apiAdvertiseAddr is the base URL peers use to forward writes here: the
