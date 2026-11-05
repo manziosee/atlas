@@ -1,0 +1,99 @@
+# Atlas Helm chart. Every value is optional; `helm install atlas <chart>`
+# starts a 3-node cluster with generated secrets.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/manziosee/atlas
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Node settings. Anything not listed here can go in `extraEnv`.
+config:
+  # development or production. production requires TLS (see `tls`).
+  env: development
+  region: k8s
+  logLevel: info
+  # Optional "latitude,longitude" shown on the console's cluster map.
+  location: ""
+  # Browser origins allowed to call the API, e.g. your Atlas Console URL.
+  corsOrigins: ""
+  # Where the Atlas Console is hosted; / and /dashboard redirect there.
+  consoleURL: ""
+  rateLimitRPS: 20
+  rateLimitBurst: 40
+
+# Plain environment variables added to every node (name: value).
+extraEnv: {}
+
+secrets:
+  # Use an existing Secret with ATLAS_GOSSIP_KEY and ATLAS_API_TOKENS (or
+  # ATLAS_API_CREDENTIALS), plus ATLAS_SYNC_TOKEN when k8sSync is enabled.
+  existingSecret: ""
+  # Otherwise the chart creates one. Empty values are generated once and
+  # kept across upgrades. Generate your own with `atlas-cli keygen` and
+  # `atlas-cli tokengen`.
+  gossipKey: ""
+  apiToken: ""
+
+tls:
+  enabled: false
+  # Secret with tls.crt, tls.key and ca.crt (for example from cert-manager).
+  secretName: ""
+  clientAuth: false
+
+dns:
+  enabled: true
+
+persistence:
+  size: 1Gi
+  storageClass: ""
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 128Mi }
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Restricts ingress to what Atlas needs. Needs a CNI that enforces policies.
+networkPolicy:
+  enabled: false
+  # Namespaces with this label may call the API and DNS.
+  apiAccessLabel: { atlas.io/api-access: "true" }
+
+# Prometheus Operator ServiceMonitor.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# atlas-k8s: registers Services annotated `atlas.io/register: "true"`.
+k8sSync:
+  enabled: false
+  # Names this cluster in the owner tag atlas-k8s:<cluster>. Use one name
+  # per Kubernetes cluster that shares an Atlas cluster.
+  cluster: kubernetes
+  # Namespaces to watch; empty watches all (cluster-wide RBAC).
+  namespaces: []
+  clusterDomain: cluster.local
+  ttl: 15s
+  logLevel: info
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }

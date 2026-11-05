@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Activity, Boxes, Eye, LayoutDashboard, LogOut, Menu, RefreshCw, Search, Server, Shield, X } from "lucide-react";
+import { Activity, BookOpen, Boxes, Eye, Globe2, LayoutDashboard, LogOut, Menu, Plug, RefreshCw, Search, Server, Shield, X } from "lucide-react";
 import { Wordmark } from "@/components/logo";
 import { useConnection } from "@/lib/connection";
 import { useCluster, type StreamStatus } from "@/lib/cluster";
@@ -13,9 +13,11 @@ import { Spinner } from "./ui";
 const links = [
   { href: "/dashboard/", label: "Overview", icon: LayoutDashboard },
   { href: "/nodes/", label: "Nodes", icon: Server },
+  { href: "/topology/", label: "Cluster map", icon: Globe2 },
   { href: "/services/", label: "Services", icon: Boxes },
   { href: "/activity/", label: "Activity", icon: Activity },
   { href: "/lookup/", label: "Lookup tester", icon: Search },
+  { href: "/integrations/", label: "Integrations", icon: Plug },
   { href: "/admin/", label: "Admin", icon: Shield },
 ];
 
@@ -125,6 +127,9 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
               );
             })}
           </nav>
+          <Link href="/docs/" className="mt-3 flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-muted hover:bg-white/[0.04] hover:text-fg">
+            <BookOpen className="h-4 w-4" /> Docs &amp; API
+          </Link>
           <div className="mt-6 space-y-3 rounded-xl border border-line p-3 text-xs text-muted">
             <p>
               Node <span className="font-mono text-fg">{conn.info.node.id}</span>

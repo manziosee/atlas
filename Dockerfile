@@ -54,7 +54,7 @@ LABEL org.opencontainers.image.title="atlas" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
 
-COPY --from=build /out/atlas-node /out/atlas-cli /out/atlas-agent /usr/local/bin/
+COPY --from=build /out/atlas-node /out/atlas-cli /out/atlas-agent /out/atlas-k8s /usr/local/bin/
 COPY --from=build --chown=65532:65532 /data /data
 
 ENV ATLAS_DB_PATH=/data/atlas.db

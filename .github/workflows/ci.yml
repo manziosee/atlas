@@ -113,6 +113,100 @@ jobs:
         if: failure()
         run: cat "$RUNNER_TEMP/node.log"
 
+  terraform-provider:
+    name: Terraform provider against a live node
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v7
+        with: { go-version-file: terraform-provider-atlas/go.mod }
+      - name: Install Terraform
+        run: |
+          if ! command -v terraform >/dev/null; then
+            curl -fsSL -o /tmp/tf.zip https://releases.hashicorp.com/terraform/1.13.4/terraform_1.13.4_linux_amd64.zip
+            sudo unzip -o -q /tmp/tf.zip -d /usr/local/bin
+          fi
+          terraform version
+      - name: Start a single development node
+        run: ./scripts/start-test-node.sh
+      - name: Build, vet and run acceptance tests
+        working-directory: terraform-provider-atlas
+        env:
+          TF_ACC: "1"
+          ATLAS_ADDR: ${{ env.ATLAS_TEST_ENDPOINT }}
+          ATLAS_TOKEN: ${{ env.ATLAS_TEST_TOKEN }}
+        run: |
+          go build ./...
+          go vet ./...
+          go test -count=1 ./...
+          terraform fmt -check -recursive examples
+      - name: Node log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/node.log"
+
+  kubernetes:
+    name: Helm chart and Kubernetes controller in kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - name: Tools
+        run: |
+          command -v kind >/dev/null || { curl -fsSLo /tmp/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && sudo install /tmp/kind /usr/local/bin/kind; }
+          command -v helm >/dev/null || curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          kind version && helm version --short && kubectl version --client
+      - name: Lint the chart
+        run: |
+          helm lint deploy/helm/atlas --strict
+          helm lint deploy/helm/atlas --strict --set k8sSync.enabled=true --set networkPolicy.enabled=true             --set tls.enabled=true --set tls.secretName=atlas-tls --set "k8sSync.namespaces={a,b}"
+          helm template ci deploy/helm/atlas --set k8sSync.enabled=true --set networkPolicy.enabled=true > /tmp/chart.yaml
+          docker run --rm -v /tmp:/m ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary -ignore-missing-schemas /m/chart.yaml
+      - name: Create a cluster and load the image
+        run: |
+          kind create cluster --name atlas --wait 120s
+          docker build -t atlas:ci --build-arg VERSION=ci --build-arg COMMIT=${{ github.sha }} .
+          kind load docker-image atlas:ci --name atlas
+      - name: Install Atlas with the controller
+        run: |
+          helm install atlas deploy/helm/atlas -n atlas --create-namespace             --set image.repository=atlas --set image.tag=ci --set image.pullPolicy=Never             --set k8sSync.enabled=true --set k8sSync.cluster=ci --wait --timeout 5m
+          helm test atlas -n atlas --logs
+      - name: Annotated pods appear, follow scaling and leave
+        run: |
+          kubectl apply -f deploy/k8s/examples/annotated-service.yaml
+          kubectl -n demo rollout status deploy/whoami --timeout=180s
+          TOKEN=$(kubectl -n atlas get secret atlas-secrets -o jsonpath='{.data.ATLAS_ADMIN_TOKEN}' | base64 -d)
+          echo "::add-mask::$TOKEN"
+          kubectl -n atlas port-forward svc/atlas 8080:8080 >/tmp/pf.log 2>&1 &
+          healthy() {
+            curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8080/v1/services?tag=atlas-k8s:ci&health=healthy" | jq '.services | length'
+          }
+          expect() {
+            local want=$1 deadline=$((SECONDS + 120))
+            until [ "$(healthy 2>/dev/null)" = "$want" ]; do
+              if (( SECONDS >= deadline )); then
+                echo "wanted $want healthy instances"; curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8080/v1/services?tag=atlas-k8s:ci" | jq .
+                kubectl -n atlas logs deploy/atlas-k8s --tail=100; exit 1
+              fi
+              sleep 2
+            done
+            echo "healthy instances: $want"
+          }
+          expect 2
+          kubectl -n demo scale deploy/whoami --replicas=1
+          expect 1
+          kubectl -n demo annotate service whoami atlas.io/register-
+          expect 0
+          curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8080/v1/topology?scope=cluster" | jq -e '[.nodes[] | select(.view)] | length == 3'
+      - name: Cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl -n atlas logs statefulset/atlas --tail=100 || true
+          kubectl -n atlas logs deploy/atlas-k8s --tail=100 || true
+
   java-client:
     name: Java client against a live node
     runs-on: ubuntu-latest

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "atlas.fullname" . }}-test
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile: { type: RuntimeDefault }
+  containers:
+    - name: members
+      image: {{ include "atlas.image" . }}
+      command: ["/usr/local/bin/atlas-cli", "members"]
+      env:
+        - name: ATLAS_ADDR
+          value: {{ printf "%s://%s:8080" (include "atlas.scheme" .) (include "atlas.fullname" .) | quote }}
+        - name: ATLAS_TOKEN
+          valueFrom: { secretKeyRef: { name: {{ include "atlas.secretName" . }}, key: {{ ternary "ATLAS_SYNC_TOKEN" "ATLAS_ADMIN_TOKEN" (not (empty .Values.secrets.existingSecret)) }} } }
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: [ALL] }

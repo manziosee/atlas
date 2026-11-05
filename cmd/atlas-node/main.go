@@ -146,6 +146,7 @@ func run() error {
 		Routing:     routingPolicy,
 		CORSOrigins: cfg.CORSOrigins,
 		ConsoleURL:  cfg.ConsoleURL,
+		Location:    apiLocation(cfg.Location),
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -323,6 +324,13 @@ func serve(srv *http.Server, tls bool) error {
 		return nil
 	}
 	return err
+}
+
+func apiLocation(location *[2]float64) *api.Location {
+	if location == nil {
+		return nil
+	}
+	return &api.Location{Lat: location[0], Lon: location[1]}
 }
 
 // printDevBanner tells someone who just ran the image how to use it.

@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "atlas.fullname" . }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "atlas.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
+  # Gossip needs no ordered start-up; Parallel speeds up scale-out.
+  podManagementPolicy: Parallel
+  updateStrategy: { type: RollingUpdate }
+  selector:
+    matchLabels: {{- include "atlas.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atlas.selector" . | nindent 8 }}
+        app.kubernetes.io/part-of: atlas
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "atlas.fullname" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "atlas.selector" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "atlas.selector" . | nindent 14 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: atlas
+          image: {{ include "atlas.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: gossip, containerPort: 7946, protocol: UDP }
+            - { name: gossip-stream, containerPort: 7946, protocol: TCP }
+            - { name: http, containerPort: 8080, protocol: TCP }
+            - { name: grpc, containerPort: 8082, protocol: TCP }
+            - { name: metrics, containerPort: 9090, protocol: TCP }
+            {{- if .Values.dns.enabled }}
+            - { name: dns-udp, containerPort: 5353, protocol: UDP }
+            - { name: dns-tcp, containerPort: 5353, protocol: TCP }
+            {{- end }}
+          env:
+            - name: ATLAS_NODE_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            # IPv4 clusters; for IPv6 set extraEnv ATLAS_GOSSIP_ADVERTISE_ADDR.
+            - name: ATLAS_GOSSIP_ADVERTISE_ADDR
+              value: "$(POD_IP):7946"
+            - name: ATLAS_ADDR # for atlas-cli inside the pod
+              value: {{ include "atlas.scheme" . }}://127.0.0.1:8080
+          envFrom:
+            - configMapRef: { name: {{ include "atlas.fullname" . }}-config }
+            - secretRef: { name: {{ include "atlas.secretName" . }} }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /healthz, port: http, scheme: {{ include "atlas.scheme" . | upper }} }
+            periodSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet: { path: /healthz, port: http, scheme: {{ include "atlas.scheme" . | upper }} }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet: { path: /readyz, port: http, scheme: {{ include "atlas.scheme" . | upper }} }
+            periodSeconds: 5
+            timeoutSeconds: 2
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: data, mountPath: /data }
+            {{- if .Values.tls.enabled }}
+            - { name: tls, mountPath: /etc/atlas/tls, readOnly: true }
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 16Mi }
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret: { secretName: {{ required "tls.secretName is required when tls.enabled is true" .Values.tls.secretName }} }
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "atlas.fullname" . }}-config
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+data:
+  ATLAS_ENV: {{ .Values.config.env | quote }}
+  ATLAS_REGION: {{ .Values.config.region | quote }}
+  ATLAS_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  ATLAS_LOG_FORMAT: json
+  ATLAS_GOSSIP_BIND_ADDR: "0.0.0.0:7946"
+  # The headless Service resolves to every pod, ready or not.
+  ATLAS_SEEDS: {{ printf "%s-headless.%s.svc:7946" (include "atlas.fullname" .) .Release.Namespace | quote }}
+  ATLAS_HTTP_ADDR: "0.0.0.0:8080"
+  ATLAS_GRPC_ADDR: "0.0.0.0:8082"
+  ATLAS_METRICS_ADDR: "0.0.0.0:9090"
+  ATLAS_PPROF_ADDR: "127.0.0.1:6060"
+  ATLAS_DB_PATH: /data/atlas.db
+  ATLAS_DNS_ADDR: {{ ternary "0.0.0.0:5353" "" .Values.dns.enabled | quote }}
+  ATLAS_RATE_LIMIT_RPS: {{ .Values.config.rateLimitRPS | quote }}
+  ATLAS_RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | quote }}
+  ATLAS_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  ATLAS_CONSOLE_URL: {{ .Values.config.consoleURL | quote }}
+  ATLAS_LOCATION: {{ .Values.config.location | quote }}
+  ATLAS_DEV: "false"
+  ATLAS_TLS_ENABLED: {{ .Values.tls.enabled | quote }}
+  {{- if .Values.tls.enabled }}
+  ATLAS_TLS_CERT_FILE: /etc/atlas/tls/tls.crt
+  ATLAS_TLS_KEY_FILE: /etc/atlas/tls/tls.key
+  ATLAS_TLS_CA_FILE: /etc/atlas/tls/ca.crt
+  ATLAS_TLS_CLIENT_AUTH: {{ .Values.tls.clientAuth | quote }}
+  {{- end }}
+  {{- range $k, $v := .Values.extraEnv }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

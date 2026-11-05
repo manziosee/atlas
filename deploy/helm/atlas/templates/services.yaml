@@ -1,0 +1,42 @@
+# Atlas nodes need no Kubernetes API access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "atlas.fullname" . }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Headless: stable DNS for gossip seeding, including not-ready pods so a new
+# cluster can bootstrap.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atlas.fullname" . }}-headless
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {{- include "atlas.selector" . | nindent 4 }}
+  ports:
+    - { name: gossip, port: 7946, targetPort: gossip, protocol: UDP }
+    - { name: gossip-stream, port: 7946, targetPort: gossip-stream, protocol: TCP }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atlas.fullname" . }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "atlas.selector" . | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http, protocol: TCP }
+    - { name: grpc, port: 8082, targetPort: grpc, protocol: TCP }
+    - { name: metrics, port: 9090, targetPort: metrics, protocol: TCP }
+    {{- if .Values.dns.enabled }}
+    - { name: dns-udp, port: 5353, targetPort: dns-udp, protocol: UDP }
+    - { name: dns-tcp, port: 5353, targetPort: dns-tcp, protocol: TCP }
+    {{- end }}

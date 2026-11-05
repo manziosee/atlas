@@ -7,6 +7,7 @@ import { useCluster } from "@/lib/cluster";
 import { can, useConnection } from "@/lib/connection";
 import { explain, type Health, type HistoryEntry, type Service } from "@/lib/api";
 import { healthTone, relative, timestamp } from "@/lib/format";
+import { isSourceTag, sourceLabel, sourceOf, type SourceKind } from "@/lib/source";
 import { Chip, ConfirmDialog, Empty, Modal, Notice, PageHeader, SearchInput, Skeleton, StatusBadge, Tag } from "@/components/console/ui";
 import { ServiceForm } from "@/components/console/service-form";
 import { useToast } from "@/components/console/toast";
@@ -25,6 +26,7 @@ function ServicesView() {
   const [health, setHealth] = useState<Health | "all">("all");
   const [region, setRegion] = useState("all");
   const [onlyDraining, setOnlyDraining] = useState(false);
+  const [source, setSource] = useState<SourceKind | "all">("all");
   const [registering, setRegistering] = useState(false);
   const writable = can(conn, "write");
 
@@ -46,9 +48,10 @@ function ServicesView() {
       .filter((s) => health === "all" || s.health === health)
       .filter((s) => region === "all" || s.region === region)
       .filter((s) => !onlyDraining || s.draining)
+      .filter((s) => source === "all" || sourceOf(s).kind === source)
       .filter((s) => !needle || [s.name, s.id, s.address, s.version ?? "", s.node_id, ...(s.tags ?? [])].some((v) => v.toLowerCase().includes(needle)))
       .sort((a, b) => a.name.localeCompare(b.name) || a.region.localeCompare(b.region) || a.id.localeCompare(b.id));
-  }, [services, q, health, region, onlyDraining]);
+  }, [services, q, health, region, onlyDraining, source]);
   const selected = services.find((s) => s.id === selectedId) ?? null;
 
   return (
@@ -87,6 +90,15 @@ function ServicesView() {
         <Chip active={onlyDraining} onClick={() => setOnlyDraining((d) => !d)}>
           draining {services.filter((s) => s.draining).length}
         </Chip>
+        <span className="mx-1 w-px self-stretch bg-line" aria-hidden />
+        {(["kubernetes", "docker", "manual"] as const).map((k) => {
+          const n = services.filter((s) => sourceOf(s).kind === k).length;
+          return n ? (
+            <Chip key={k} active={source === k} onClick={() => setSource((cur) => (cur === k ? "all" : k))}>
+              {sourceLabel[k]} {n}
+            </Chip>
+          ) : null;
+        })}
       </div>
 
       <div className="panel overflow-hidden">
@@ -104,7 +116,7 @@ function ServicesView() {
           )
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-sm">
+            <table className="w-full min-w-[1080px] text-sm">
               <thead className="border-b border-line text-left text-xs text-faint">
                 <tr>
                   <th scope="col" className="px-4 py-3 font-normal">Service</th>
@@ -112,6 +124,7 @@ function ServicesView() {
                   <th scope="col" className="px-4 py-3 font-normal">Address</th>
                   <th scope="col" className="px-4 py-3 font-normal">Region</th>
                   <th scope="col" className="px-4 py-3 font-normal">Version</th>
+                  <th scope="col" className="px-4 py-3 font-normal">Source</th>
                   <th scope="col" className="px-4 py-3 font-normal">Tags</th>
                   <th scope="col" className="px-4 py-3 font-normal">Owner node</th>
                   <th scope="col" className="px-4 py-3 font-normal">Updated</th>
@@ -136,7 +149,10 @@ function ServicesView() {
                     <td className="px-4 py-3 font-mono">{s.region || "—"}</td>
                     <td className="px-4 py-3 font-mono text-muted">{s.version || "—"}</td>
                     <td className="px-4 py-3">
-                      <div className="flex max-w-[220px] flex-wrap gap-1">{(s.tags ?? []).slice(0, 4).map((t) => <Tag key={t}>{t}</Tag>)}</div>
+                      <SourceBadge service={s} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex max-w-[220px] flex-wrap gap-1">{(s.tags ?? []).filter((t) => !isSourceTag(t)).slice(0, 4).map((t) => <Tag key={t}>{t}</Tag>)}</div>
                     </td>
                     <td className="px-4 py-3 font-mono text-muted">
                       {s.node_id}
@@ -183,6 +199,19 @@ function ServicesView() {
         )}
       </Modal>
     </>
+  );
+}
+
+function SourceBadge({ service, detailed = false }: { service: Service; detailed?: boolean }) {
+  const src = sourceOf(service);
+  const tone = src.kind === "kubernetes" ? "text-info border-info/35 bg-info/10" : src.kind === "docker" ? "text-teal border-teal/35 bg-teal/10" : "text-muted border-line-strong";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span className={`rounded-full border px-2 py-0.5 text-xs ${tone}`}>{sourceLabel[src.kind]}</span>
+      {src.owner && <span className="font-mono text-xs text-muted">{src.owner}</span>}
+      {detailed && src.namespace && <span className="font-mono text-xs text-muted">ns/{src.namespace}</span>}
+      {detailed && src.workload && <span className="font-mono text-xs text-muted">{src.workload}</span>}
+    </span>
   );
 }
 
@@ -304,6 +333,9 @@ function ServiceDetail({
         <Row label="Version">{s.version || "—"}</Row>
         <Row label="Tags">
           <div className="flex flex-wrap gap-1">{s.tags?.length ? s.tags.map((t) => <Tag key={t}>{t}</Tag>) : "—"}</div>
+        </Row>
+        <Row label="Source">
+          <SourceBadge service={s} detailed />
         </Row>
         <Row label="Owner node">
           <span className="font-mono">{s.node_id}</span>

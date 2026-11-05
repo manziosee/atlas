@@ -1,0 +1,118 @@
+{{- if .Values.k8sSync.enabled }}
+{{- $name := printf "%s-k8s" (include "atlas.fullname" .) }}
+{{- $namespaces := .Values.k8sSync.namespaces }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+{{- /* Read-only access to Services and EndpointSlices, per namespace or cluster-wide. */}}
+{{- if $namespaces }}
+{{- range $ns := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels: {{- include "atlas.labels" $ | nindent 4 }}
+rules:
+  - { apiGroups: [""], resources: [services], verbs: [get, list, watch] }
+  - { apiGroups: [discovery.k8s.io], resources: [endpointslices], verbs: [get, list, watch] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels: {{- include "atlas.labels" $ | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }} }
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}, namespace: {{ $.Release.Namespace }} }
+{{- end }}
+{{- else }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+rules:
+  - { apiGroups: [""], resources: [services], verbs: [get, list, watch] }
+  - { apiGroups: [discovery.k8s.io], resources: [endpointslices], verbs: [get, list, watch] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-{{ .Release.Namespace }} }
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }} }
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+spec:
+  # One controller per cluster: a second would only duplicate work.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{- include "atlas.syncSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "atlas.syncSelector" . | nindent 8 }}
+        app.kubernetes.io/part-of: atlas
+    spec:
+      serviceAccountName: {{ $name }}
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: atlas-k8s
+          image: {{ include "atlas.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/atlas-k8s"]
+          env:
+            - name: ATLAS_ADDR
+              value: {{ printf "%s://%s.%s.svc:8080" (include "atlas.scheme" .) (include "atlas.fullname" .) .Release.Namespace | quote }}
+            - name: ATLAS_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ include "atlas.secretName" . }}, key: ATLAS_SYNC_TOKEN } }
+            - { name: ATLAS_K8S_CLUSTER, value: {{ .Values.k8sSync.cluster | quote }} }
+            - { name: ATLAS_K8S_NAMESPACES, value: {{ join "," $namespaces | quote }} }
+            - { name: ATLAS_K8S_CLUSTER_DOMAIN, value: {{ .Values.k8sSync.clusterDomain | quote }} }
+            - { name: ATLAS_K8S_TTL, value: {{ .Values.k8sSync.ttl | quote }} }
+            - { name: ATLAS_LOG_LEVEL, value: {{ .Values.k8sSync.logLevel | quote }} }
+            {{- if .Values.tls.enabled }}
+            - { name: ATLAS_CA_FILE, value: /etc/atlas/tls/ca.crt }
+            {{- end }}
+          ports:
+            - { name: health, containerPort: 8081, protocol: TCP }
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.k8sSync.resources | nindent 12 }}
+          {{- if .Values.tls.enabled }}
+          volumeMounts:
+            - { name: tls, mountPath: /etc/atlas/tls, readOnly: true }
+          {{- end }}
+      {{- if .Values.tls.enabled }}
+      volumes:
+        - name: tls
+          secret: { secretName: {{ .Values.tls.secretName }} }
+      {{- end }}
+{{- end }}

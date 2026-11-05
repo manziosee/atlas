@@ -5,6 +5,11 @@ updates:
     schedule: { interval: weekly }
     groups:
       go-deps: { patterns: ["*"] }
+  - package-ecosystem: gomod
+    directory: /terraform-provider-atlas
+    schedule: { interval: weekly }
+    groups:
+      terraform-provider: { patterns: ["*"] }
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }

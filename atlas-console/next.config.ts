@@ -1,4 +1,17 @@
 import type { NextConfig } from "next";
+import { execSync } from "node:child_process";
+import pkg from "./package.json" with { type: "json" };
+
+// Shown in the footer as v<version>+<commit>. Netlify sets COMMIT_REF.
+function commit() {
+  const fromEnv = process.env.COMMIT_REF || process.env.GITHUB_SHA;
+  if (fromEnv) return fromEnv.slice(0, 7);
+  try {
+    return execSync("git rev-parse --short=7 HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch {
+    return "local";
+  }
+}
 
 // The console is a static site: every page runs in the browser and talks to
 // an Atlas node directly. `next build` writes it to out/ for Netlify or any
@@ -12,6 +25,10 @@ const config: NextConfig = {
   trailingSlash: true,
   images: { unoptimized: true },
   poweredByHeader: false,
+  env: {
+    NEXT_PUBLIC_BUILD_VERSION: pkg.version,
+    NEXT_PUBLIC_BUILD_COMMIT: commit(),
+  },
   // Keep API paths such as /demo-api/v1/members free of the trailing-slash
   // redirect that page URLs get.
   skipTrailingSlashRedirect: true,
