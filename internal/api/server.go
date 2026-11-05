@@ -19,10 +19,8 @@ package api
 
 import (
 	"crypto/rand"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -39,9 +37,6 @@ import (
 
 // maxBodyBytes caps request bodies accepted by the control API.
 const maxBodyBytes = 1 << 20
-
-//go:embed dashboard/*
-var dashboardFiles embed.FS
 
 // Cluster is the subset of membership.Memberlist the API needs.
 type Cluster interface {
@@ -68,6 +63,11 @@ type Deps struct {
 	Forwarder *http.Client
 	// Routing is the default lookup policy; requests may override it.
 	Routing routing.Policy
+	// CORSOrigins are browser origins allowed to call the API ("*" for any).
+	CORSOrigins []string
+	// ConsoleURL is where the Atlas Console is hosted. When set, / and
+	// /dashboard redirect there.
+	ConsoleURL string
 }
 
 // NewHandler builds the full middleware chain and routes.
@@ -76,18 +76,28 @@ func NewHandler(d Deps) http.Handler {
 		d.Selector = routing.NewSelector()
 	}
 	mux := http.NewServeMux()
+	// The UI is the separate Atlas Console (atlas-console/), which connects
+	// to any node from the browser. The node itself only points to it.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/dashboard/", http.StatusFound)
+		if d.ConsoleURL != "" {
+			http.Redirect(w, r, d.ConsoleURL+"/connect", http.StatusFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"name": "atlas", "version": version.Version,
+			"api":     "/v1 (bearer token required)",
+			"console": "open the Atlas Console and connect to this node's URL",
+		})
 	})
-	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/dashboard/", http.StatusPermanentRedirect)
-	})
-	assets, _ := fs.Sub(dashboardFiles, "dashboard")
-	static := http.StripPrefix("/dashboard/", http.FileServer(http.FS(assets)))
-	mux.Handle("GET /dashboard/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
-		static.ServeHTTP(w, r)
-	}))
+	for _, path := range []string{"GET /dashboard", "GET /dashboard/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			if d.ConsoleURL == "" {
+				httperr.Write(w, http.StatusNotFound, httperr.CodeRouteNotFound, "the dashboard moved to the Atlas Console; set ATLAS_CONSOLE_URL to redirect here")
+				return
+			}
+			http.Redirect(w, r, d.ConsoleURL+"/connect", http.StatusFound)
+		})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -127,7 +137,7 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("DELETE /v1/admin/nodes/{id}", d.evictNode)
 	mux.Handle("/v1/", d.Auth.Middleware(originMiddleware(jsonFallback(v1))))
 
-	h := jsonFallback(mux)
+	h := corsMiddleware(d.CORSOrigins, jsonFallback(mux))
 	h = security.MaxBody(maxBodyBytes)(h)
 	h = d.RateLimiter.Middleware(h)
 	h = security.SecureHeaders(h)

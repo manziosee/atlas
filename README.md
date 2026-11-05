@@ -4,10 +4,11 @@
 
 # Atlas
 
-**A distributed edge service-discovery system in Go.**
+**A distributed edge service-discovery system in Go, with a web console.**
 Nodes find each other through a SWIM-style gossip protocol, without a central
 database or a leader. When a node dies, the rest of the cluster knows within
-seconds.
+seconds. The **Atlas Console** shows which services are ready, across every
+node, and lets you operate them from the browser.
 
 [![CI](https://github.com/manziosee/atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/manziosee/atlas/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/manziosee/atlas/actions/workflows/codeql.yml/badge.svg)](https://github.com/manziosee/atlas/actions/workflows/codeql.yml)
@@ -26,16 +27,15 @@ demo, not a production service, and its demo data may be reset at any time.
 
 | What | Link |
 |------|------|
-| **Live dashboard** (connects on its own with the read-only demo token) | **[atlas-edge.fly.dev/dashboard](https://atlas-edge.fly.dev/dashboard/#token=atlas-demo-read-only-public-token-2027)** |
+| **Console** | Open the [Atlas Console](#atlas-console) and choose **Explore the live demo** (no token needed) |
 | Liveness | [atlas-edge.fly.dev/healthz](https://atlas-edge.fly.dev/healthz) |
 | Readiness | [atlas-edge.fly.dev/readyz](https://atlas-edge.fly.dev/readyz) |
 | API reference | [`api/v1/openapi.yaml`](api/v1/openapi.yaml) |
 
 The demo token `atlas-demo-read-only-public-token-2027` is published on
 purpose. It has the `read` scope only and expires on 2027-10-23, so any write
-returns `403 insufficient_scope`. The dashboard keeps the token in page
-memory; the link passes it in the URL fragment, which browsers never send to
-the server.
+returns `403 insufficient_scope`. The console uses it automatically for the
+demo, through a same-origin proxy, and never asks you for it.
 
 Query the live cluster from a terminal:
 
@@ -77,6 +77,7 @@ the [walkthrough](#walkthrough-a-service-from-registration-to-failover) below.
 - [Architecture](#architecture)
 - [Security](#security)
 - [Quick start](#quick-start)
+- [Atlas Console](#atlas-console)
 - [Walkthrough: a service from registration to failover](#walkthrough-a-service-from-registration-to-failover)
 - [Configuration](#configuration)
 - [Deploy](#deploy)
@@ -226,8 +227,10 @@ docker run --rm -p 8080:8080 -p 5353:5353/udp ghcr.io/manziosee/atlas:edge
 ```
 
 With nothing configured, the node starts in **dev mode**. It generates a gossip
-key and an API token, then prints the token, a dashboard link with the token
-already filled in, and a `curl` example. It also turns on DNS on port 5353.
+key and an API token, then prints the token and a `curl` example. It also
+turns on DNS on port 5353 and allows browser calls from any origin, so the
+[Atlas Console](#atlas-console) can connect. Set `ATLAS_CONSOLE_URL` and the
+banner prints a one-click console link with the node and token filled in.
 Mount a volume on `/data` to keep the same token across restarts.
 
 Dev mode switches itself off as soon as anything real is configured:
@@ -406,11 +409,9 @@ Filter with `kinds=member,service` and `service=<name>`. Every event has an
 missed from the node's recent backlog. If the gap can't be filled, it gets
 `event: reset` and should re-read current state.
 
-Open `http://127.0.0.1:8081/dashboard/` for the embedded live cluster view.
-The dashboard asks for a bearer token and holds it in page memory while it
-loads members and services and follows the event stream. It also accepts the
-token in the link fragment (`/dashboard/#token=...`), which browsers never
-send to the server.
+To watch this stream in a browser, use the [Atlas Console](#atlas-console).
+Nodes no longer embed a dashboard. With `ATLAS_CONSOLE_URL` set, `/` and
+`/dashboard` on a node redirect to the console.
 
 `GET /v1/lookup/{name}?region=...&key=...` selects a healthy instance,
 preferring the requested region:
@@ -715,6 +716,60 @@ socket framing, AEAD CPU, network latency, packet loss, or cross-region links.
 The 1,000-node run reached approximately 1.2 GiB peak process memory on this
 host.
 
+## Atlas Console
+
+The Atlas Console in [`atlas-console/`](atlas-console/) is the web UI: a
+public landing page plus an operator console. It is a static Next.js site.
+Your browser talks to your node directly, so no console server ever sees
+your token. It replaces the dashboard nodes used to embed.
+
+| Screen | What it shows or does | Scope |
+|--------|-----------------------|-------|
+| **Landing page** | What Atlas is, how it works, features, quick start, docs, security notes, and a live, read-only preview of the demo cluster | none |
+| **Connect** | Node URL + API token, or the read-only demo. Explains missing, invalid, expired and under-scoped tokens, and CORS problems | — |
+| **Overview** | Node count, alive, needing attention, service instances, health breakdown, per-region table, live activity, recent changes, connection status and last update | read |
+| **Nodes** | Searchable table of ID, state (text, icon and colour), region, gossip and API address, incarnation, time in state and services owned | read (evict: admin) |
+| **Services** | Search and filters by health, region and draining; detail drawer with health-check or TTL settings, timestamps, revision and paged change history | read |
+| **Service actions** | Register, edit (with `If-Match`), drain/undrain, heartbeat, and deregister after typing the ID to confirm; API errors in plain language | write |
+| **Activity** | Live membership and service events with filters, pause and clear, and reconnect/disconnected states; plus the recorded history across services | read |
+| **Lookup tester** | Runs `/v1/lookup` with region, tags, key and routing overrides, shows the chosen instance and why each candidate was picked or skipped, with the equivalent `curl` and `dig` | read |
+| **Admin** | Credential list (fingerprints, scopes, expiry; never secrets), registry backup download, and evicting failed nodes | admin |
+
+There are no user accounts. Atlas authorizes requests with bearer tokens
+scoped `read`, `write` or `admin`, and the console adapts to whatever the
+token allows. It finds out by reading, never by changing anything. Tokens stay
+in page memory, or in this tab's session storage if you tick *Keep me
+connected*. Credentials can't be created or revoked from the console because
+the API doesn't support it; change `ATLAS_API_CREDENTIALS` and send `SIGHUP`.
+
+**Run it locally**
+
+```bash
+cd atlas-console
+npm ci
+npm run dev          # http://localhost:3000; /demo-api proxies the public demo
+npm test             # unit tests; set ATLAS_LIVE_URL and ATLAS_LIVE_TOKEN for live end-to-end tests
+npm run build        # static site in atlas-console/out
+```
+
+**Connect your own node.** A browser page may only call another origin
+that allows it, so tell the node about the console:
+
+```bash
+ATLAS_CORS_ORIGINS=https://your-console.netlify.app   # dev mode already allows any origin
+ATLAS_CONSOLE_URL=https://your-console.netlify.app    # optional: / and /dashboard redirect here
+```
+
+A console served over HTTPS can reach `http://localhost` nodes, but browsers
+block plain `http://` for other hosts, so enable TLS on remote nodes.
+
+**Deploy to Netlify.** Import the repository in Netlify. The root
+[`netlify.toml`](netlify.toml) builds `atlas-console/` and publishes `out/`.
+It proxies `/demo-api/*` to the demo cluster and sets security headers, so
+no settings are needed. Any static host works the same way. Serve `out/`, and
+proxy `/demo-api/` to a demo node if you want the demo button. Alternatively,
+set `NEXT_PUBLIC_ATLAS_DEMO_URL` to a node that allows your origin.
+
 ## Walkthrough: a service from registration to failover
 
 This walkthrough uses the three-node Compose cluster from
@@ -839,6 +894,8 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_TLS_ENABLED` | `false` | HTTPS for the API (TLS 1.3). |
 | `ATLAS_GRPC_ADDR` | `0.0.0.0:8082` | gRPC listener using the same TLS and bearer-token settings. |
 | `ATLAS_PPROF_ADDR` | `127.0.0.1:6060` | Local-only Go pprof listener; configuration rejects non-loopback bind addresses. |
+| `ATLAS_CORS_ORIGINS` | empty (`*` in dev mode) | Browser origins allowed to call the API, such as the Atlas Console's URL: comma-separated `https://host[:port]`, or `*` for any. Tokens are still required and no cookies are used. |
+| `ATLAS_CONSOLE_URL` | empty | Where the Atlas Console is hosted. `/` and `/dashboard` redirect there, and the dev-mode banner prints a one-click connect link. |
 | `ATLAS_TRUSTED_PROXIES` | empty | Comma-separated CIDRs allowed to supply `X-Forwarded-For` client addresses. Add the cluster's own network so forwarded writes are rate-limited per original client rather than per forwarding node. |
 | `ATLAS_API_ADVERTISE_ADDR` | derived | Base URL peers use to forward writes here, for example `https://atlas-2.internal:8080`. Unset, it's the gossip advertise host with the `ATLAS_HTTP_ADDR` port. With TLS, peers verify this name against the node certificate, which must also allow client authentication. |
 | `ATLAS_DB_PATH` | `data/atlas.db` | Per-node SQLite file for service registry persistence. |
@@ -989,7 +1046,7 @@ atlas/
 │   ├── gossip/             # Phase 2: app-state broadcast, CRDTs
 │   ├── routing/            # healthy-instance selection, region affinity, consistent hashing
 │   └── storage/            # Phase 3: SQLite registry
-├── web/                    # Phase 5: live dashboard
+├── atlas-console/          # Next.js web console (landing page + operator UI), deploys to Netlify
 ├── deploy/
 │   ├── k8s/                # Kustomize base + dev/production overlays
 │   ├── fly/                # Fly.io multi-region config
@@ -1056,8 +1113,14 @@ atlas/
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
   per-peer EWMA probe latency, nearest measured instance, consistent hashing,
   and round-robin fallback.
-- [x] **Phase 5, dashboard foundation:** embedded live member/service tables
-  and an authenticated, resumable stream of membership and registry events.
+- [x] **Phase 5, dashboard foundation:** an authenticated, resumable stream of
+  membership and registry events.
+- [x] **Phase 5, Atlas Console:** a separate Next.js app (`atlas-console/`) that
+  replaces the embedded dashboard: landing page with a live demo preview,
+  cluster overview, nodes, services with detail and change history, live
+  activity, a lookup tester that explains its choice, scoped service actions
+  (register, edit, drain, heartbeat, deregister) and admin tools (credentials,
+  backup, eviction). Nodes gain `ATLAS_CORS_ORIGINS` and `ATLAS_CONSOLE_URL`.
 - [ ] **Phase 5 follow-up:** cluster graph, geographic visualization and
   latency map.
 - [x] **Security operations:** optional node-ID admission allowlist, trusted
@@ -1085,7 +1148,7 @@ atlas/
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
 - [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,
   scheduled off-node database backups with restore drills, and public staging.
-- [x] **Documentation:** architecture, API spec, run instructions, dashboard,
+- [x] **Documentation:** architecture, API spec, run instructions, console,
   backup/restore steps, and operator runbooks for API and membership alerts.
 - [x] **Observability:** API availability and latency recording rules, SLO
   alerts, and Grafana panels for the rolling 5-minute objectives.
@@ -1095,7 +1158,7 @@ atlas/
 - [x] **Stretch follow-up:** deterministic revisioned LWW-register merge for
   replicated service records.
 - [x] **Stretch follow-up:** public Fly.io demo: a two-node cluster in `cdg` with a
-  read-only demo token and a one-click live dashboard (see [Live demo](#live-demo)).
+  read-only demo token, explorable from the console (see [Live demo](#live-demo)).
 - [ ] **Stretch follow-up:** expanded chaos suite and a multi-region global Fly.io demo.
 
 ## Contributing

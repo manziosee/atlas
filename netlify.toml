@@ -1,0 +1,34 @@
+# Netlify deploys the Atlas Console (atlas-console/), a static Next.js export.
+# Import the repository in Netlify; these settings need no UI changes.
+[build]
+  base = "atlas-console"
+  command = "npm ci && npm run build"
+  publish = "out"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# The read-only demo cluster, proxied so it is same-origin for the browser and
+# needs no CORS settings on the demo nodes.
+[[redirects]]
+  from = "/demo-api/*"
+  to = "https://atlas-edge.fly.dev/:splat"
+  status = 200
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    # Pages call whichever Atlas node the user connects to, so connect-src is open;
+    # scripts, styles and fonts only come from this site.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https: http: ; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+
+[[headers]]
+  for = "/_next/static/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

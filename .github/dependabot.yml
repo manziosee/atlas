@@ -18,6 +18,12 @@ updates:
     schedule: { interval: weekly }
     groups:
       node-client: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /atlas-console
+    schedule: { interval: weekly }
+    cooldown: { default-days: 14 }
+    groups:
+      atlas-console: { patterns: ["*"] }
   - package-ecosystem: maven
     directory: /clients/java
     schedule: { interval: weekly }

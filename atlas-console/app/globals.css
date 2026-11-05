@@ -1,0 +1,187 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, monospace;
+
+  --color-bg: #04090b;
+  --color-bg-2: #071013;
+  --color-panel: #0a1417;
+  --color-panel-2: #0e1a1e;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-line-strong: rgb(255 255 255 / 0.14);
+  --color-fg: #eef4f2;
+  --color-muted: #8fa3a3;
+  --color-faint: #5d7070;
+
+  --color-lime: #b6f27a;
+  --color-lime-ink: #0b1a06;
+  --color-teal: #2fd3b5;
+  --color-sky: #42a8f5;
+
+  --color-ok: #6ee7a0;
+  --color-warn: #fbbf4f;
+  --color-bad: #ff7a7a;
+  --color-info: #6cc4ff;
+
+  --animate-pulse-dot: pulse-dot 1.8s ease-in-out infinite;
+  --animate-float: float 9s ease-in-out infinite;
+  --animate-spin-slow: spin 90s linear infinite;
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+    scroll-padding-top: 6rem;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  * {
+    border-color: var(--color-line);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-lime);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: rgb(182 242 122 / 0.3);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility glass {
+  background: rgb(10 20 23 / 0.62);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+@utility panel {
+  border-radius: 1rem;
+  border: 1px solid var(--color-line);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 40%), var(--color-panel);
+}
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  padding: 0.6rem 1.15rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 0.15s, border-color 0.15s, transform 0.15s, opacity 0.15s;
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@utility btn-lime {
+  background: var(--color-lime);
+  color: var(--color-lime-ink);
+  box-shadow: 0 0 0 1px rgb(182 242 122 / 0.4), 0 8px 30px -10px rgb(182 242 122 / 0.6);
+  &:hover:not(:disabled) {
+    background: #c7f89a;
+    transform: translateY(-1px);
+  }
+}
+
+@utility btn-outline {
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-fg);
+  background: rgb(255 255 255 / 0.02);
+  &:hover:not(:disabled) {
+    background: rgb(255 255 255 / 0.07);
+  }
+}
+
+@utility btn-danger {
+  border: 1px solid rgb(255 122 122 / 0.45);
+  color: var(--color-bad);
+  background: rgb(255 122 122 / 0.08);
+  &:hover:not(:disabled) {
+    background: rgb(255 122 122 / 0.16);
+  }
+}
+
+@utility field {
+  width: 100%;
+  border-radius: 0.65rem;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-bg-2);
+  padding: 0.55rem 0.8rem;
+  font-size: 0.875rem;
+  color: var(--color-fg);
+  &::placeholder {
+    color: var(--color-faint);
+  }
+  &:focus {
+    outline: none;
+    border-color: var(--color-lime);
+    box-shadow: 0 0 0 3px rgb(182 242 122 / 0.15);
+  }
+}
+
+@utility eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 9999px;
+  border: 1px solid var(--color-line-strong);
+  background: rgb(255 255 255 / 0.03);
+  padding: 0.25rem 0.75rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+@utility icon-tile {
+  display: grid;
+  place-items: center;
+  border-radius: 0.9rem;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--color-panel-2), var(--color-panel-2)) padding-box,
+    linear-gradient(140deg, var(--color-lime), var(--color-teal) 50%, var(--color-sky)) border-box;
+  box-shadow: 0 0 30px -8px rgb(47 211 181 / 0.45);
+}
+
+@utility starfield {
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgb(255 255 255 / 0.55), transparent),
+    radial-gradient(1px 1px at 70% 20%, rgb(255 255 255 / 0.4), transparent),
+    radial-gradient(1px 1px at 40% 80%, rgb(255 255 255 / 0.45), transparent),
+    radial-gradient(1.5px 1.5px at 85% 65%, rgb(255 255 255 / 0.5), transparent),
+    radial-gradient(1px 1px at 10% 75%, rgb(255 255 255 / 0.35), transparent),
+    radial-gradient(1px 1px at 55% 45%, rgb(255 255 255 / 0.3), transparent),
+    radial-gradient(1px 1px at 92% 12%, rgb(255 255 255 / 0.4), transparent);
+  background-size: 260px 260px;
+}
+
+@utility text-balance {
+  text-wrap: balance;
+}

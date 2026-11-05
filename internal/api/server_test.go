@@ -237,27 +237,62 @@ func TestMembershipEventStream(t *testing.T) {
 	cancel()
 }
 
-func TestDashboardServesEmbeddedAssetsWithoutExposingRegistryData(t *testing.T) {
+func TestConsoleRedirectAndCORS(t *testing.T) {
 	h := NewHandler(Deps{
 		Cluster:     fakeCluster{},
 		Auth:        security.NewTokenAuthenticator([]string{token}),
 		RateLimiter: security.NewRateLimiter(1000, 1000),
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		CORSOrigins: []string{"https://console.example"},
+		ConsoleURL:  "https://console.example",
 	})
-	page := httptest.NewRecorder()
-	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/dashboard/", nil))
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Cluster overview") {
-		t.Fatalf("dashboard page = %d %q", page.Code, page.Body.String())
+	for _, path := range []string{"/", "/dashboard", "/dashboard/"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://console.example/connect" {
+			t.Errorf("%s = %d %q, want redirect to the console", path, rec.Code, rec.Header().Get("Location"))
+		}
 	}
-	if got := page.Header().Get("Content-Security-Policy"); !strings.Contains(got, "script-src 'self'") {
-		t.Fatalf("dashboard CSP = %q", got)
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/v1/services/x", nil)
+	preflight.Header.Set("Origin", "https://console.example")
+	preflight.Header.Set("Access-Control-Request-Method", "PATCH")
+	preflight.Header.Set("Access-Control-Request-Private-Network", "true")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, preflight)
+	if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") != "https://console.example" ||
+		!strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") ||
+		rec.Header().Get("Access-Control-Allow-Private-Network") != "true" {
+		t.Fatalf("preflight = %d %v", rec.Code, rec.Header())
 	}
-	script := httptest.NewRecorder()
-	h.ServeHTTP(script, httptest.NewRequest(http.MethodGet, "/dashboard/app.js", nil))
-	if script.Code != http.StatusOK || !strings.Contains(script.Body.String(), "Authorization") {
-		t.Fatalf("dashboard script = %d", script.Code)
+
+	read := httptest.NewRequest(http.MethodGet, "/v1/members", nil)
+	read.Header.Set("Origin", "https://console.example")
+	read.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, read)
+	if rec.Code != http.StatusOK || rec.Header().Get("Access-Control-Allow-Origin") != "https://console.example" ||
+		!strings.Contains(rec.Header().Get("Access-Control-Expose-Headers"), "ETag") {
+		t.Fatalf("cross-origin read = %d %v", rec.Code, rec.Header())
 	}
-	if got := do(h, "/v1/members", "").Code; got != http.StatusUnauthorized {
-		t.Fatalf("dashboard must not make the API public: /v1/members = %d", got)
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatal("CORS must not allow cookies")
+	}
+
+	// Allowed origins still need a token, and other origins get no CORS headers.
+	anon := httptest.NewRequest(http.MethodGet, "/v1/members", nil)
+	anon.Header.Set("Origin", "https://console.example")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, anon)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("CORS made the API public: %d", rec.Code)
+	}
+	other := httptest.NewRequest(http.MethodGet, "/v1/members", nil)
+	other.Header.Set("Origin", "https://evil.example")
+	other.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, other)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unlisted origin allowed: %v", rec.Header())
 	}
 }
