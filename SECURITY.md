@@ -38,20 +38,24 @@ and modify** any packet between nodes and can reach any exposed port.
 | Supply chain | Malicious dependency / image tampering | Minimal deps, `go mod verify`, govulncheck, CodeQL, gitleaks, image CVE scan, Dependabot, OpenSSF Scorecard; releases are multi-arch with SBOM, SLSA provenance and **keyless Cosign signatures**. |
 | Secrets | Leakage via VCS or images | `.env`, keys and certs are git- and docker-ignored; CI scans history with gitleaks; K8s secrets come from generators/External Secrets, Fly.io from `fly secrets`. |
 
+### Console, Kubernetes controller and Terraform provider
+
+| Component | Control |
+|-----------|---------|
+| Atlas Console | A static site with no backend: the browser calls the node directly, so tokens never pass through a console server. Tokens stay in page memory, or in the tab's session storage only when the user asks. Nodes allow browser calls only from origins listed in `ATLAS_CORS_ORIGINS`, never with cookies. Destructive actions need the ID typed to confirm. |
+| `atlas-k8s` controller | Read-only RBAC (`get`, `list`, `watch` on Services and EndpointSlices), cluster-wide or per namespace. It uses its own write-scoped token, and only removes registrations carrying its own owner tag. |
+| Terraform provider | The token comes from configuration or `ATLAS_TOKEN` and is marked sensitive; TLS and mTLS are supported. |
+
 ### Known limitations (tracked on the roadmap)
 
 - **Shared-key trust model.** Any holder of the gossip key is a full cluster
   member. Per-node identities (mTLS for gossip or signed membership
   records) are planned.
-- **No indirect probing yet.** A single lossy link can raise a suspicion; the
-  suspicion timeout and refutation mitigate false positives. SWIM `ping-req`
-  is planned for Phase 2.
-- **Rate limiting trusts the TCP peer address.** Behind a proxy, all clients
-  share the proxy's bucket; `X-Forwarded-For` is deliberately ignored until a
-  trusted-proxy list is implemented.
 - **Clock-skew window.** Replay protection depends on loosely synchronized
   clocks (NTP). Packets can be replayed within the window, but incarnation
   ordering makes that harmless for membership state.
+- **Credential management.** API credentials are configured on the nodes
+  and reloaded with `SIGHUP`; there is no API to create or revoke them yet.
 
 ## Verifying a release image
 

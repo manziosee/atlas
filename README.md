@@ -77,6 +77,7 @@ the [walkthrough](#walkthrough-a-service-from-registration-to-failover) below.
 - [Architecture](#architecture)
 - [Security](#security)
 - [Quick start](#quick-start)
+- [Terraform](#terraform)
 - [Atlas Console](#atlas-console)
 - [Walkthrough: a service from registration to failover](#walkthrough-a-service-from-registration-to-failover)
 - [Configuration](#configuration)
@@ -716,6 +717,25 @@ socket framing, AEAD CPU, network latency, packet loss, or cross-region links.
 The 1,000-node run reached approximately 1.2 GiB peak process memory on this
 host.
 
+## Terraform
+
+The [Terraform provider](terraform-provider-atlas/) registers things that
+can't register themselves, such as databases, appliances and external
+endpoints. It also reads services, lookups and members as data:
+
+```hcl
+resource "atlas_service" "orders_db" {
+  name         = "orders-db"
+  address      = "10.0.4.20:5432"
+  health_check = "tcp://10.0.4.20:5432"
+}
+
+data "atlas_services" "payments" {
+  name   = "payments"
+  health = "healthy"
+}
+```
+
 ## Atlas Console
 
 The Atlas Console in [`atlas-console/`](atlas-console/) is the web UI: a
@@ -734,6 +754,9 @@ your token. It replaces the dashboard nodes used to embed.
 | **Activity** | Live membership and service events with filters, pause and clear, and reconnect/disconnected states; plus the recorded history across services | read |
 | **Lookup tester** | Runs `/v1/lookup` with region, tags, key and routing overrides, shows the chosen instance and why each candidate was picked or skipped, with the equivalent `curl` and `dig` | read |
 | **Admin** | Credential list (fingerprints, scopes, expiry; never secrets), registry backup download, and evicting failed nodes | admin |
+| **Cluster map** | Graph, world map and matrix of the probe latency every node measures to every peer (`/v1/topology?scope=cluster`) | read |
+| **Integrations** | Kubernetes clusters and Docker hosts feeding this cluster, with setup for Helm, the controller, the Docker agent and Terraform | read |
+| **Docs, API, Security** | The site also serves the documentation, an API reference built from `openapi.yaml`, the security policy, About, Terms and Contributing, all rendered from this repository at build time | none |
 
 There are no user accounts. Atlas authorizes requests with bearer tokens
 scoped `read`, `write` or `admin`, and the console adapts to whatever the
@@ -895,6 +918,7 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_GRPC_ADDR` | `0.0.0.0:8082` | gRPC listener using the same TLS and bearer-token settings. |
 | `ATLAS_PPROF_ADDR` | `127.0.0.1:6060` | Local-only Go pprof listener; configuration rejects non-loopback bind addresses. |
 | `ATLAS_CORS_ORIGINS` | empty (`*` in dev mode) | Browser origins allowed to call the API, such as the Atlas Console's URL: comma-separated `https://host[:port]`, or `*` for any. Tokens are still required and no cookies are used. |
+| `ATLAS_LOCATION` | empty | `latitude,longitude` for the console's cluster map. Unset, the map places the node by its region code (Fly.io, AWS, GCP, Azure). |
 | `ATLAS_CONSOLE_URL` | empty | Where the Atlas Console is hosted. `/` and `/dashboard` redirect there, and the dev-mode banner prints a one-click connect link. |
 | `ATLAS_TRUSTED_PROXIES` | empty | Comma-separated CIDRs allowed to supply `X-Forwarded-For` client addresses. Add the cluster's own network so forwarded writes are rate-limited per original client rather than per forwarding node. |
 | `ATLAS_API_ADVERTISE_ADDR` | derived | Base URL peers use to forward writes here, for example `https://atlas-2.internal:8080`. Unset, it's the gossip advertise host with the `ATLAS_HTTP_ADDR` port. With TLS, peers verify this name against the node certificate, which must also allow client authentication. |
@@ -920,6 +944,16 @@ TLS mode, and timing changes require a restart.
 ## Deploy
 
 ### Kubernetes
+
+The quickest path is the Helm chart, which can also register your annotated
+Services in Atlas. See [docs/KUBERNETES.md](docs/KUBERNETES.md).
+
+```bash
+helm install atlas oci://ghcr.io/manziosee/charts/atlas -n atlas --create-namespace   --set k8sSync.enabled=true
+kubectl annotate service payments atlas.io/register=true atlas.io/health=/healthz
+```
+
+Or apply the Kustomize overlays directly:
 
 ```bash
 cp deploy/k8s/overlays/dev/secrets.env.example deploy/k8s/overlays/dev/secrets.env
@@ -1031,13 +1065,15 @@ atlas/
 ├── cmd/
 │   ├── atlas-node/         # the node daemon, TTL expiry and orphan reaper loops
 │   ├── atlas-cli/          # operator CLI (members, services, watch, evict, backup, ...)
-│   └── atlas-agent/        # Docker-label agent: registers labeled containers
+│   ├── atlas-agent/        # Docker-label agent: registers labeled containers
+│   └── atlas-k8s/          # Kubernetes controller: registers annotated Services
 ├── internal/
 │   ├── api/                # HTTP + gRPC handlers, admin routes, middleware chain
 │   ├── events/             # event broker: IDs, backlog, Last-Event-ID resume
 │   ├── httperr/            # JSON error bodies with stable codes
 │   ├── config/             # env config, fail-closed validation, dev mode
 │   ├── dockeragent/        # Docker Engine API client and container lifecycle sync
+│   ├── k8ssync/            # Kubernetes list/watch client and Service → Atlas reconciler
 │   ├── membership/         # SWIM failure detector + state machine
 │   ├── transport/          # encrypted UDP
 │   ├── security/           # keyring, TLS/mTLS, auth, rate limit, headers
@@ -1046,11 +1082,13 @@ atlas/
 │   ├── gossip/             # Phase 2: app-state broadcast, CRDTs
 │   ├── routing/            # healthy-instance selection, region affinity, consistent hashing
 │   └── storage/            # Phase 3: SQLite registry
-├── atlas-console/          # Next.js web console (landing page + operator UI), deploys to Netlify
+├── atlas-console/          # Next.js web console and docs site, deploys to Netlify
+├── terraform-provider-atlas/ # Terraform provider (separate Go module)
 ├── deploy/
 │   ├── k8s/                # Kustomize base + dev/production overlays
 │   ├── fly/                # Fly.io multi-region config
 │   ├── docker-agent/       # Compose example: node + Docker-label agent
+│   ├── helm/atlas/         # Helm chart (cluster + optional Kubernetes controller)
 │   ├── prometheus/         # scrape config + alert rules
 │   ├── grafana/            # provisioned datasource + dashboard
 │   └── certs/              # generated local certs (git-ignored)
@@ -1101,7 +1139,7 @@ atlas/
   whole API: registry CRUD, heartbeats, paging, resumable watch streams, admin calls,
   structured error codes, and an asyncio client, tested against a live node in CI.
 - [x] **Kubernetes integration:** Kustomize deploys expose Atlas DNS to opted-in
-  namespaces; importing native Kubernetes Services still needs a controller.
+  namespaces; the `atlas-k8s` controller imports annotated Services.
 - [x] **Adoption follow-up:** Node.js/TypeScript and Java clients with no runtime
   dependencies, tested against a live node in CI; a service-history API
   (`/v1/services/{id}/history`, `/v1/history`, gRPC `GetServiceHistory`); and
@@ -1121,8 +1159,21 @@ atlas/
   activity, a lookup tester that explains its choice, scoped service actions
   (register, edit, drain, heartbeat, deregister) and admin tools (credentials,
   backup, eviction). Nodes gain `ATLAS_CORS_ORIGINS` and `ATLAS_CONSOLE_URL`.
-- [ ] **Phase 5 follow-up:** cluster graph, geographic visualization and
-  latency map.
+- [x] **Phase 5 follow-up:** cluster graph, geographic visualization and
+  latency map: `/v1/topology` gathers every node's measured peer latency, and
+  the console shows it as a graph, a world map (by region code or
+  `ATLAS_LOCATION`) and a matrix.
+- [x] **Kubernetes:** a Helm chart (published to GHCR as an OCI artifact) and
+  `atlas-k8s`, a controller that mirrors annotated Services into Atlas, one
+  instance per ready pod, draining terminating pods. Tested end to end in
+  kind in CI.
+- [x] **Infrastructure as code:** a Terraform provider (`atlas_service`
+  resource; `atlas_services`, `atlas_service`, `atlas_lookup`,
+  `atlas_members`, `atlas_node` data sources), with acceptance tests against
+  a live node.
+- [x] **Docs on the web:** the console site renders the docs, the API
+  reference, security, about, terms and contributing pages from this
+  repository at build time.
 - [x] **Security operations:** optional node-ID admission allowlist, trusted
   proxy handling, TLS certificate reload, and non-secret bearer fingerprints
   in access logs.

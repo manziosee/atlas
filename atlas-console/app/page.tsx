@@ -17,6 +17,7 @@ import {
   Radio,
   Route,
   Server,
+  Ship,
   ShieldCheck,
   Waypoints,
 } from "lucide-react";
@@ -25,8 +26,9 @@ import { Planet } from "@/components/landing/planet";
 import { HowItWorks } from "@/components/landing/how-it-works";
 import { DemoPreview } from "@/components/landing/demo-preview";
 import { QuickStart } from "@/components/landing/quick-start";
-import { Logo, Wordmark } from "@/components/logo";
-import { DOCS, REPO_URL } from "@/lib/demo";
+import { Logo } from "@/components/logo";
+import { SiteFooter } from "@/components/site-footer";
+import { REPO_URL } from "@/lib/demo";
 
 const builtOn = [
   { icon: Waypoints, label: "SWIM gossip" },
@@ -63,16 +65,19 @@ const features = [
   { icon: Radio, title: "Event streaming", text: "Server-Sent Events and gRPC Watch with Last-Event-ID resume, so consumers never silently miss a change." },
   { icon: Globe2, title: "DNS discovery", text: "A, AAAA and SRV records for healthy instances, per region, with short TTLs for unmodified applications." },
   { icon: Container, title: "Docker-label agent", text: "Add atlas.name to a container and it's registered, health-checked, drained on stop and removed on exit." },
+  { icon: Ship, title: "Kubernetes controller & Helm", text: "Install with one Helm command; annotate a Service and every ready pod is registered, terminating pods drained." },
+  { icon: FileCode2, title: "Terraform provider", text: "Register databases and appliances as code, and read services and lookups as Terraform data." },
+  { icon: Globe2, title: "Cluster map", text: "A live graph, world map and matrix of the latency every node measures to every other." },
   { icon: Boxes, title: "Clients for every stack", text: "Go (with an http.RoundTripper and gRPC resolver), Python, Node.js/TypeScript and Java clients." },
   { icon: ShieldCheck, title: "Secure by default", text: "TLS 1.3 and mTLS, scoped expiring tokens, rate limits, an admission allowlist and fail-closed configuration." },
 ];
 
 const docs = [
-  { icon: BookOpen, title: "Read the guide", text: "Concepts, configuration and deployment for Compose, Kubernetes and Fly.io.", href: DOCS.readme },
-  { icon: FileCode2, title: "API reference", text: "The OpenAPI 3.1 description of every HTTP endpoint, with error codes.", href: DOCS.openapi },
-  { icon: Layers, title: "Architecture", text: "How gossip, replication, ownership and health checks fit together.", href: DOCS.architecture },
-  { icon: Container, title: "Docker agent", text: "Labels, lifecycle and socket permissions for atlas-agent.", href: DOCS.dockerAgent },
-  { icon: LifeBuoy, title: "Runbooks", text: "What to do when an alert fires or a node misbehaves.", href: DOCS.runbooks },
+  { icon: BookOpen, title: "Read the docs", text: "Quick start, console, configuration and deployment for Compose, Kubernetes and Fly.io.", href: "/docs/" },
+  { icon: FileCode2, title: "API reference", text: "Every HTTP endpoint, parameter, response and error code.", href: "/api/" },
+  { icon: Ship, title: "Kubernetes & Helm", text: "Install with Helm and register annotated Services automatically.", href: "/docs/kubernetes/" },
+  { icon: FileCode2, title: "Terraform provider", text: "Manage registrations as code and read services as data.", href: "/docs/terraform/" },
+  { icon: LifeBuoy, title: "Runbooks", text: "What to do when an alert fires or a node misbehaves.", href: "/docs/runbooks/" },
   { icon: GitBranch, title: "Source on GitHub", text: "Apache-2.0. Issues, discussions and contributions welcome.", href: REPO_URL },
 ];
 
@@ -254,7 +259,7 @@ export default function Landing() {
           <Section id="docs" eyebrow="Docs & API" title="Learn it, script it, run it">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {docs.map(({ icon: Icon, title, text, href }) => (
-                <a key={title} href={href} target="_blank" rel="noreferrer" className="panel group p-6 transition-colors hover:border-line-strong">
+                <a key={title} href={href} {...(href.startsWith("http") ? { target: "_blank", rel: "noreferrer" } : {})} className="panel group p-6 transition-colors hover:border-line-strong">
                   <Icon className="h-5 w-5 text-teal" />
                   <h3 className="mt-4 flex items-center gap-1.5 font-medium">
                     {title} <ArrowRight className="h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
@@ -329,21 +334,7 @@ export default function Landing() {
         </section>
       </main>
 
-      <footer className="border-t border-line">
-        <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div>
-            <Wordmark />
-            <p className="mt-2 text-sm text-faint">Distributed service discovery. Apache-2.0.</p>
-          </div>
-          <nav aria-label="Footer" className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted">
-            <Link href="/connect/" className="hover:text-fg">Console</Link>
-            <a href={DOCS.readme} className="hover:text-fg">Docs</a>
-            <a href={DOCS.openapi} className="hover:text-fg">API</a>
-            <a href={REPO_URL} className="hover:text-fg">GitHub</a>
-            <a href={`${REPO_URL}/blob/main/SECURITY.md`} className="hover:text-fg">Security</a>
-          </nav>
-        </div>
-      </footer>
+      <SiteFooter />
     </>
   );
 }

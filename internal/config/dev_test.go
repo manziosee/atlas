@@ -127,3 +127,17 @@ func TestCORSAndConsoleSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestLocationSetting(t *testing.T) {
+	values, _ := devEnv(t, map[string]string{"ATLAS_LOCATION": " 48.86, 2.35 "})
+	cfg, err := Load(env(values))
+	if err != nil || cfg.Location == nil || cfg.Location[0] != 48.86 || cfg.Location[1] != 2.35 {
+		t.Fatalf("location = %v %v", cfg.Location, err)
+	}
+	for _, bad := range []string{"48.86", "91,0", "0,181", "a,b"} {
+		values, _ = devEnv(t, map[string]string{"ATLAS_LOCATION": bad})
+		if _, err := Load(env(values)); err == nil {
+			t.Errorf("ATLAS_LOCATION=%q accepted", bad)
+		}
+	}
+}

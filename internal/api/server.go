@@ -3,6 +3,7 @@
 //
 //	GET    /healthz, /readyz                 liveness and readiness (public)
 //	GET    /v1/node, /v1/members             this node and its cluster view
+//	GET    /v1/topology[?scope=cluster]      peer latency, per node or cluster-wide
 //	POST   /v1/services                      register (idempotent with id or Idempotency-Key)
 //	GET    /v1/services                      paged, filtered listing
 //	GET    /v1/services/{id}                 one instance
@@ -68,6 +69,8 @@ type Deps struct {
 	// ConsoleURL is where the Atlas Console is hosted. When set, / and
 	// /dashboard redirect there.
 	ConsoleURL string
+	// Location places this node on maps (ATLAS_LOCATION); nil when unset.
+	Location *Location
 }
 
 // NewHandler builds the full middleware chain and routes.
@@ -117,6 +120,7 @@ func NewHandler(d Deps) http.Handler {
 			"commit":  version.Commit,
 		})
 	})
+	v1.HandleFunc("GET /v1/topology", d.topology)
 	v1.HandleFunc("GET /v1/members", func(w http.ResponseWriter, _ *http.Request) {
 		members := d.Cluster.Members()
 		writeJSON(w, http.StatusOK, map[string]any{"count": len(members), "members": members})

@@ -1,0 +1,26 @@
+Atlas is starting: {{ .Values.replicaCount }} nodes in namespace {{ .Release.Namespace }}.
+
+API inside the cluster:
+  {{ include "atlas.scheme" . }}://{{ include "atlas.fullname" . }}.{{ .Release.Namespace }}.svc:8080
+
+Admin token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "atlas.secretName" . }} -o jsonpath='{.data.ATLAS_ADMIN_TOKEN}' | base64 -d
+
+Try it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "atlas.fullname" . }} 8080
+  curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/members
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Open the Atlas Console and connect to http://localhost:8080 with the token.
+{{- if not .Values.config.corsOrigins }}
+Set config.corsOrigins to the console's origin so your browser may call the API.
+{{- end }}
+{{- if .Values.k8sSync.enabled }}
+
+Kubernetes Service sync is on (owner tag atlas-k8s:{{ .Values.k8sSync.cluster }}). Opt a Service in:
+  kubectl annotate service <name> atlas.io/register=true
+{{- end }}
+{{- if and (eq .Values.config.env "production") (not .Values.tls.enabled) }}
+
+WARNING: config.env=production requires tls.enabled=true; nodes will refuse to start.
+{{- end }}

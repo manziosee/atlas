@@ -100,7 +100,9 @@ type Config struct {
 	// Bearer tokens are still required; no cookies are used.
 	CORSOrigins []string
 	// ConsoleURL is the hosted Atlas Console's base URL, if any.
-	ConsoleURL          string
+	ConsoleURL string
+	// Location is this node's "lat,lon" for maps (ATLAS_LOCATION); nil when unset.
+	Location            *[2]float64
 	HealthCheckInterval time.Duration
 	HealthCheckTimeout  time.Duration
 	// HistoryRetention keeps service change history this long; zero turns
@@ -223,6 +225,14 @@ func Load(lookup LookupFunc) (*Config, error) {
 		}
 		cfg.CORSOrigins = append(cfg.CORSOrigins, normalized)
 	}
+	if raw := p.str("ATLAS_LOCATION", ""); raw != "" {
+		lat, lon, ok := parseLocation(raw)
+		if !ok {
+			p.errs = append(p.errs, fmt.Errorf("ATLAS_LOCATION must be \"latitude,longitude\" in degrees, for example 48.86,2.35; got %q", raw))
+		} else {
+			cfg.Location = &[2]float64{lat, lon}
+		}
+	}
 	if console := strings.TrimRight(p.str("ATLAS_CONSOLE_URL", ""), "/"); console != "" {
 		if u, err := url.Parse(console); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			p.errs = append(p.errs, fmt.Errorf("ATLAS_CONSOLE_URL must be an http(s) URL, got %q", console))
@@ -253,7 +263,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
 	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
-	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {}, "ATLAS_CORS_ORIGINS": {}, "ATLAS_CONSOLE_URL": {},
+	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {}, "ATLAS_CORS_ORIGINS": {}, "ATLAS_CONSOLE_URL": {}, "ATLAS_LOCATION": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {},
 	"ATLAS_ROUTING_STALE_POLICY": {}, "ATLAS_DEV": {}, "ATLAS_HISTORY_RETENTION": {}, "ATLAS_ROUTING_LATENCY": {}, "ATLAS_ROUTING_LATENCY_TOLERANCE": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
 }
@@ -478,6 +488,20 @@ func (p *parser) str(key, def string) string {
 		return strings.TrimSpace(v)
 	}
 	return def
+}
+
+// parseLocation reads "lat,lon" in decimal degrees.
+func parseLocation(raw string) (lat, lon float64, ok bool) {
+	latText, lonText, found := strings.Cut(raw, ",")
+	if !found {
+		return 0, 0, false
+	}
+	lat, errLat := strconv.ParseFloat(strings.TrimSpace(latText), 64)
+	lon, errLon := strconv.ParseFloat(strings.TrimSpace(lonText), 64)
+	if errLat != nil || errLon != nil || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+		return 0, 0, false
+	}
+	return lat, lon, true
 }
 
 // normalizeOrigin accepts "*" or an http(s) origin without path, query or

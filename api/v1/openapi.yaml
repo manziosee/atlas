@@ -74,6 +74,40 @@ paths:
                   count: { type: integer }
                   members: { type: array, items: { $ref: '#/components/schemas/Member' } }
         '401': { $ref: '#/components/responses/Error' }
+  /v1/topology:
+    get:
+      tags: [cluster]
+      summary: Measured latency between nodes
+      description: >-
+        This node's smoothed probe round-trip time to each peer, and its
+        location when ATLAS_LOCATION is set. With scope=cluster the node also
+        asks every live peer for its own view, using the caller's credential,
+        and returns them all; peers that cannot be read carry an `error`.
+      parameters:
+        - { in: query, name: scope, schema: { type: string, enum: [node, cluster], default: node } }
+      responses:
+        '200':
+          description: >-
+            scope=node returns a NodeTopology. scope=cluster returns
+            `{nodes: [{id, view?: NodeTopology, error?}], truncated, at}`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: '#/components/schemas/NodeTopology' }
+                  - type: object
+                    properties:
+                      nodes:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            view: { $ref: '#/components/schemas/NodeTopology' }
+                            error: { type: string }
+                      truncated: { type: boolean, description: More than 128 peers; the rest were not queried }
+                      at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/services:
     get:
       tags: [registry]
@@ -467,6 +501,26 @@ components:
         incarnation: { type: integer }
         since: { type: string, format: date-time }
         api_addr: { type: string, description: Base URL of the member's HTTP API; used to forward writes to the owner }
+    NodeTopology:
+      type: object
+      properties:
+        node: { $ref: '#/components/schemas/Member' }
+        location:
+          type: object
+          properties:
+            lat: { type: number }
+            lon: { type: number }
+        version: { type: string }
+        at: { type: string, format: date-time }
+        peers:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              region: { type: string }
+              state: { type: string, enum: [alive, suspect, dead, left] }
+              rtt_ms: { type: number, description: Smoothed probe round-trip time; absent until measured }
     Event:
       type: object
       properties:

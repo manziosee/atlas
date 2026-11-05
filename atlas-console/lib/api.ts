@@ -77,6 +77,27 @@ export interface HistoryPage {
   next_before?: number;
 }
 
+export interface PeerLatency {
+  id: string;
+  region?: string;
+  state: MemberState;
+  rtt_ms?: number;
+}
+
+export interface NodeTopology {
+  node: Member;
+  location?: { lat: number; lon: number };
+  version: string;
+  peers: PeerLatency[];
+  at: string;
+}
+
+export interface ClusterTopology {
+  nodes: { id: string; view?: NodeTopology; error?: string }[];
+  truncated: boolean;
+  at: string;
+}
+
 export interface AtlasEvent {
   id: string;
   type: string;
@@ -271,6 +292,11 @@ export class AtlasClient {
     if (opts.latency) query.set("latency", opts.latency);
     if (opts.tolerance) query.set("tolerance", opts.tolerance);
     return this.json<Service>("GET", `/v1/lookup/${encodeURIComponent(name)}`, { query });
+  }
+
+  /** Every node's view of peer latency, gathered by the connected node. */
+  clusterTopology() {
+    return this.json<ClusterTopology>("GET", "/v1/topology", { query: new URLSearchParams({ scope: "cluster" }) });
   }
 
   async credentials(): Promise<Credential[]> {

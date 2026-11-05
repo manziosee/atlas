@@ -1,0 +1,14 @@
+apiVersion: v2
+name: atlas
+description: Atlas distributed service discovery, with an optional controller that registers annotated Kubernetes Services.
+type: application
+version: 0.1.0
+appVersion: "edge"
+home: https://github.com/manziosee/atlas
+sources:
+  - https://github.com/manziosee/atlas
+keywords: [service-discovery, gossip, swim, dns, registry, kubernetes]
+maintainers:
+  - name: Manzi Osee
+    email: manziosee@gmail.com
+icon: https://raw.githubusercontent.com/manziosee/atlas/main/docs/assets/atlas-logo.svg

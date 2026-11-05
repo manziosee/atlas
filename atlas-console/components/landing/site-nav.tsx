@@ -7,11 +7,11 @@ import { Wordmark } from "@/components/logo";
 import { cn } from "@/lib/format";
 
 const links = [
-  { href: "#how", label: "How it works" },
-  { href: "#features", label: "Features" },
-  { href: "#demo", label: "Live demo" },
-  { href: "#quick-start", label: "Quick start" },
-  { href: "#docs", label: "Docs" },
+  { href: "/#features", label: "Features" },
+  { href: "/#demo", label: "Live demo" },
+  { href: "/docs/", label: "Docs" },
+  { href: "/api/", label: "API" },
+  { href: "/security/", label: "Security" },
 ];
 
 /** Floating pill navigation: centred, never touching the screen edges. */

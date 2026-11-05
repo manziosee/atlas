@@ -28,6 +28,25 @@ docker compose up --build -d`,
   --label atlas.health=/healthz payments:1.4.2`,
   },
   {
+    id: "helm",
+    label: "Kubernetes",
+    note: "Helm installs a 3-node cluster with generated secrets; k8sSync registers every Service you annotate.",
+    code: `helm install atlas oci://ghcr.io/manziosee/charts/atlas \
+  -n atlas --create-namespace --set k8sSync.enabled=true
+
+kubectl annotate service payments atlas.io/register=true`,
+  },
+  {
+    id: "terraform",
+    label: "Terraform",
+    note: "Register what can't register itself, and read services and lookups as data.",
+    code: `resource "atlas_service" "orders_db" {
+  name         = "orders-db"
+  address      = "10.0.4.20:5432"
+  health_check = "tcp://10.0.4.20:5432"
+}`,
+  },
+  {
     id: "go",
     label: "Go client",
     note: "Clients exist for Go, Python, Node.js/TypeScript and Java. Each has zero or minimal dependencies.",
