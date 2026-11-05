@@ -1,0 +1,58 @@
+# Atlas + the Docker-label agent on one host.
+#
+#   export ATLAS_TOKEN=$(openssl rand -hex 24)
+#   docker compose -f deploy/docker-agent/compose.yaml up --build -d
+#   curl -s -H "Authorization: Bearer $ATLAS_TOKEN" localhost:8080/v1/services
+#
+# The whoami container below is registered as "whoami" with no app changes:
+# its labels are the whole integration. Scale it and watch instances appear:
+#   docker compose -f deploy/docker-agent/compose.yaml up -d --scale whoami=3
+#
+# This is a single-node dev setup (ATLAS_DEV=true generates the gossip key).
+# For production, run the agent next to a configured cluster node instead.
+name: atlas-docker-agent
+
+x-atlas-image: &atlas-image
+  image: ${ATLAS_IMAGE:-atlas:local}
+  build:
+    context: ../..
+
+services:
+  atlas:
+    <<: *atlas-image
+    environment:
+      ATLAS_DEV: "true"
+      ATLAS_API_TOKENS: ${ATLAS_TOKEN:?export ATLAS_TOKEN=$(openssl rand -hex 24) first}
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:5353:5353/udp"
+    volumes:
+      - atlas-data:/data
+
+  agent:
+    <<: *atlas-image
+    entrypoint: ["/usr/local/bin/atlas-agent"]
+    environment:
+      ATLAS_ADDR: http://atlas:8080
+      ATLAS_TOKEN: ${ATLAS_TOKEN}
+      ATLAS_AGENT_ID: ${HOSTNAME:-docker-host}
+    # The Docker socket is root-owned. Reading it is root-equivalent on the
+    # host, so prefer a read-only socket proxy in production (see
+    # docs/DOCKER_AGENT.md).
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # The image's HEALTHCHECK probes a local node, which the agent is not.
+    healthcheck:
+      disable: true
+    depends_on: [atlas]
+    restart: unless-stopped
+
+  whoami:
+    image: traefik/whoami:v1.10.1
+    labels:
+      atlas.name: whoami
+      atlas.health: /health
+      atlas.tags: demo
+volumes:
+  atlas-data:

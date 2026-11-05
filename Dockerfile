@@ -5,6 +5,12 @@
 #  - Static, CGO-free, stripped, reproducible (-trimpath) binaries.
 #  - Distroless "static:nonroot" runtime: no shell, no package manager,
 #    runs as UID 65532. Nothing for an attacker to live off.
+#  - `docker run ghcr.io/manziosee/atlas` with no settings starts a single
+#    node in dev mode (generated key and token, printed on start). Any real
+#    configuration (ATLAS_ENV=production, a gossip key, tokens or seeds)
+#    turns dev mode off and missing secrets fail closed.
+#  - The same image carries atlas-agent, the Docker-label agent:
+#    --entrypoint atlas-agent (see docs/DOCKER_AGENT.md).
 
 ARG GO_VERSION=1.27
 
@@ -48,8 +54,10 @@ LABEL org.opencontainers.image.title="atlas" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
 
-COPY --from=build /out/atlas-node /out/atlas-cli /usr/local/bin/
+COPY --from=build /out/atlas-node /out/atlas-cli /out/atlas-agent /usr/local/bin/
 COPY --from=build --chown=65532:65532 /data /data
+
+ENV ATLAS_DB_PATH=/data/atlas.db
 
 USER 65532:65532
 

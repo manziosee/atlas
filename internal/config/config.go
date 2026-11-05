@@ -107,6 +107,9 @@ type Config struct {
 	// from the live member list this long. Zero disables the reaper.
 	OrphanServiceReap time.Duration
 
+	// Dev is set when the node runs in dev mode (see dev.go).
+	Dev *DevInfo
+
 	// Logging
 	LogLevel  string
 	LogFormat string
@@ -209,6 +212,11 @@ func Load(lookup LookupFunc) (*Config, error) {
 	if err := errors.Join(p.errs...); err != nil {
 		return nil, err
 	}
+	_, dnsAddrSet := mergedLookup("ATLAS_DNS_ADDR")
+	_, logFormatSet := mergedLookup("ATLAS_LOG_FORMAT")
+	if err := cfg.applyDevMode(p.str("ATLAS_DEV", "auto"), dnsAddrSet, logFormatSet); err != nil {
+		return nil, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -224,7 +232,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
 	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {},
-	"ATLAS_ROUTING_STALE_POLICY": {}, "ATLAS_HISTORY_RETENTION": {}, "ATLAS_ROUTING_LATENCY": {}, "ATLAS_ROUTING_LATENCY_TOLERANCE": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
+	"ATLAS_ROUTING_STALE_POLICY": {}, "ATLAS_DEV": {}, "ATLAS_HISTORY_RETENTION": {}, "ATLAS_ROUTING_LATENCY": {}, "ATLAS_ROUTING_LATENCY_TOLERANCE": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
 }
 
 func readConfigFile(path string) (map[string]string, error) {

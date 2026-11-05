@@ -165,3 +165,18 @@ func TestAPIAdvertiseAddr(t *testing.T) {
 		}
 	}
 }
+
+func TestDevBannerShowsTokenAndLinks(t *testing.T) {
+	var out strings.Builder
+	printDevBanner(&out, &config.Config{HTTPAddr: "0.0.0.0:8080", DNSAddr: "0.0.0.0:5353", DNSZone: "atlas", Dev: &config.DevInfo{Token: "tok", CredentialsPath: "/data/dev-credentials.json"}})
+	for _, want := range []string{"dev mode", "tok", "http://localhost:8080/dashboard/#token=tok", "/data/dev-credentials.json", "Bearer tok", "-p 5353 <service>.atlas"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("banner missing %q:\n%s", want, out.String())
+		}
+	}
+	var quiet strings.Builder
+	printDevBanner(&quiet, &config.Config{HTTPAddr: "0.0.0.0:8080", Dev: &config.DevInfo{Token: "tok"}})
+	if strings.Contains(quiet.String(), "dig") {
+		t.Error("banner mentions DNS although DNS is off")
+	}
+}
