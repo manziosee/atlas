@@ -191,8 +191,10 @@ func TestControllerMirrorsServiceEndpoints(t *testing.T) {
 			t.Errorf("p1 missing tag %q: %v", tag, p1.Tags)
 		}
 	}
-	if p3, ok := get(id("p3")); !ok || p3.Health != atlas.HealthUnknown {
-		t.Fatalf("not-ready pod = %+v %v, want registered without heartbeats", p3, ok)
+	// Pods are registered one after another, so p3 may follow p1 and p2.
+	eventually(t, "not-ready pod registered", func() bool { _, ok := get(id("p3")); return ok })
+	if p3, _ := get(id("p3")); p3.Health != atlas.HealthUnknown {
+		t.Fatalf("not-ready pod health = %s, want unknown (registered without heartbeats)", p3.Health)
 	}
 	if _, ok := get(instanceID("test", "shop", "ignored", "x1")); ok {
 		t.Fatal("service without the annotation was registered")
