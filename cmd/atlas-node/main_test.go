@@ -168,8 +168,8 @@ func TestAPIAdvertiseAddr(t *testing.T) {
 
 func TestDevBannerShowsTokenAndLinks(t *testing.T) {
 	var out strings.Builder
-	printDevBanner(&out, &config.Config{HTTPAddr: "0.0.0.0:8080", DNSAddr: "0.0.0.0:5353", DNSZone: "atlas", Dev: &config.DevInfo{Token: "tok", CredentialsPath: "/data/dev-credentials.json"}})
-	for _, want := range []string{"dev mode", "tok", "http://localhost:8080/dashboard/#token=tok", "/data/dev-credentials.json", "Bearer tok", "-p 5353 <service>.atlas"} {
+	printDevBanner(&out, &config.Config{HTTPAddr: "0.0.0.0:8080", DNSAddr: "0.0.0.0:5353", DNSZone: "atlas", ConsoleURL: "https://console.example", Dev: &config.DevInfo{Token: "tok", CredentialsPath: "/data/dev-credentials.json"}})
+	for _, want := range []string{"dev mode", "tok", "https://console.example/connect#node=http%3A%2F%2Flocalhost%3A8080&token=tok", "/data/dev-credentials.json", "Bearer tok", "-p 5353 <service>.atlas"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("banner missing %q:\n%s", want, out.String())
 		}

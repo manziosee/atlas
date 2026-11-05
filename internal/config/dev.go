@@ -15,6 +15,9 @@ import (
 // node with no setup. It generates the gossip key and an admin API token,
 // keeps them next to the database so restarts reuse them, and enables DNS.
 //
+// It also allows browser calls from any origin (ATLAS_CORS_ORIGINS=*) so a
+// hosted Atlas Console can connect.
+//
 // ATLAS_DEV=auto (the default) turns dev mode on only when nothing is
 // configured: development environment, no gossip key, no API credentials and
 // no seeds. Any real deployment that forgets one secret therefore still fails
@@ -39,7 +42,11 @@ type devCredentials struct {
 
 // applyDevMode fills in generated secrets and dev defaults when dev mode
 // applies. It must run before Validate.
-func (c *Config) applyDevMode(mode string, dnsAddrSet, logFormatSet bool) error {
+// devDefaults records which settings the operator set explicitly, so dev
+// mode only fills in the rest.
+type devDefaults struct{ dnsAddr, logFormat, cors bool }
+
+func (c *Config) applyDevMode(mode string, set devDefaults) error {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "auto":
 		nothingConfigured := len(c.GossipKeys) == 0 && len(c.APITokens) == 0 && len(c.APICredentials) == 0 && len(c.Seeds) == 0
@@ -73,11 +80,16 @@ func (c *Config) applyDevMode(mode string, dnsAddrSet, logFormatSet bool) error 
 		c.APITokens = []string{creds.APIToken}
 		info.Token = creds.APIToken
 	}
-	if !dnsAddrSet {
+	if !set.dnsAddr {
 		c.DNSAddr = "0.0.0.0:5353"
 	}
-	if !logFormatSet {
+	if !set.logFormat {
 		c.LogFormat = "text"
+	}
+	if !set.cors {
+		// Lets a hosted Atlas Console reach a local dev node; the token is
+		// still required, and the API uses no cookies.
+		c.CORSOrigins = []string{"*"}
 	}
 	c.Dev = info
 	return nil

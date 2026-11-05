@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -81,19 +82,25 @@ type Config struct {
 	// APIAdvertiseAddr is the base URL peers use to reach this node's HTTP
 	// API when forwarding writes. Empty derives it from the gossip advertise
 	// host and the HTTP port.
-	APIAdvertiseAddr    string
-	GRPCAddr            string
-	MetricsAddr         string
-	PprofAddr           string
-	DNSAddr             string
-	DNSZone             string
-	DNSTTL              time.Duration
-	TLS                 TLS
-	APITokens           []string
-	APICredentials      []security.Credential
-	RateLimitRPS        float64
-	RateLimitBurst      int
-	TrustedProxies      []*net.IPNet
+	APIAdvertiseAddr string
+	GRPCAddr         string
+	MetricsAddr      string
+	PprofAddr        string
+	DNSAddr          string
+	DNSZone          string
+	DNSTTL           time.Duration
+	TLS              TLS
+	APITokens        []string
+	APICredentials   []security.Credential
+	RateLimitRPS     float64
+	RateLimitBurst   int
+	TrustedProxies   []*net.IPNet
+	// CORSOrigins lists browser origins (scheme://host[:port]) allowed to
+	// call the API, for a console hosted elsewhere; "*" allows any origin.
+	// Bearer tokens are still required; no cookies are used.
+	CORSOrigins []string
+	// ConsoleURL is the hosted Atlas Console's base URL, if any.
+	ConsoleURL          string
 	HealthCheckInterval time.Duration
 	HealthCheckTimeout  time.Duration
 	// HistoryRetention keeps service change history this long; zero turns
@@ -208,13 +215,29 @@ func Load(lookup LookupFunc) (*Config, error) {
 		}
 		cfg.TrustedProxies = append(cfg.TrustedProxies, subnet)
 	}
+	for i, origin := range p.list("ATLAS_CORS_ORIGINS") {
+		normalized, err := normalizeOrigin(origin)
+		if err != nil {
+			p.errs = append(p.errs, fmt.Errorf("ATLAS_CORS_ORIGINS[%d]: %w", i, err))
+			continue
+		}
+		cfg.CORSOrigins = append(cfg.CORSOrigins, normalized)
+	}
+	if console := strings.TrimRight(p.str("ATLAS_CONSOLE_URL", ""), "/"); console != "" {
+		if u, err := url.Parse(console); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			p.errs = append(p.errs, fmt.Errorf("ATLAS_CONSOLE_URL must be an http(s) URL, got %q", console))
+		} else {
+			cfg.ConsoleURL = console
+		}
+	}
 
 	if err := errors.Join(p.errs...); err != nil {
 		return nil, err
 	}
 	_, dnsAddrSet := mergedLookup("ATLAS_DNS_ADDR")
 	_, logFormatSet := mergedLookup("ATLAS_LOG_FORMAT")
-	if err := cfg.applyDevMode(p.str("ATLAS_DEV", "auto"), dnsAddrSet, logFormatSet); err != nil {
+	_, corsSet := mergedLookup("ATLAS_CORS_ORIGINS")
+	if err := cfg.applyDevMode(p.str("ATLAS_DEV", "auto"), devDefaults{dnsAddr: dnsAddrSet, logFormat: logFormatSet, cors: corsSet}); err != nil {
 		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -230,7 +253,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
 	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
-	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {},
+	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {}, "ATLAS_CORS_ORIGINS": {}, "ATLAS_CONSOLE_URL": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {},
 	"ATLAS_ROUTING_STALE_POLICY": {}, "ATLAS_DEV": {}, "ATLAS_HISTORY_RETENTION": {}, "ATLAS_ROUTING_LATENCY": {}, "ATLAS_ROUTING_LATENCY_TOLERANCE": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
 }
@@ -455,6 +478,20 @@ func (p *parser) str(key, def string) string {
 		return strings.TrimSpace(v)
 	}
 	return def
+}
+
+// normalizeOrigin accepts "*" or an http(s) origin without path, query or
+// credentials, and returns it as browsers send it (no trailing slash).
+func normalizeOrigin(origin string) (string, error) {
+	if origin == "*" {
+		return origin, nil
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("%q must be * or an origin such as https://console.example.com", origin)
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host), nil
 }
 
 func (p *parser) list(key string) []string {

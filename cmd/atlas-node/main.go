@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"os/signal"
 	"slices"
@@ -143,6 +144,8 @@ func run() error {
 		Replay:      flyReplay(cfg.NodeID),
 		Forwarder:   forwarder,
 		Routing:     routingPolicy,
+		CORSOrigins: cfg.CORSOrigins,
+		ConsoleURL:  cfg.ConsoleURL,
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -338,9 +341,13 @@ func printDevBanner(w io.Writer, cfg *config.Config) {
   Not for production. Secrets are kept in %s
 
   API token  %s
-  Dashboard  %s/dashboard/#token=%s
   Try it     curl -H "Authorization: Bearer %s" %s/v1/members
-`, cfg.Dev.CredentialsPath, token, base, token, token, base)
+`, cfg.Dev.CredentialsPath, token, token, base)
+	if cfg.ConsoleURL != "" {
+		_, _ = fmt.Fprintf(w, "  Console    %s/connect#node=%s&token=%s\n", cfg.ConsoleURL, url.QueryEscape(base), url.QueryEscape(token))
+	} else {
+		_, _ = fmt.Fprintf(w, "  Console    open the Atlas Console and connect to %s with the token above\n", base)
+	}
 	if _, dnsPort, err := net.SplitHostPort(cfg.DNSAddr); err == nil {
 		_, _ = fmt.Fprintf(w, "  DNS        dig @127.0.0.1 -p %s <service>.%s (in Docker, publish %s/udp)\n", dnsPort, cfg.DNSZone, dnsPort)
 	}

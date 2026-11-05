@@ -371,11 +371,11 @@ func TestErrorsUseStableJSONCodes(t *testing.T) {
 	if rec := h.do(http.MethodPut, "/v1/members", writeToken, ""); !strings.Contains(rec.Header().Get("Allow"), "GET") {
 		t.Errorf("405 Allow header = %q", rec.Header().Get("Allow"))
 	}
-	if rec := h.do(http.MethodGet, "/dashboard", "", ""); rec.Code != http.StatusPermanentRedirect {
-		t.Errorf("dashboard redirect = %d", rec.Code)
+	if rec := h.do(http.MethodGet, "/dashboard/", "", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("removed dashboard without a console URL = %d", rec.Code)
 	}
-	if rec := h.do(http.MethodGet, "/", "", ""); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard/" {
-		t.Errorf("root redirect = %d %q", rec.Code, rec.Header().Get("Location"))
+	if rec := h.do(http.MethodGet, "/", "", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "console") {
+		t.Errorf("root = %d %q", rec.Code, rec.Body.String())
 	}
 }
 

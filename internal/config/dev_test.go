@@ -96,3 +96,34 @@ func TestDevModeRejectsBadSettings(t *testing.T) {
 		t.Fatalf("corrupt credentials err = %v", err)
 	}
 }
+
+func TestCORSAndConsoleSettings(t *testing.T) {
+	values, _ := devEnv(t, nil)
+	cfg, err := Load(env(values))
+	if err != nil || len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "*" {
+		t.Fatalf("dev mode CORS = %v %v, want [*]", cfg.CORSOrigins, err)
+	}
+
+	values, _ = devEnv(t, map[string]string{
+		"ATLAS_CORS_ORIGINS": "https://Console.Example/, http://localhost:3000",
+		"ATLAS_CONSOLE_URL":  "https://console.example/",
+	})
+	cfg, err = Load(env(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.CORSOrigins, ",") != "https://console.example,http://localhost:3000" || cfg.ConsoleURL != "https://console.example" {
+		t.Fatalf("origins %v console %q", cfg.CORSOrigins, cfg.ConsoleURL)
+	}
+
+	for _, bad := range []map[string]string{
+		{"ATLAS_CORS_ORIGINS": "https://console.example/app"},
+		{"ATLAS_CORS_ORIGINS": "ftp://x"},
+		{"ATLAS_CONSOLE_URL": "console.example"},
+	} {
+		values, _ = devEnv(t, bad)
+		if _, err := Load(env(values)); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}

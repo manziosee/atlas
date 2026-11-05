@@ -86,6 +86,33 @@ jobs:
         if: failure()
         run: cat "$RUNNER_TEMP/node.log"
 
+  console:
+    name: Atlas Console (typecheck, tests, build, live e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - name: Start a single development node
+        run: ./scripts/start-test-node.sh
+      - name: Install, typecheck, test and build
+        working-directory: atlas-console
+        env:
+          ATLAS_LIVE_URL: ${{ env.ATLAS_TEST_ENDPOINT }}
+          ATLAS_LIVE_TOKEN: ${{ env.ATLAS_TEST_TOKEN }}
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: |
+          node --version
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Node log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/node.log"
+
   java-client:
     name: Java client against a live node
     runs-on: ubuntu-latest
