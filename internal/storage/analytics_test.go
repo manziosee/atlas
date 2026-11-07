@@ -234,31 +234,13 @@ func TestAnalyticsMigrationCapsExistingVisitorRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO analytics_visitors(day, visitor_hash) VALUES (?, ?)`)
-	if err != nil {
-		_ = tx.Rollback()
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	for i := 0; i <= AnalyticsMaxUniqueVisitorsPerDay; i++ {
-		if _, err := stmt.ExecContext(ctx, day, fmt.Sprintf("%064x", i+1)); err != nil {
-			_ = stmt.Close()
-			_ = tx.Rollback()
-			_ = db.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := stmt.Close(); err != nil {
-		_ = tx.Rollback()
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	if _, err := db.ExecContext(ctx, `
+WITH RECURSIVE
+  hundreds(n) AS (VALUES(0) UNION ALL SELECT n + 1 FROM hundreds WHERE n < 100),
+  digits(n) AS (VALUES(0) UNION ALL SELECT n + 1 FROM digits WHERE n < 99)
+INSERT INTO analytics_visitors(day, visitor_hash)
+SELECT ?, printf('%064x', hundreds.n * 100 + digits.n + 1)
+FROM hundreds CROSS JOIN digits`, day); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
