@@ -121,6 +121,7 @@ func run() error {
 	wg.Go(func() { reapOrphanedServices(ctx, registry, ml, cfg.OrphanServiceReap, log) })
 	registry.SetHistoryEnabled(cfg.HistoryRetention > 0)
 	wg.Go(func() { pruneHistory(ctx, registry, cfg.HistoryRetention, log) })
+	wg.Go(func() { pruneAnalytics(ctx, registry, log) })
 	// --- HTTP API ------------------------------------------------------
 	limiter := security.NewRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies...)
 	wg.Go(func() { limiter.Run(ctx) })
@@ -134,19 +135,20 @@ func run() error {
 		return fmt.Errorf("configure write forwarding: %w", err)
 	}
 	apiDeps := api.Deps{
-		Cluster:     ml,
-		Registry:    registry,
-		Auth:        auth,
-		RateLimiter: limiter,
-		Log:         log.With("component", "api"),
-		Ready:       func() bool { return ctx.Err() == nil },
-		Events:      broker,
-		Replay:      flyReplay(cfg.NodeID),
-		Forwarder:   forwarder,
-		Routing:     routingPolicy,
-		CORSOrigins: cfg.CORSOrigins,
-		ConsoleURL:  cfg.ConsoleURL,
-		Location:    apiLocation(cfg.Location),
+		Cluster:          ml,
+		Registry:         registry,
+		AnalyticsEnabled: cfg.AnalyticsEnabled,
+		Auth:             auth,
+		RateLimiter:      limiter,
+		Log:              log.With("component", "api"),
+		Ready:            func() bool { return ctx.Err() == nil },
+		Events:           broker,
+		Replay:           flyReplay(cfg.NodeID),
+		Forwarder:        forwarder,
+		Routing:          routingPolicy,
+		CORSOrigins:      cfg.CORSOrigins,
+		ConsoleURL:       cfg.ConsoleURL,
+		Location:         apiLocation(cfg.Location),
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))

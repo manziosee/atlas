@@ -50,13 +50,14 @@ type Cluster interface {
 
 // Deps wires the handler to the rest of the node.
 type Deps struct {
-	Cluster     Cluster
-	Registry    ServiceRegistry
-	Selector    *routing.Selector
-	Auth        *security.TokenAuthenticator
-	RateLimiter *security.RateLimiter
-	Log         *slog.Logger
-	Ready       func() bool
+	Cluster          Cluster
+	Registry         ServiceRegistry
+	AnalyticsEnabled bool
+	Selector         *routing.Selector
+	Auth             *security.TokenAuthenticator
+	RateLimiter      *security.RateLimiter
+	Log              *slog.Logger
+	Ready            func() bool
 	// Events feeds GET /v1/events and the gRPC Watch stream.
 	Events *events.Broker
 	// Replay returns a Fly-Replay header value that routes a request to the
@@ -251,9 +252,8 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(elapsed.Seconds())
-		safePath := sanitizeLogValue(r.URL.Path)
 		attrs := []any{
-			"request_id", id, "method", r.Method, "path", safePath,
+			"request_id", id, "method", r.Method, "route", route,
 			"status", rec.code, "duration_ms", elapsed.Milliseconds(),
 			"token_id", security.AuthenticatedTokenID(r.Context()),
 		}
@@ -271,7 +271,7 @@ func recoverer(log *slog.Logger, next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler { //nolint:errorlint // sentinel compared by identity per net/http docs
 					panic(v)
 				}
-				log.Error("panic in handler", "panic", v, "path", sanitizeLogValue(r.URL.Path))
+				log.Error("panic in handler", "panic", v, "route", r.Pattern)
 				httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "internal error")
 			}
 		}()

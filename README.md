@@ -349,7 +349,7 @@ extra. If the owner is alive but not answering, the response is
 | `GET /v1/history?name=` | Recent changes across services, or for one service name. |
 | `GET /v1/node`, `GET /v1/members` | This node, and the cluster as this node sees it. |
 | `GET /v1/events` | Membership and registry events as Server-Sent Events, resumable with `Last-Event-ID`. |
-| `POST /v1/telemetry/pageview` | Public, privacy-limited page-view ingestion for the hosted console. |
+| `POST /v1/telemetry/pageview` | Opt-in, rate-limited page-view ingestion for the hosted console; disabled by default. |
 | `GET /v1/admin/analytics` | Usage totals and per-node API request counters (admin scope). |
 | `GET /v1/admin/credentials` | Configured credentials by fingerprint, scopes and expiry, never the secrets. |
 | `POST /v1/admin/backup` | Download a consistent SQLite snapshot of this node's registry. |
@@ -793,6 +793,12 @@ block plain `http://` for other hosts, so enable TLS on remote nodes.
 [`netlify.toml`](netlify.toml) builds `atlas-console/` and publishes `out/`.
 It proxies `/demo-api/*` to the demo cluster and `/analytics-api/*` to the
 hosted API for privacy-limited page-view ingestion, and sets security headers.
+Telemetry collection is enabled for the hosted Netlify/Fly deployment only;
+other deployments must opt in with `NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED=true`
+for the console build and `ATLAS_ANALYTICS_ENABLED=true` on receiving nodes.
+Each node stores at most 10,000 unique visitor hashes per day.
+At most 256 distinct page paths per node per day are stored; additional new
+paths are grouped under `/other`.
 The admin analytics endpoint still requires an admin-scoped API token. Any
 static host works the same way; configure the corresponding `/analytics-api/`
 proxy to the Atlas API, and proxy `/demo-api/` if you want the demo button.
@@ -932,6 +938,7 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_ROUTING_STALE_POLICY` | `prefer-live` | How lookups and DNS treat instances whose owning node isn't alive: `include`, `prefer-live` or `exclude`. |
 | `ATLAS_ROUTING_LATENCY` / `_TOLERANCE` | `nearest` / `0` | Prefer the nearest measured nodes (`nearest`) or ignore latency (`off`); the tolerance makes nodes this close to the nearest count as equal. |
 | `ATLAS_HISTORY_RETENTION` | `168h` | How long service change history is kept; `0` turns history off. |
+| `ATLAS_ANALYTICS_ENABLED` | `false` | Opt in to the unauthenticated, rate-limited hosted-console page-view endpoint. Unique visitor storage is capped at 10,000 per node per day. |
 | `ATLAS_TLS_CLIENT_AUTH` | `false` | Require client certificates (mTLS). |
 | `ATLAS_PROBE_INTERVAL` / `_TIMEOUT` | `1s` / `500ms` | Failure-detector timing. |
 | `ATLAS_SUSPICION_TIMEOUT` | `5s` | Time a suspect has to refute. |

@@ -259,7 +259,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -318,6 +318,27 @@ CREATE TABLE IF NOT EXISTS analytics_visitors (
   visitor_hash TEXT NOT NULL,
   PRIMARY KEY(day, visitor_hash)
 );
+`,
+	6: `
+CREATE TABLE IF NOT EXISTS analytics_visitor_counts (
+  day TEXT PRIMARY KEY,
+  visitors INTEGER NOT NULL CHECK (visitors >= 0)
+);
+CREATE TABLE IF NOT EXISTS analytics_visitor_caps (
+  day TEXT PRIMARY KEY
+);
+INSERT OR IGNORE INTO analytics_visitor_caps(day)
+SELECT day FROM analytics_visitors GROUP BY day HAVING COUNT(*) > 10000;
+DELETE FROM analytics_visitors
+WHERE (day, visitor_hash) IN (
+  SELECT day, visitor_hash FROM (
+    SELECT day, visitor_hash,
+      ROW_NUMBER() OVER (PARTITION BY day ORDER BY visitor_hash) AS row_num
+    FROM analytics_visitors
+  ) WHERE row_num > 10000
+);
+INSERT INTO analytics_visitor_counts(day, visitors)
+SELECT day, COUNT(*) FROM analytics_visitors GROUP BY day;
 `,
 }
 

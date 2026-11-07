@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, Loader2, RefreshCw } from "lucide-react";
 import { Notice, PageHeader, Skeleton, Stat, StatusBadge } from "@/components/console/ui";
 import { explain, type AdminAnalytics } from "@/lib/api";
@@ -20,17 +20,22 @@ export default function AdminAnalyticsPage() {
   const [report, setReport] = useState<AdminAnalytics | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(true);
+  const requestSequence = useRef(0);
 
   const loadReport = useCallback(async () => {
     if (!client || !admin) return;
+    const requestId = ++requestSequence.current;
     setReportLoading(true);
     try {
-      setReport(await client.analytics(rangeDays));
-      setReportError(null);
+      const next = await client.analytics(rangeDays);
+      if (requestId === requestSequence.current) {
+        setReport(next);
+        setReportError(null);
+      }
     } catch (error) {
-      setReportError(explain(error));
+      if (requestId === requestSequence.current) setReportError(explain(error));
     } finally {
-      setReportLoading(false);
+      if (requestId === requestSequence.current) setReportLoading(false);
     }
   }, [admin, client, rangeDays]);
 
@@ -40,13 +45,17 @@ export default function AdminAnalyticsPage() {
 
   useEffect(() => {
     if (admin) void loadReport();
+    return () => {
+      requestSequence.current++;
+    };
   }, [admin, loadReport]);
 
   const activeNodes = members.filter((member) => member.state === "alive").length;
   const unhealthyServices = services.filter((service) => service.health === "unhealthy");
   const unhealthyNodes = members.filter((member) => member.state === "suspect" || member.state === "dead");
-  const today = new Date().toISOString().slice(0, 10);
-  const todayVisitors = report?.daily.find((day) => day.date === today)?.unique_visitors ?? 0;
+  const today = report?.daily.find((day) => day.date === new Date().toISOString().slice(0, 10));
+  const todayVisitors = today?.unique_visitors ?? 0;
+  const anyVisitorCapReached = report?.daily.some((day) => day.unique_visitors_capped) ?? false;
   const totalPageViews = useMemo(() => report?.daily.reduce((total, day) => total + day.page_views, 0) ?? 0, [report]);
   const maxViews = Math.max(1, ...(report?.daily.map((day) => day.page_views) ?? [0]));
 
@@ -82,8 +91,7 @@ export default function AdminAnalyticsPage() {
 
       <div className="mb-6">
         <Notice tone="info" title="Privacy-limited usage reporting">
-          The site stores page totals and per-day unique-browser counts for 90 days. It does not store raw browser IDs, names, IPs, query strings, or device fingerprints.
-          Daily unique-browser counts are summed across nodes and may include duplicates if a browser reaches more than one node. API request counters reset when a node restarts.
+          The site stores page totals and daily visitor summaries for 90 days. Estimated unique-browser counts are deduplicated across reachable nodes, have about 3% relative error, and are capped at {(10_000).toLocaleString()} recorded visitors per node per day. Counts may be underreported when a node reaches that cap. Raw browser IDs, names, IPs, query strings, and device fingerprints are not stored. API request counters reset when a node restarts.
         </Notice>
       </div>
 
@@ -104,13 +112,20 @@ export default function AdminAnalyticsPage() {
           </Notice>
         </div>
       )}
+      {anyVisitorCapReached && (
+        <div className="mb-6">
+          <Notice tone="warn" title="Visitor collection cap reached">
+            At least one node reached the daily visitor-storage cap during this range. Unique-browser estimates for capped days may be lower than actual traffic.
+          </Notice>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {reportLoading && !report ? (
           Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-[118px]" />)
         ) : (
           <>
-            <Stat label="Unique browsers today" value={todayVisitors} hint="Daily per-node uniques; may count a browser twice across nodes" />
+            <Stat label="Estimated unique browsers today" value={todayVisitors} hint={today?.unique_visitors_capped ? "Visitor storage cap reached on at least one node" : "Approximate cluster-wide estimate"} />
             <Stat label={`Page views · ${report?.days ?? rangeDays} days`} value={totalPageViews} hint="Aggregated by page" />
             <Stat label="API requests" value={report?.api_requests_since_start ?? 0} hint="Across included nodes since each started" />
             <Stat
@@ -144,8 +159,8 @@ export default function AdminAnalyticsPage() {
                   <div
                     key={day.date}
                     role="listitem"
-                    aria-label={`${day.date}: ${day.page_views} page views, ${day.unique_visitors} unique browsers`}
-                    title={`${day.date}: ${day.page_views} views · ${day.unique_visitors} unique browsers`}
+                    aria-label={`${day.date}: ${day.page_views} page views, about ${day.unique_visitors} unique browsers${day.unique_visitors_capped ? ", visitor storage capped" : ""}`}
+                    title={`${day.date}: ${day.page_views} views · about ${day.unique_visitors} unique browsers${day.unique_visitors_capped ? " · visitor storage capped" : ""}`}
                     className="min-w-0 flex-1 rounded-t bg-lime/70 transition-colors hover:bg-lime"
                     style={{ height: day.page_views ? `${Math.max(3, (day.page_views / maxViews) * 100)}%` : "0%" }}
                   />

@@ -44,8 +44,20 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Env != EnvDevelopment || cfg.GossipFanout != 3 || len(cfg.GossipKeys) != 1 || cfg.PprofAddr != "127.0.0.1:6060" {
+	if cfg.Env != EnvDevelopment || cfg.GossipFanout != 3 || len(cfg.GossipKeys) != 1 || cfg.PprofAddr != "127.0.0.1:6060" || cfg.AnalyticsEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+}
+
+func TestLoadAnalyticsOptIn(t *testing.T) {
+	values := base()
+	values["ATLAS_ANALYTICS_ENABLED"] = "true"
+	cfg, err := Load(env(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AnalyticsEnabled {
+		t.Fatal("ATLAS_ANALYTICS_ENABLED=true did not enable page-view collection")
 	}
 }
 

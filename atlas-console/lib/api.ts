@@ -120,6 +120,7 @@ export interface AnalyticsDay {
   date: string;
   page_views: number;
   unique_visitors: number;
+  unique_visitors_capped: boolean;
 }
 
 export interface AnalyticsPage {

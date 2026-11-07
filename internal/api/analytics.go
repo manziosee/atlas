@@ -6,19 +6,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/manziosee/atlas/internal/httperr"
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/metrics"
-	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/storage"
 )
 
@@ -48,17 +45,12 @@ type adminAnalytics struct {
 	APIRequestsSinceStart uint64                  `json:"api_requests_since_start"`
 	APIErrorsSinceStart   uint64                  `json:"api_errors_since_start"`
 	APIRequestsByRoute    []apiRouteCount         `json:"api_requests_by_route"`
+	VisitorSketches       map[string][]byte       `json:"visitor_sketches,omitempty"`
 }
 
 type analyticsNodeError struct {
 	NodeID string `json:"node_id"`
 	Error  string `json:"error"`
-}
-
-type analyticsPeerResult struct {
-	nodeID string
-	report adminAnalytics
-	err    string
 }
 
 type pageViewEvent struct {
@@ -67,6 +59,10 @@ type pageViewEvent struct {
 }
 
 func (d Deps) recordPageView(w http.ResponseWriter, r *http.Request) {
+	if !d.AnalyticsEnabled {
+		httperr.Write(w, http.StatusNotFound, httperr.CodeRouteNotFound, "page view analytics are disabled")
+		return
+	}
 	recorder, ok := d.Registry.(pageViewRecorder)
 	if !ok {
 		httperr.Write(w, http.StatusNotImplemented, httperr.CodeUnavailable, "page view analytics are not supported by this registry")
@@ -98,7 +94,8 @@ func (d Deps) recordPageView(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) adminAnalytics(w http.ResponseWriter, r *http.Request) {
-	if _, ok := d.Registry.(analyticsReader); !ok {
+	reader, ok := d.Registry.(analyticsReader)
+	if !ok {
 		httperr.Write(w, http.StatusNotImplemented, httperr.CodeUnavailable, "analytics are not supported by this registry")
 		return
 	}
@@ -111,7 +108,7 @@ func (d Deps) adminAnalytics(w http.ResponseWriter, r *http.Request) {
 		}
 		days = value
 	}
-	report, err := d.localAdminAnalytics(r.Context(), days)
+	report, err := d.localAdminAnalytics(r.Context(), days, reader)
 	if err != nil {
 		d.Log.Error("admin analytics query failed", "err", err)
 		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not read analytics")
@@ -119,15 +116,12 @@ func (d Deps) adminAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isForwarded(r.Context()) {
 		report = d.clusterAdminAnalytics(r.Context(), days, report)
+		report.VisitorSketches = nil
 	}
 	writeJSON(w, http.StatusOK, report)
 }
 
-func (d Deps) localAdminAnalytics(ctx context.Context, days int) (adminAnalytics, error) {
-	reader, ok := d.Registry.(analyticsReader)
-	if !ok {
-		return adminAnalytics{}, fmt.Errorf("analytics are not supported by this registry")
-	}
+func (d Deps) localAdminAnalytics(ctx context.Context, days int, reader analyticsReader) (adminAnalytics, error) {
 	data, err := reader.Analytics(ctx, days)
 	if err != nil {
 		return adminAnalytics{}, fmt.Errorf("read analytics: %w", err)
@@ -140,42 +134,14 @@ func (d Deps) localAdminAnalytics(ctx context.Context, days int) (adminAnalytics
 		Days: days, NodeID: d.Cluster.LocalNode().ID, NodesIncluded: 1,
 		NodeErrors: []analyticsNodeError{}, Daily: data.Daily, Pages: data.Pages,
 		APIRequestsSinceStart: requests, APIErrorsSinceStart: errors,
-		APIRequestsByRoute: byRoute,
+		APIRequestsByRoute: byRoute, VisitorSketches: data.VisitorSketches,
 	}, nil
 }
 
 func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAnalytics) adminAnalytics {
-	self := d.Cluster.LocalNode()
-	var targets []membership.Member
-	for _, member := range d.Cluster.Members() {
-		if member.ID == self.ID {
-			continue
-		}
-		if member.State != membership.StateAlive && member.State != membership.StateSuspect {
-			local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: member.ID, Error: "node is " + member.State.String()})
-			continue
-		}
-		targets = append(targets, member)
-	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
-	if len(targets) > maxTopologyFanout {
-		for _, member := range targets[maxTopologyFanout:] {
-			local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: member.ID, Error: "not queried: cluster exceeds the analytics fan-out limit"})
-		}
-		targets = targets[:maxTopologyFanout]
-	}
-
-	results := make([]analyticsPeerResult, len(targets))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 32)
-	for i, member := range targets {
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[i] = d.peerAdminAnalytics(ctx, member, days)
-		})
-	}
-	wg.Wait()
+	results, _ := d.fanOutPeerGET(ctx, func(membership.Member) string {
+		return "/v1/admin/analytics?days=" + strconv.Itoa(days)
+	})
 
 	dailyByDate := make(map[string]int, len(local.Daily))
 	for i, day := range local.Daily {
@@ -189,30 +155,77 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 	for _, route := range local.APIRequestsByRoute {
 		routesByName[route.Route] = route
 	}
+	if local.VisitorSketches == nil {
+		local.VisitorSketches = make(map[string][]byte)
+	}
 
 	for _, result := range results {
-		if result.err != "" {
-			local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: result.nodeID, Error: result.err})
+		if result.err != nil {
+			local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: result.member.ID, Error: result.err.Error()})
+			continue
+		}
+		var peerReport adminAnalytics
+		if result.status != http.StatusOK {
+			local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: result.member.ID, Error: "node answered " + http.StatusText(result.status)})
+			continue
+		}
+		if err := json.Unmarshal(result.body, &peerReport); err != nil {
+			local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: result.member.ID, Error: "node returned invalid analytics"})
+			d.Log.Warn("admin analytics peer response was invalid", "node", result.member.ID, "err", err)
+			continue
+		}
+		mergedSketches := make(map[string][]byte, len(peerReport.VisitorSketches))
+		validSketches := true
+		for day, sketch := range peerReport.VisitorSketches {
+			if current, ok := local.VisitorSketches[day]; ok {
+				merged, err := storage.MergeVisitorSketches(current, sketch)
+				if err != nil {
+					local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: result.member.ID, Error: "node returned an invalid visitor summary"})
+					validSketches = false
+					break
+				}
+				mergedSketches[day] = merged
+			} else {
+				if _, err := storage.EstimateUniqueVisitors(sketch); err != nil {
+					local.NodeErrors = append(local.NodeErrors, analyticsNodeError{NodeID: result.member.ID, Error: "node returned an invalid visitor summary"})
+					validSketches = false
+					break
+				}
+				mergedSketches[day] = append([]byte(nil), sketch...)
+			}
+		}
+		if !validSketches {
 			continue
 		}
 		local.NodesIncluded++
-		for _, day := range result.report.Daily {
+		for _, day := range peerReport.Daily {
 			if index, ok := dailyByDate[day.Date]; ok {
 				local.Daily[index].PageViews += day.PageViews
-				local.Daily[index].UniqueVisitors += day.UniqueVisitors
+				local.Daily[index].UniqueVisitorsCapped = local.Daily[index].UniqueVisitorsCapped || day.UniqueVisitorsCapped
 			}
 		}
-		for _, page := range result.report.Pages {
+		for day, sketch := range mergedSketches {
+			local.VisitorSketches[day] = sketch
+		}
+		for _, page := range peerReport.Pages {
 			pagesByName[page.Page] += page.PageViews
 		}
-		local.APIRequestsSinceStart += result.report.APIRequestsSinceStart
-		local.APIErrorsSinceStart += result.report.APIErrorsSinceStart
-		for _, route := range result.report.APIRequestsByRoute {
+		local.APIRequestsSinceStart += peerReport.APIRequestsSinceStart
+		local.APIErrorsSinceStart += peerReport.APIErrorsSinceStart
+		for _, route := range peerReport.APIRequestsByRoute {
 			entry := routesByName[route.Route]
 			entry.Route = route.Route
 			entry.Count += route.Count
 			entry.Errors += route.Errors
 			routesByName[route.Route] = entry
+		}
+	}
+	for i := range local.Daily {
+		if sketch, ok := local.VisitorSketches[local.Daily[i].Date]; ok {
+			estimate, err := storage.EstimateUniqueVisitors(sketch)
+			if err == nil {
+				local.Daily[i].UniqueVisitors = estimate
+			}
 		}
 	}
 
@@ -244,52 +257,6 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 	})
 	sort.Slice(local.NodeErrors, func(i, j int) bool { return local.NodeErrors[i].NodeID < local.NodeErrors[j].NodeID })
 	return local
-}
-
-func (d Deps) peerAdminAnalytics(ctx context.Context, member membership.Member, days int) analyticsPeerResult {
-	result := analyticsPeerResult{nodeID: member.ID}
-	token := security.BearerToken(ctx)
-	switch {
-	case d.Forwarder == nil:
-		result.err = "peer requests are disabled on this node"
-	case member.APIAddr == "":
-		result.err = "node does not advertise an API address"
-	case token == "":
-		result.err = "no credential to forward"
-	default:
-		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		target := strings.TrimRight(member.APIAddr, "/") + "/v1/admin/analytics?days=" + strconv.Itoa(days)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil) // #nosec G704 -- target is a cluster member's API address from authenticated gossip.
-		if err != nil {
-			result.err = "could not prepare peer request"
-			break
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set(ForwardedByHeader, d.Cluster.LocalNode().ID)
-		resp, err := d.Forwarder.Do(req) // #nosec G704 -- the target is a cluster member's gossiped API address.
-		if err != nil {
-			result.err = "unreachable"
-			d.Log.Warn("admin analytics peer request failed", "node", member.ID, "err", err)
-			break
-		}
-		defer func() { _ = resp.Body.Close() }()
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxForwardResponse))
-		if err != nil {
-			result.err = "could not read peer response"
-			d.Log.Warn("admin analytics peer response failed", "node", member.ID, "err", err)
-			break
-		}
-		if resp.StatusCode != http.StatusOK {
-			result.err = "node answered " + resp.Status
-			break
-		}
-		if err := json.Unmarshal(raw, &result.report); err != nil {
-			result.err = "node returned invalid analytics"
-			d.Log.Warn("admin analytics peer response was invalid", "node", member.ID, "err", err)
-		}
-	}
-	return result
 }
 
 func apiRequestTotals() (uint64, uint64, []apiRouteCount, error) {
@@ -363,13 +330,12 @@ func analyticsPage(path string) string {
 	if path == "" {
 		return "/"
 	}
-	switch path {
-	case "/about", "/api", "/security", "/terms", "/connect", "/dashboard", "/nodes", "/topology", "/services", "/activity", "/lookup", "/integrations", "/admin", "/admin/analytics", "/contributing", "/docs":
-		return path
-	default:
-		if strings.HasPrefix(path, "/docs/") {
-			return "/docs/:slug"
-		}
-		return "/other"
+	if strings.HasPrefix(path, "/docs/") {
+		return "/docs/:slug"
 	}
+	section, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	if section == "" {
+		return "/"
+	}
+	return "/" + section
 }

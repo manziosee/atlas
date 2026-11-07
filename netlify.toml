@@ -8,6 +8,7 @@
 [build.environment]
   NODE_VERSION = "22"
   NEXT_TELEMETRY_DISABLED = "1"
+  NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED = "true"
 
 # The read-only demo cluster, proxied so it is same-origin for the browser and
 # needs no CORS settings on the demo nodes.

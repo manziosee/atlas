@@ -74,6 +74,23 @@ func pruneHistory(ctx context.Context, registry *storage.Store, retention time.D
 	}
 }
 
+// pruneAnalytics removes expired page-view and visitor data independently of
+// incoming telemetry so idle nodes still honor the retention window.
+func pruneAnalytics(ctx context.Context, registry *storage.Store, log *slog.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		if err := registry.PruneAnalytics(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
+			log.Warn("could not prune usage analytics", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // orphanReaper deletes services whose owner has been missing from the live
 // member list for longer than after. Only the live member with the lowest ID
 // reaps, so one node normally writes each tombstone; duplicates from a brief

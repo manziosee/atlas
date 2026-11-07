@@ -5,6 +5,7 @@ import { useEffect } from "react";
 
 const visitorStorageKey = "atlas:analytics:visitor";
 const pageViewEndpoint = "/analytics-api/v1/telemetry/pageview";
+const analyticsEnabled = process.env.NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED === "true";
 
 function visitorID(): string | null {
   try {
@@ -23,7 +24,7 @@ export function PageViewTelemetry() {
   const pathname = usePathname();
 
   useEffect(() => {
-    if (!pathname) return;
+    if (!analyticsEnabled || !pathname) return;
     const id = visitorID();
     if (!id) return;
     void fetch(pageViewEndpoint, {

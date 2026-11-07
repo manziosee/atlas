@@ -63,8 +63,9 @@ export default function TermsPage() {
             <strong>Anonymous site analytics.</strong> The site sets no cookies and loads no third-party trackers or scripts. To count daily unique browsers,
             it stores a random identifier in your browser&apos;s local storage. The server hashes that ID together with the UTC day, discards the raw ID, and
             retains daily page totals and hashes for up to 90 days. Page paths are normalized; query strings, names, IP addresses and device fingerprints
-            are not stored in the analytics database. Daily unique counts are combined per node and may count a browser twice if the site&apos;s traffic
-            reaches multiple nodes. You can remove the identifier by clearing this site&apos;s local storage.
+            are not stored in the analytics database. Unique-browser counts are approximate (about 3% relative error), deduplicated across reachable
+            nodes, and capped at 10,000 stored visitors per node per day. At most 256 page paths per node per day are retained; additional paths are
+            grouped as &quot;/other&quot;. You can remove the identifier by clearing this site&apos;s local storage.
           </li>
           <li>
             <strong>Tokens.</strong> A token you enter is held in your browser&apos;s memory. If you tick &quot;Keep me connected&quot;, it&apos;s stored

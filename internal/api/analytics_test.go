@@ -35,7 +35,7 @@ func TestPageViewTelemetryAndAdminAnalyticsScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := NewHandler(Deps{
-		Cluster: fakeCluster{}, Registry: store, Auth: auth,
+		Cluster: fakeCluster{}, Registry: store, Auth: auth, AnalyticsEnabled: true,
 		RateLimiter: security.NewRateLimiter(1000, 1000),
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -90,6 +90,9 @@ func TestPageViewTelemetryAndAdminAnalyticsScopes(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(rec.Body.String(), "visitor_sketches") {
+		t.Fatal("internal visitor sketches were returned to the dashboard")
+	}
 	if len(report.Daily) != 1 || report.Daily[0].PageViews != 3 || report.Daily[0].UniqueVisitors != 2 {
 		t.Fatalf("daily analytics = %+v, want 3 views and 2 visitors", report.Daily)
 	}
@@ -106,11 +109,12 @@ func TestPageViewTelemetryRejectsInvalidVisitorID(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	handler := NewHandler(Deps{
-		Cluster:     fakeCluster{},
-		Registry:    store,
-		Auth:        security.NewTokenAuthenticator(nil),
-		RateLimiter: security.NewRateLimiter(1000, 1000),
-		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Cluster:          fakeCluster{},
+		Registry:         store,
+		AnalyticsEnabled: true,
+		Auth:             security.NewTokenAuthenticator(nil),
+		RateLimiter:      security.NewRateLimiter(1000, 1000),
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
 	formReq := httptest.NewRequest(http.MethodPost, "/v1/telemetry/pageview", strings.NewReader(`{"visitor_id":"123e4567-e89b-12d3-a456-426614174000","path":"/"}`))
@@ -146,7 +150,7 @@ func TestAdminAnalyticsAggregatesReachableClusterNodes(t *testing.T) {
 	node2 := membership.Member{ID: "n2", Addr: "10.0.0.2:7946", APIAddr: "http://n2", State: membership.StateAlive}
 	token := strings.Repeat("c", 40)
 	server2 := httptest.NewServer(NewHandler(Deps{
-		Cluster:  analyticsCluster{self: node2, members: []membership.Member{node1, node2}},
+		Cluster: analyticsCluster{self: node2, members: []membership.Member{node1, node2}}, AnalyticsEnabled: true,
 		Registry: store2, Auth: security.NewTokenAuthenticator([]string{token}),
 		RateLimiter: security.NewRateLimiter(1000, 1000),
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -155,7 +159,7 @@ func TestAdminAnalyticsAggregatesReachableClusterNodes(t *testing.T) {
 	node2.APIAddr = server2.URL
 
 	handler := NewHandler(Deps{
-		Cluster:  analyticsCluster{self: node1, members: []membership.Member{node1, node2}},
+		Cluster: analyticsCluster{self: node1, members: []membership.Member{node1, node2}}, AnalyticsEnabled: true,
 		Registry: store1, Auth: security.NewTokenAuthenticator([]string{token}),
 		RateLimiter: security.NewRateLimiter(1000, 1000),
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -185,8 +189,30 @@ func TestAdminAnalyticsAggregatesReachableClusterNodes(t *testing.T) {
 	if report.NodesIncluded != 2 || len(report.NodeErrors) != 0 {
 		t.Fatalf("nodes included/errors = %d / %+v", report.NodesIncluded, report.NodeErrors)
 	}
-	if len(report.Daily) != 1 || report.Daily[0].PageViews != 2 || report.Daily[0].UniqueVisitors != 2 {
-		t.Fatalf("daily analytics = %+v, want 2 views and node-local unique counts from both nodes", report.Daily)
+	if len(report.Daily) != 1 || report.Daily[0].PageViews != 2 || report.Daily[0].UniqueVisitors != 1 {
+		t.Fatalf("daily analytics = %+v, want 2 views and one deduplicated visitor", report.Daily)
+	}
+}
+
+func TestPageViewTelemetryDisabledByDefault(t *testing.T) {
+	store, err := storage.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	handler := NewHandler(Deps{
+		Cluster: fakeCluster{}, Registry: store,
+		Auth:        security.NewTokenAuthenticator(nil),
+		RateLimiter: security.NewRateLimiter(1000, 1000),
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/telemetry/pageview", strings.NewReader(
+		`{"visitor_id":"123e4567-e89b-12d3-a456-426614174000","path":"/"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("disabled telemetry status = %d, want 404", rec.Code)
 	}
 }
 

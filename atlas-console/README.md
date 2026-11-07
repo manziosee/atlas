@@ -52,9 +52,10 @@ The site stores a random browser ID in local storage to count daily unique
 browsers. The API stores only a daily hash, normalized page totals and a
 90-day history; it does not persist raw IDs, names, query strings, IP
 addresses or device fingerprints. API counters are in-memory and reset when
-their node restarts. Cluster totals combine reachable nodes; daily unique
-browser counts are added per node and may count a browser twice if traffic
-reaches multiple nodes. See the site's [terms](/terms/) for the full disclosure.
+their node restarts. Daily unique-browser totals use a mergeable approximation
+across reachable nodes and are capped at 10,000 recorded visitors per node per
+day. At most 256 page paths per node per day are retained; later new paths are
+combined under `/other`. See the site's [terms](/terms/) for the full disclosure.
 
 Live end-to-end tests run the console's API client against a real node:
 
@@ -76,13 +77,18 @@ ATLAS_CONSOLE_URL=https://your-console.netlify.app    # optional redirect from t
 Import the repository in Netlify. The repository's root `netlify.toml`
 builds this folder, publishes `out/`, proxies the demo and sets security
 headers. It also proxies `/analytics-api/*` to `https://atlas-edge.fly.dev`;
-the node's existing Fly volume persists the analytics tables. For other
-static hosts, serve `out/` and configure the same proxy.
+the node's existing Fly volume persists the analytics tables. The hosted
+console opts into collection at build time and the Fly node opts into receiving
+it. For other static hosts, serve `out/`, set
+`NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED=true` to collect page views, and configure
+the same proxy. Telemetry ingestion is disabled by default on Atlas nodes; set
+`ATLAS_ANALYTICS_ENABLED=true` on each receiving node to opt in.
 
 | Build-time variable | Default | Purpose |
 |---------------------|---------|---------|
 | `NEXT_PUBLIC_ATLAS_DEMO_URL` | `/demo-api` | Demo node URL (must allow your origin if not proxied) |
 | `NEXT_PUBLIC_ATLAS_DEMO_TOKEN` | the public read-only demo token | Demo token |
+| `NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED` | `false` | Enable hosted-console anonymous page-view collection |
 
 ## Layout
 
