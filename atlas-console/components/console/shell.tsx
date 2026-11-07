@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Activity, BookOpen, Boxes, Eye, Globe2, LayoutDashboard, LogOut, Menu, Plug, RefreshCw, Search, Server, Shield, X } from "lucide-react";
+import { Activity, BarChart3, BookOpen, Boxes, Eye, Globe2, LayoutDashboard, LogOut, Menu, Plug, RefreshCw, Search, Server, Shield, X } from "lucide-react";
 import { Wordmark } from "@/components/logo";
-import { useConnection } from "@/lib/connection";
+import { can, useConnection } from "@/lib/connection";
 import { useCluster, type StreamStatus } from "@/lib/cluster";
 import { cn, relative } from "@/lib/format";
 import { Spinner } from "./ui";
@@ -18,7 +18,8 @@ const links = [
   { href: "/activity/", label: "Activity", icon: Activity },
   { href: "/lookup/", label: "Lookup tester", icon: Search },
   { href: "/integrations/", label: "Integrations", icon: Plug },
-  { href: "/admin/", label: "Admin", icon: Shield },
+  { href: "/admin/analytics/", label: "Usage & reliability", icon: BarChart3, admin: true },
+  { href: "/admin/", label: "Admin", icon: Shield, admin: true },
 ];
 
 const streamLabel: Record<StreamStatus, { text: string; cls: string }> = {
@@ -110,7 +111,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
           )}
         >
           <nav aria-label="Console" className="flex flex-col gap-1">
-            {links.map(({ href, label, icon: Icon }) => {
+            {links.filter((link) => !link.admin || can(conn, "admin")).map(({ href, label, icon: Icon }) => {
               const active = pathname === href || pathname === href.slice(0, -1) || pathname.startsWith(href);
               return (
                 <Link

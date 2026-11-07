@@ -1,5 +1,6 @@
 // Package api exposes the node's HTTP control plane. api/v1/openapi.yaml is
-// the full reference; every /v1 route requires a bearer token.
+// the full reference; /v1 routes require a bearer token except for the
+// privacy-limited public page-view ingestion endpoint.
 //
 //	GET    /healthz, /readyz                 liveness and readiness (public)
 //	GET    /v1/node, /v1/members             this node and its cluster view
@@ -15,6 +16,7 @@
 //	GET    /v1/history                       recent changes across services
 //	GET    /v1/lookup/{name}                 routed instance selection
 //	GET    /v1/events                        membership and registry event stream
+//	POST   /v1/telemetry/pageview             anonymous hosted-console page view
 //	*      /v1/admin/...                     admin operations (admin scope)
 package api
 
@@ -59,8 +61,8 @@ type Deps struct {
 	// Replay returns a Fly-Replay header value that routes a request to the
 	// node that owns a service, or "" when replay is unavailable.
 	Replay func(ownerNodeID string) string
-	// Forwarder sends owner-only writes to the owning node's HTTP API. Nil
-	// disables forwarding; such writes then return 409 not_owner.
+	// Forwarder sends owner-only writes and authenticated cluster reads to
+	// peer HTTP APIs. Nil disables forwarding.
 	Forwarder *http.Client
 	// Routing is the default lookup policy; requests may override it.
 	Routing routing.Policy
@@ -137,8 +139,10 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/history", d.recentHistory)
 	v1.HandleFunc("GET /v1/events", d.streamEvents)
 	v1.HandleFunc("GET /v1/admin/credentials", d.listCredentials)
+	v1.HandleFunc("GET /v1/admin/analytics", d.adminAnalytics)
 	v1.HandleFunc("POST /v1/admin/backup", d.backup)
 	v1.HandleFunc("DELETE /v1/admin/nodes/{id}", d.evictNode)
+	mux.HandleFunc("POST /v1/telemetry/pageview", d.recordPageView)
 	mux.Handle("/v1/", d.Auth.Middleware(originMiddleware(jsonFallback(v1))))
 
 	h := corsMiddleware(d.CORSOrigins, jsonFallback(mux))
@@ -239,10 +243,15 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(elapsed.Seconds())
-		log.Info("http request",
+		attrs := []any{
 			"request_id", id, "method", r.Method, "path", r.URL.Path,
-			"status", rec.code, "duration_ms", elapsed.Milliseconds(), "remote", r.RemoteAddr,
-			"token_id", security.AuthenticatedTokenID(r.Context()))
+			"status", rec.code, "duration_ms", elapsed.Milliseconds(),
+			"token_id", security.AuthenticatedTokenID(r.Context()),
+		}
+		if r.URL.Path != "/v1/telemetry/pageview" {
+			attrs = append(attrs, "remote", r.RemoteAddr)
+		}
+		log.Info("http request", attrs...)
 	})
 }
 

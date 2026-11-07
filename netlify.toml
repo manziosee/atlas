@@ -17,6 +17,13 @@
   status = 200
   force = true
 
+# The public site records only anonymous page views through the Atlas API.
+[[redirects]]
+  from = "/analytics-api/*"
+  to = "https://atlas-edge.fly.dev/:splat"
+  status = 200
+  force = true
+
 [[headers]]
   for = "/*"
   [headers.values]

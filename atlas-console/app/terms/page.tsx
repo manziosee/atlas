@@ -19,12 +19,12 @@ const headings = [
 
 export default function TermsPage() {
   return (
-    <ProsePage eyebrow="Terms" title="Terms of use" intro={<>Last updated 5 November 2026. Plain language first; these terms cover this website, the hosted console and the public demo cluster.</>} headings={headings}>
+    <ProsePage eyebrow="Terms" title="Terms of use" intro={<>Last updated 7 November 2026. Plain language first; these terms cover this website, the hosted console and the public demo cluster.</>} headings={headings}>
       <div className="prose mt-8">
         <h2 id="summary">Summary</h2>
         <ul>
           <li>Atlas is free, open-source software under the Apache License 2.0.</li>
-          <li>This website and console have no accounts, collect no analytics and run no tracking.</li>
+          <li>This website has no accounts or third-party trackers. It records privacy-limited page views and anonymous daily unique-browser counts.</li>
           <li>The console sends your token only to the Atlas node you connect to, from your own browser.</li>
           <li>The demo is public, read-only and may be reset or taken down at any time.</li>
           <li>Everything is provided as is, without warranty.</li>
@@ -42,8 +42,8 @@ export default function TermsPage() {
 
         <h2 id="website">This website and the console</h2>
         <p>
-          This site is a static website. The console runs entirely in your browser: when you connect to a node, your browser talks to that node directly. We
-          don&apos;t operate a backend that receives your requests, your token or your cluster&apos;s data.
+          This site is a static website. The console runs in your browser: when you connect to a node, your browser talks to that node directly. A separate
+          first-party endpoint receives only anonymous page-view events for this site; it never receives your token or your cluster&apos;s data.
         </p>
         <p>
           You are responsible for the nodes you connect to and the tokens you use. Only connect to nodes you&apos;re allowed to access, and treat API
@@ -60,17 +60,20 @@ export default function TermsPage() {
         <h2 id="privacy">Your data and privacy</h2>
         <ul>
           <li>
-            <strong>No accounts, cookies or analytics.</strong> The site sets no cookies and loads no trackers or third-party scripts. Fonts are served from
-            this site.
+            <strong>Anonymous site analytics.</strong> The site sets no cookies and loads no third-party trackers or scripts. To count daily unique browsers,
+            it stores a random identifier in your browser&apos;s local storage. The server hashes that ID together with the UTC day, discards the raw ID, and
+            retains daily page totals and hashes for up to 90 days. Page paths are normalized; query strings, names, IP addresses and device fingerprints
+            are not stored in the analytics database. Daily unique counts are combined per node and may count a browser twice if the site&apos;s traffic
+            reaches multiple nodes. You can remove the identifier by clearing this site&apos;s local storage.
           </li>
           <li>
             <strong>Tokens.</strong> A token you enter is held in your browser&apos;s memory. If you tick &quot;Keep me connected&quot;, it&apos;s stored
             in that tab&apos;s session storage until the tab closes. It is only ever sent to the node you connect to.
           </li>
           <li>
-            <strong>Hosting logs.</strong> Like any website, our hosting provider may keep standard request logs, such as IP address, time and page, for
-            security and operations. Requests to the demo pass through the hosting provider&apos;s proxy and reach the demo nodes, which keep standard
-            access logs.
+            <strong>Hosting logs.</strong> Like any website, our hosting providers may keep standard request logs, such as IP address, time and page, for
+            security and operations. These platform logs are separate from the analytics database and are governed by the hosting providers&apos; policies.
+            Requests to the demo pass through the hosting provider&apos;s proxy and reach the demo nodes, which keep standard access logs.
           </li>
           <li>
             <strong>Your own nodes.</strong> Data in your Atlas cluster stays in your infrastructure, under your control.
