@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/manziosee/atlas/internal/events"
@@ -224,6 +225,13 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// sanitizeLogValue removes line breaks to prevent log-forging via untrusted input.
+func sanitizeLogValue(v string) string {
+	v = strings.ReplaceAll(v, "\n", "")
+	v = strings.ReplaceAll(v, "\r", "")
+	return v
+}
+
 // observe adds a request ID, structured access logs and metrics.
 func observe(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -243,13 +251,14 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(elapsed.Seconds())
+		safePath := sanitizeLogValue(r.URL.Path)
 		attrs := []any{
-			"request_id", id, "method", r.Method, "path", r.URL.Path,
+			"request_id", id, "method", r.Method, "path", safePath,
 			"status", rec.code, "duration_ms", elapsed.Milliseconds(),
 			"token_id", security.AuthenticatedTokenID(r.Context()),
 		}
 		if r.URL.Path != "/v1/telemetry/pageview" {
-			attrs = append(attrs, "remote", r.RemoteAddr)
+			attrs = append(attrs, "remote", sanitizeLogValue(r.RemoteAddr))
 		}
 		log.Info("http request", attrs...)
 	})
@@ -262,7 +271,7 @@ func recoverer(log *slog.Logger, next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler { //nolint:errorlint // sentinel compared by identity per net/http docs
 					panic(v)
 				}
-				log.Error("panic in handler", "panic", v, "path", r.URL.Path)
+				log.Error("panic in handler", "panic", v, "path", sanitizeLogValue(r.URL.Path))
 				httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "internal error")
 			}
 		}()
