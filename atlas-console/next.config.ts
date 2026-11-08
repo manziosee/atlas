@@ -18,7 +18,6 @@ function commit() {
 // static host. In development, /demo-api is proxied to the public demo
 // cluster the same way netlify.toml does in production.
 const demoOrigin = process.env.ATLAS_DEMO_ORIGIN || "https://atlas-edge.fly.dev";
-const analyticsOrigin = (process.env.ATLAS_ANALYTICS_ORIGIN || "http://127.0.0.1:8080").replace(/\/+$/, "");
 const isDev = process.env.NODE_ENV !== "production";
 
 const config: NextConfig = {
@@ -36,10 +35,7 @@ const config: NextConfig = {
   agentRules: false,
   ...(isDev && {
     async rewrites() {
-      return [
-        { source: "/demo-api/:path*", destination: `${demoOrigin}/:path*` },
-        { source: "/analytics-api/:path*", destination: `${analyticsOrigin}/:path*` },
-      ];
+      return [{ source: "/demo-api/:path*", destination: `${demoOrigin}/:path*` }];
     },
   }),
 };

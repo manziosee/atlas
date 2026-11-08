@@ -104,6 +104,9 @@ type Config struct {
 	// AnalyticsEnabled opts this node into unauthenticated, rate-limited
 	// page-view collection. Admin analytics remain available when disabled.
 	AnalyticsEnabled bool
+	// TelemetryKey (ATLAS_TELEMETRY_KEY) must accompany telemetry events
+	// when set; only then are countries supplied by the site trusted.
+	TelemetryKey string
 	// Location is this node's "lat,lon" for maps (ATLAS_LOCATION); nil when unset.
 	Location            *[2]float64
 	HealthCheckInterval time.Duration
@@ -192,6 +195,7 @@ func Load(lookup LookupFunc) (*Config, error) {
 		APITokens:           p.list("ATLAS_API_TOKENS"),
 		APICredentials:      p.credentials("ATLAS_API_CREDENTIALS"),
 		AnalyticsEnabled:    p.bool("ATLAS_ANALYTICS_ENABLED", false),
+		TelemetryKey:        p.str("ATLAS_TELEMETRY_KEY", ""),
 		RateLimitRPS:        p.float("ATLAS_RATE_LIMIT_RPS", 20),
 		RateLimitBurst:      p.int("ATLAS_RATE_LIMIT_BURST", 40),
 		HealthCheckInterval: p.duration("ATLAS_HEALTH_CHECK_INTERVAL", 5*time.Second),
@@ -267,7 +271,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
 	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
-	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {}, "ATLAS_CORS_ORIGINS": {}, "ATLAS_CONSOLE_URL": {}, "ATLAS_ANALYTICS_ENABLED": {}, "ATLAS_LOCATION": {},
+	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {}, "ATLAS_CORS_ORIGINS": {}, "ATLAS_CONSOLE_URL": {}, "ATLAS_ANALYTICS_ENABLED": {}, "ATLAS_TELEMETRY_KEY": {}, "ATLAS_LOCATION": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {},
 	"ATLAS_ROUTING_STALE_POLICY": {}, "ATLAS_DEV": {}, "ATLAS_HISTORY_RETENTION": {}, "ATLAS_ROUTING_LATENCY": {}, "ATLAS_ROUTING_LATENCY_TOLERANCE": {}, "ATLAS_LOG_LEVEL": {}, "ATLAS_LOG_FORMAT": {},
 }
@@ -333,6 +337,9 @@ func (c *Config) Validate() error {
 	}
 	if c.NodeID == "" {
 		add("ATLAS_NODE_ID must not be empty")
+	}
+	if c.TelemetryKey != "" && len(c.TelemetryKey) < MinTokenLength {
+		add("ATLAS_TELEMETRY_KEY must be at least %d characters", MinTokenLength)
 	}
 	if c.DatabasePath == "" {
 		add("ATLAS_DB_PATH must not be empty")

@@ -61,24 +61,6 @@ describe("AtlasClient", () => {
     expect(calls[0].init.body).toBe('{"draining":true}');
   });
 
-  it("loads admin analytics for the selected range", async () => {
-    const calls = mockFetch(() => json(200, {
-      days: 7,
-      node_id: "n1",
-      nodes_included: 1,
-      node_errors: [],
-      daily: [{ date: "2026-11-07", page_views: 12, unique_visitors: 5 }],
-      pages: [{ page: "/", page_views: 12 }],
-      api_requests_since_start: 20,
-      api_errors_since_start: 1,
-      api_requests_by_route: [{ route: "GET /v1/node", count: 10, errors: 0 }],
-    }));
-    const report = await new AtlasClient("http://n", "t").analytics(7);
-    expect(report.daily[0].unique_visitors).toBe(5);
-    expect(calls[0].url).toBe("http://n/v1/admin/analytics?days=7");
-    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer t");
-  });
-
   it("streams events, reporting ids and resets", async () => {
     const body = 'id: 4\ndata: {"id":"4","type":"join","kind":"member","at":"2026-01-01T00:00:00Z"}\n\nevent: reset\ndata: {"type":"reset"}\n\n';
     const calls = mockFetch(() => new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }));

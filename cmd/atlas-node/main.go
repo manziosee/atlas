@@ -122,6 +122,9 @@ func run() error {
 	registry.SetHistoryEnabled(cfg.HistoryRetention > 0)
 	wg.Go(func() { pruneHistory(ctx, registry, cfg.HistoryRetention, log) })
 	wg.Go(func() { pruneAnalytics(ctx, registry, log) })
+	if cfg.AnalyticsEnabled && cfg.TelemetryKey == "" && cfg.Env == config.EnvProduction {
+		log.Warn("telemetry is enabled without ATLAS_TELEMETRY_KEY: anyone can submit events and countries are ignored")
+	}
 	// --- HTTP API ------------------------------------------------------
 	limiter := security.NewRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies...)
 	wg.Go(func() { limiter.Run(ctx) })
@@ -138,6 +141,7 @@ func run() error {
 		Cluster:          ml,
 		Registry:         registry,
 		AnalyticsEnabled: cfg.AnalyticsEnabled,
+		TelemetryKey:     cfg.TelemetryKey,
 		Auth:             auth,
 		RateLimiter:      limiter,
 		Log:              log.With("component", "api"),

@@ -103,11 +103,7 @@ func (d Deps) clusterTopology(ctx context.Context) ([]ClusterNode, bool) {
 func (d Deps) peerTopology(peer peerGETResult) ClusterNode {
 	result := ClusterNode{ID: peer.member.ID}
 	if peer.err != nil {
-		if peer.member.APIAddr == "" && (peer.member.State == membership.StateAlive || peer.member.State == membership.StateSuspect) {
-			result.Error = "node does not advertise an API address (older version)"
-		} else {
-			result.Error = peer.err.Error()
-		}
+		result.Error = peer.err.Error()
 		return result
 	}
 	if peer.status != http.StatusOK {
@@ -115,7 +111,7 @@ func (d Deps) peerTopology(peer peerGETResult) ClusterNode {
 		if json.Unmarshal(peer.body, &body) == nil && body.Code == httperr.CodeRouteNotFound {
 			result.Error = "node runs a version without the topology API"
 		} else {
-			result.Error = "node answered " + http.StatusText(peer.status)
+			result.Error = "node answered " + peer.statusLine
 		}
 		return result
 	}

@@ -1,6 +1,6 @@
 // Package api exposes the node's HTTP control plane. api/v1/openapi.yaml is
 // the full reference; /v1 routes require a bearer token except for the
-// privacy-limited public page-view ingestion endpoint.
+// opt-in, privacy-limited telemetry ingestion endpoint.
 //
 //	GET    /healthz, /readyz                 liveness and readiness (public)
 //	GET    /v1/node, /v1/members             this node and its cluster view
@@ -16,7 +16,7 @@
 //	GET    /v1/history                       recent changes across services
 //	GET    /v1/lookup/{name}                 routed instance selection
 //	GET    /v1/events                        membership and registry event stream
-//	POST   /v1/telemetry/pageview             anonymous hosted-console page view
+//	POST   /v1/telemetry/event               anonymous hosted-console usage event
 //	*      /v1/admin/...                     admin operations (admin scope)
 package api
 
@@ -27,7 +27,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/manziosee/atlas/internal/events"
@@ -53,11 +52,15 @@ type Deps struct {
 	Cluster          Cluster
 	Registry         ServiceRegistry
 	AnalyticsEnabled bool
-	Selector         *routing.Selector
-	Auth             *security.TokenAuthenticator
-	RateLimiter      *security.RateLimiter
-	Log              *slog.Logger
-	Ready            func() bool
+	// TelemetryKey, when set, must accompany telemetry events in the
+	// X-Atlas-Telemetry-Key header. Only then are client-supplied countries
+	// trusted, because they come from the site's own edge function.
+	TelemetryKey string
+	Selector     *routing.Selector
+	Auth         *security.TokenAuthenticator
+	RateLimiter  *security.RateLimiter
+	Log          *slog.Logger
+	Ready        func() bool
 	// Events feeds GET /v1/events and the gRPC Watch stream.
 	Events *events.Broker
 	// Replay returns a Fly-Replay header value that routes a request to the
@@ -144,7 +147,7 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/admin/analytics", d.adminAnalytics)
 	v1.HandleFunc("POST /v1/admin/backup", d.backup)
 	v1.HandleFunc("DELETE /v1/admin/nodes/{id}", d.evictNode)
-	mux.HandleFunc("POST /v1/telemetry/pageview", d.recordPageView)
+	mux.HandleFunc("POST "+telemetryPath, d.recordTelemetry)
 	mux.Handle("/v1/", d.Auth.Middleware(originMiddleware(jsonFallback(v1))))
 
 	h := corsMiddleware(d.CORSOrigins, jsonFallback(mux))
@@ -226,13 +229,6 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// sanitizeLogValue removes line breaks to prevent log-forging via untrusted input.
-func sanitizeLogValue(v string) string {
-	v = strings.ReplaceAll(v, "\n", "")
-	v = strings.ReplaceAll(v, "\r", "")
-	return v
-}
-
 // observe adds a request ID, structured access logs and metrics.
 func observe(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,15 +248,15 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(elapsed.Seconds())
-		attrs := []any{
-			"request_id", id, "method", r.Method, "route", route,
-			"status", rec.code, "duration_ms", elapsed.Milliseconds(),
-			"token_id", security.AuthenticatedTokenID(r.Context()),
+		if r.URL.Path == telemetryPath {
+			// Anonymous analytics: never log the client's address. The
+			// request is finished, so clearing it affects nothing else.
+			r.RemoteAddr = ""
 		}
-		if r.URL.Path != "/v1/telemetry/pageview" {
-			attrs = append(attrs, "remote", sanitizeLogValue(r.RemoteAddr))
-		}
-		log.Info("http request", attrs...)
+		log.Info("http request",
+			"request_id", id, "method", r.Method, "path", r.URL.Path,
+			"status", rec.code, "duration_ms", elapsed.Milliseconds(), "remote", r.RemoteAddr,
+			"token_id", security.AuthenticatedTokenID(r.Context()))
 	})
 }
 
@@ -271,7 +267,7 @@ func recoverer(log *slog.Logger, next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler { //nolint:errorlint // sentinel compared by identity per net/http docs
 					panic(v)
 				}
-				log.Error("panic in handler", "panic", v, "route", r.Pattern)
+				log.Error("panic in handler", "panic", v, "path", r.URL.Path)
 				httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "internal error")
 			}
 		}()

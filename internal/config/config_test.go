@@ -61,6 +61,19 @@ func TestLoadAnalyticsOptIn(t *testing.T) {
 	}
 }
 
+func TestLoadTelemetryKey(t *testing.T) {
+	values := base()
+	values["ATLAS_TELEMETRY_KEY"] = strings.Repeat("k", 32)
+	cfg, err := Load(env(values))
+	if err != nil || cfg.TelemetryKey != strings.Repeat("k", 32) {
+		t.Fatalf("telemetry key = %q, err = %v", cfg.TelemetryKey, err)
+	}
+	values["ATLAS_TELEMETRY_KEY"] = "short"
+	if _, err := Load(env(values)); err == nil || !strings.Contains(err.Error(), "ATLAS_TELEMETRY_KEY") {
+		t.Fatalf("short telemetry key accepted: %v", err)
+	}
+}
+
 func TestPprofListenerMustUseLoopback(t *testing.T) {
 	for _, address := range []string{"0.0.0.0:6060", "192.168.1.10:6060", "localhost:6060", "127.0.0.1:0", "127.0.0.1:65536"} {
 		values := base()

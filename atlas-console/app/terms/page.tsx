@@ -19,12 +19,12 @@ const headings = [
 
 export default function TermsPage() {
   return (
-    <ProsePage eyebrow="Terms" title="Terms of use" intro={<>Last updated 7 November 2026. Plain language first; these terms cover this website, the hosted console and the public demo cluster.</>} headings={headings}>
+    <ProsePage eyebrow="Terms" title="Terms of use" intro={<>Last updated 8 November 2026. Plain language first; these terms cover this website, the hosted console and the public demo cluster.</>} headings={headings}>
       <div className="prose mt-8">
         <h2 id="summary">Summary</h2>
         <ul>
           <li>Atlas is free, open-source software under the Apache License 2.0.</li>
-          <li>This website has no accounts or third-party trackers. It records privacy-limited page views and anonymous daily unique-browser counts.</li>
+          <li>This website has no user accounts or third-party trackers. It records anonymous usage: page views, daily unique browsers, country, and console connections.</li>
           <li>The console sends your token only to the Atlas node you connect to, from your own browser.</li>
           <li>The demo is public, read-only and may be reset or taken down at any time.</li>
           <li>Everything is provided as is, without warranty.</li>
@@ -42,8 +42,8 @@ export default function TermsPage() {
 
         <h2 id="website">This website and the console</h2>
         <p>
-          This site is a static website. The console runs in your browser: when you connect to a node, your browser talks to that node directly. A separate
-          first-party endpoint receives only anonymous page-view events for this site; it never receives your token or your cluster&apos;s data.
+          This site is a static website. The console runs in your browser: when you connect to a node, your browser talks to that node directly. A first-party
+          endpoint receives only the anonymous usage events described below; it never receives your token or your cluster&apos;s data.
         </p>
         <p>
           You are responsible for the nodes you connect to and the tokens you use. Only connect to nodes you&apos;re allowed to access, and treat API
@@ -60,12 +60,13 @@ export default function TermsPage() {
         <h2 id="privacy">Your data and privacy</h2>
         <ul>
           <li>
-            <strong>Anonymous site analytics.</strong> The site sets no cookies and loads no third-party trackers or scripts. To count daily unique browsers,
-            it stores a random identifier in your browser&apos;s local storage. The server hashes that ID together with the UTC day, discards the raw ID, and
-            retains daily page totals and hashes for up to 90 days. Page paths are normalized; query strings, names, IP addresses and device fingerprints
-            are not stored in the analytics database. Unique-browser counts are approximate (about 3% relative error), deduplicated across reachable
-            nodes, and capped at 10,000 stored visitors per node per day. At most 256 page paths per node per day are retained; additional paths are
-            grouped as &quot;/other&quot;. You can remove the identifier by clearing this site&apos;s local storage.
+            <strong>Anonymous site analytics.</strong> The site sets no cookies and loads no third-party trackers or scripts. To count daily unique
+            browsers, it stores a random identifier in your browser&apos;s local storage. The server hashes that ID together with the UTC day and discards
+            the raw ID, so a browser can&apos;t be followed from one day to the next. We record which section of the site was viewed (without query strings
+            or anything after the first path segment), your country as reported by our hosting provider&apos;s edge network (never your IP address or
+            city), and, when you connect the console to your own node, that a connection happened and the node&apos;s version, never its address, data or
+            token. Aggregates and day-scoped hashes are kept for up to 90 days, with daily caps. Counts across servers are approximate. You can remove the
+            identifier at any time by clearing this site&apos;s local storage.
           </li>
           <li>
             <strong>Tokens.</strong> A token you enter is held in your browser&apos;s memory. If you tick &quot;Keep me connected&quot;, it&apos;s stored

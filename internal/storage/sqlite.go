@@ -259,7 +259,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 6
+const schemaVersion = 5
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -316,10 +316,10 @@ CREATE TABLE IF NOT EXISTS analytics_page_views (
 CREATE TABLE IF NOT EXISTS analytics_visitors (
   day TEXT NOT NULL,
   visitor_hash TEXT NOT NULL,
+  country TEXT NOT NULL DEFAULT '',
+  connected INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(day, visitor_hash)
 );
-`,
-	6: `
 CREATE TABLE IF NOT EXISTS analytics_visitor_counts (
   day TEXT PRIMARY KEY,
   visitors INTEGER NOT NULL CHECK (visitors >= 0)
@@ -327,18 +327,19 @@ CREATE TABLE IF NOT EXISTS analytics_visitor_counts (
 CREATE TABLE IF NOT EXISTS analytics_visitor_caps (
   day TEXT PRIMARY KEY
 );
-INSERT OR IGNORE INTO analytics_visitor_caps(day)
-SELECT day FROM analytics_visitors GROUP BY day HAVING COUNT(*) > 10000;
-DELETE FROM analytics_visitors
-WHERE (day, visitor_hash) IN (
-  SELECT day, visitor_hash FROM (
-    SELECT day, visitor_hash,
-      ROW_NUMBER() OVER (PARTITION BY day ORDER BY visitor_hash) AS row_num
-    FROM analytics_visitors
-  ) WHERE row_num > 10000
+CREATE TABLE IF NOT EXISTS analytics_countries (
+  day TEXT NOT NULL,
+  country TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0 CHECK (views >= 0),
+  PRIMARY KEY(day, country)
 );
-INSERT INTO analytics_visitor_counts(day, visitors)
-SELECT day, COUNT(*) FROM analytics_visitors GROUP BY day;
+CREATE TABLE IF NOT EXISTS analytics_connections (
+  day TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  version TEXT NOT NULL,
+  connections INTEGER NOT NULL DEFAULT 0 CHECK (connections >= 0),
+  PRIMARY KEY(day, kind, version)
+);
 `,
 }
 
