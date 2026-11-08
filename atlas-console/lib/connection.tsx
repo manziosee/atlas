@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AtlasClient, type NodeInfo, type Scope } from "./api";
 import { DEMO_TOKEN, DEMO_URL } from "./demo";
+import { track } from "./telemetry";
 
 export interface Connection {
   mode: "node" | "demo";
@@ -43,6 +44,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const { info, scopes } = mode === "demo" ? { info: await client.node(), scopes: ["read"] as Scope[] } : await client.detectScopes();
     const next: Connection = { mode, url: client.base, token, scopes, info };
     setConn(next);
+    // Count how many systems use Atlas: the node's version only, never its address.
+    track({ type: "connect", kind: mode, version: info.version });
     save(remember || mode === "demo" ? next : null);
     return next;
   }, []);

@@ -116,29 +116,6 @@ export interface Credential {
   current: boolean;
 }
 
-export interface AnalyticsDay {
-  date: string;
-  page_views: number;
-  unique_visitors: number;
-}
-
-export interface AnalyticsPage {
-  page: string;
-  page_views: number;
-}
-
-export interface AdminAnalytics {
-  days: number;
-  node_id: string;
-  nodes_included: number;
-  node_errors: { node_id: string; error: string }[];
-  daily: AnalyticsDay[];
-  pages: AnalyticsPage[];
-  api_requests_since_start: number;
-  api_errors_since_start: number;
-  api_requests_by_route: { route: string; count: number; errors: number }[];
-}
-
 export interface LookupOptions {
   region?: string;
   key?: string;
@@ -324,11 +301,6 @@ export class AtlasClient {
 
   async credentials(): Promise<Credential[]> {
     return (await this.json<{ credentials: Credential[] }>("GET", "/v1/admin/credentials")).credentials ?? [];
-  }
-
-  analytics(days = 30) {
-    const query = new URLSearchParams({ days: String(days) });
-    return this.json<AdminAnalytics>("GET", "/v1/admin/analytics", { query });
   }
 
   async backup(): Promise<Blob> {

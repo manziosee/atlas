@@ -8,10 +8,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/manziosee/atlas/internal/httperr"
+	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/storage"
 )
@@ -27,6 +31,97 @@ import (
 const ForwardedByHeader = "X-Atlas-Forwarded-By"
 
 const maxForwardResponse = 1 << 20
+
+// peerGETResult is one peer's answer to fanOutPeerGET. err means no usable
+// HTTP answer; otherwise status and statusLine ("404 Not Found") describe it.
+type peerGETResult struct {
+	member     membership.Member
+	body       []byte
+	status     int
+	statusLine string
+	err        error
+}
+
+func (d Deps) fanOutPeerGET(ctx context.Context, path func(membership.Member) string) ([]peerGETResult, bool) {
+	self := d.Cluster.LocalNode()
+	members := make([]membership.Member, 0)
+	for _, member := range d.Cluster.Members() {
+		if member.ID != self.ID {
+			members = append(members, member)
+		}
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
+
+	results := make([]peerGETResult, len(members))
+	queryIndexes := make([]int, 0, len(members))
+	for i, member := range members {
+		results[i].member = member
+		if member.State == membership.StateAlive || member.State == membership.StateSuspect {
+			queryIndexes = append(queryIndexes, i)
+		} else {
+			results[i].err = fmt.Errorf("node is %s", member.State)
+		}
+	}
+
+	truncated := len(queryIndexes) > maxTopologyFanout
+	if truncated {
+		for _, i := range queryIndexes[maxTopologyFanout:] {
+			results[i].err = fmt.Errorf("not queried: cluster exceeds the peer fan-out limit")
+		}
+		queryIndexes = queryIndexes[:maxTopologyFanout]
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+	for _, index := range queryIndexes {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[index] = d.peerGET(ctx, results[index].member, path(results[index].member))
+		})
+	}
+	wg.Wait()
+	return results, truncated
+}
+
+// peerGET sends GET path to member's API with the caller's own credential.
+func (d Deps) peerGET(ctx context.Context, member membership.Member, path string) peerGETResult {
+	result := peerGETResult{member: member}
+	result.body, result.status, result.statusLine, result.err = d.doPeerGET(ctx, member, path)
+	return result
+}
+
+func (d Deps) doPeerGET(ctx context.Context, member membership.Member, path string) ([]byte, int, string, error) {
+	if d.Forwarder == nil {
+		return nil, 0, "", fmt.Errorf("peer requests are disabled on this node")
+	}
+	if member.APIAddr == "" {
+		return nil, 0, "", fmt.Errorf("node does not advertise an API address (older version)")
+	}
+	token := security.BearerToken(ctx)
+	if token == "" {
+		return nil, 0, "", fmt.Errorf("no credential to forward")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	target := strings.TrimRight(member.APIAddr, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil) // #nosec G704 -- member.APIAddr is sourced from authenticated cluster gossip.
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("prepare peer request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(ForwardedByHeader, d.Cluster.LocalNode().ID)
+	resp, err := d.Forwarder.Do(req) // #nosec G704 -- member.APIAddr is sourced from authenticated cluster gossip.
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("unreachable: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxForwardResponse))
+	if err != nil {
+		return nil, resp.StatusCode, resp.Status, fmt.Errorf("read peer response: %w", err)
+	}
+	return raw, resp.StatusCode, resp.Status, nil
+}
 
 type forwardedKey struct{}
 

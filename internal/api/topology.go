@@ -3,16 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/manziosee/atlas/internal/httperr"
 	"github.com/manziosee/atlas/internal/membership"
-	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/version"
 )
 
@@ -96,88 +92,31 @@ func (d Deps) clusterTopology(ctx context.Context) ([]ClusterNode, bool) {
 	self := d.Cluster.LocalNode()
 	local := d.localTopology()
 	nodes := []ClusterNode{{ID: self.ID, View: &local}}
-	var targets []membership.Member
-	for _, member := range d.Cluster.Members() {
-		if member.ID == self.ID {
-			continue
-		}
-		if member.State != membership.StateAlive && member.State != membership.StateSuspect {
-			nodes = append(nodes, ClusterNode{ID: member.ID, Error: "node is " + member.State.String()})
-			continue
-		}
-		targets = append(targets, member)
+	results, truncated := d.fanOutPeerGET(ctx, func(membership.Member) string { return "/v1/topology" })
+	for _, result := range results {
+		nodes = append(nodes, d.peerTopology(result))
 	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
-	truncated := len(targets) > maxTopologyFanout
-	if truncated {
-		for _, member := range targets[maxTopologyFanout:] {
-			nodes = append(nodes, ClusterNode{ID: member.ID, Error: "not queried: cluster larger than the fan-out limit"})
-		}
-		targets = targets[:maxTopologyFanout]
-	}
-
-	results := make([]ClusterNode, len(targets))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 16)
-	for i, member := range targets {
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[i] = d.peerTopology(ctx, member)
-		})
-	}
-	wg.Wait()
-	nodes = append(nodes, results...)
 	sort.SliceStable(nodes[1:], func(i, j int) bool { return nodes[1+i].ID < nodes[1+j].ID })
 	return nodes, truncated
 }
 
-func (d Deps) peerTopology(ctx context.Context, member membership.Member) ClusterNode {
-	result := ClusterNode{ID: member.ID}
-	token := security.BearerToken(ctx)
-	switch {
-	case d.Forwarder == nil:
-		result.Error = "peer requests are disabled on this node"
-		return result
-	case member.APIAddr == "":
-		result.Error = "node does not advertise an API address (older version)"
-		return result
-	case token == "":
-		result.Error = "no credential to forward"
+func (d Deps) peerTopology(peer peerGETResult) ClusterNode {
+	result := ClusterNode{ID: peer.member.ID}
+	if peer.err != nil {
+		result.Error = peer.err.Error()
 		return result
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	// The target is a cluster member's API address from authenticated gossip.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(member.APIAddr, "/")+"/v1/topology", nil) // #nosec G704 -- see above.
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(ForwardedByHeader, d.Cluster.LocalNode().ID)
-	resp, err := d.Forwarder.Do(req) // #nosec G704 -- the target is a cluster member's gossiped API address.
-	if err != nil {
-		result.Error = "unreachable: " + err.Error()
-		return result
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxForwardResponse))
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	if resp.StatusCode != http.StatusOK {
+	if peer.status != http.StatusOK {
 		var body httperr.Body
-		if json.Unmarshal(raw, &body) == nil && body.Code == httperr.CodeRouteNotFound {
+		if json.Unmarshal(peer.body, &body) == nil && body.Code == httperr.CodeRouteNotFound {
 			result.Error = "node runs a version without the topology API"
 		} else {
-			result.Error = "node answered " + resp.Status
+			result.Error = "node answered " + peer.statusLine
 		}
 		return result
 	}
 	var view NodeTopology
-	if err := json.Unmarshal(raw, &view); err != nil {
+	if err := json.Unmarshal(peer.body, &view); err != nil {
 		result.Error = "invalid answer: " + err.Error()
 		return result
 	}

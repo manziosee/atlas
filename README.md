@@ -349,8 +349,6 @@ extra. If the owner is alive but not answering, the response is
 | `GET /v1/history?name=` | Recent changes across services, or for one service name. |
 | `GET /v1/node`, `GET /v1/members` | This node, and the cluster as this node sees it. |
 | `GET /v1/events` | Membership and registry events as Server-Sent Events, resumable with `Last-Event-ID`. |
-| `POST /v1/telemetry/pageview` | Public, privacy-limited page-view ingestion for the hosted console. |
-| `GET /v1/admin/analytics` | Usage totals and per-node API request counters (admin scope). |
 | `GET /v1/admin/credentials` | Configured credentials by fingerprint, scopes and expiry, never the secrets. |
 | `POST /v1/admin/backup` | Download a consistent SQLite snapshot of this node's registry. |
 | `DELETE /v1/admin/nodes/{id}` | Evict a failed node and delete its services. |
@@ -756,7 +754,6 @@ your token. It replaces the dashboard nodes used to embed.
 | **Activity** | Live membership and service events with filters, pause and clear, and reconnect/disconnected states; plus the recorded history across services | read |
 | **Lookup tester** | Runs `/v1/lookup` with region, tags, key and routing overrides, shows the chosen instance and why each candidate was picked or skipped, with the equivalent `curl` and `dig` | read |
 | **Admin** | Credential list (fingerprints, scopes, expiry; never secrets), registry backup download, and evicting failed nodes | admin |
-| **Usage & reliability** | Daily unique browsers and page views, API request/error totals, live nodes, service health and failing instances | admin |
 | **Cluster map** | Graph, world map and matrix of the probe latency every node measures to every peer (`/v1/topology?scope=cluster`) | read |
 | **Integrations** | Kubernetes clusters and Docker hosts feeding this cluster, with setup for Helm, the controller, the Docker agent and Terraform | read |
 | **Docs, API, Security** | The site also serves the documentation, an API reference built from `openapi.yaml`, the security policy, About, Terms and Contributing, all rendered from this repository at build time | none |
@@ -791,11 +788,10 @@ block plain `http://` for other hosts, so enable TLS on remote nodes.
 
 **Deploy to Netlify.** Import the repository in Netlify. The root
 [`netlify.toml`](netlify.toml) builds `atlas-console/` and publishes `out/`.
-It proxies `/demo-api/*` to the demo cluster and `/analytics-api/*` to the
-hosted API for privacy-limited page-view ingestion, and sets security headers.
-The admin analytics endpoint still requires an admin-scoped API token. Any
-static host works the same way; configure the corresponding `/analytics-api/`
-proxy to the Atlas API, and proxy `/demo-api/` if you want the demo button.
+It proxies `/demo-api/*` to the demo cluster and sets security headers, so
+no settings are needed. Any static host works the same way. Serve `out/`, and
+proxy `/demo-api/` to a demo node if you want the demo button. Alternatively,
+set `NEXT_PUBLIC_ATLAS_DEMO_URL` to a node that allows your origin.
 
 ## Walkthrough: a service from registration to failover
 
@@ -932,6 +928,8 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_ROUTING_STALE_POLICY` | `prefer-live` | How lookups and DNS treat instances whose owning node isn't alive: `include`, `prefer-live` or `exclude`. |
 | `ATLAS_ROUTING_LATENCY` / `_TOLERANCE` | `nearest` / `0` | Prefer the nearest measured nodes (`nearest`) or ignore latency (`off`); the tolerance makes nodes this close to the nearest count as equal. |
 | `ATLAS_HISTORY_RETENTION` | `168h` | How long service change history is kept; `0` turns history off. |
+| `ATLAS_ANALYTICS_ENABLED` | `false` | Accept anonymous usage events from a hosted console at `POST /v1/telemetry/event`. Visitor IDs are stored only as day-scoped hashes; data is capped per day and kept 90 days. |
+| `ATLAS_TELEMETRY_KEY` 🔒 | — | Shared key (32+ characters) that telemetry events must carry. Without it, anyone can submit events and countries are ignored. |
 | `ATLAS_TLS_CLIENT_AUTH` | `false` | Require client certificates (mTLS). |
 | `ATLAS_PROBE_INTERVAL` / `_TIMEOUT` | `1s` / `500ms` | Failure-detector timing. |
 | `ATLAS_SUSPICION_TIMEOUT` | `5s` | Time a suspect has to refute. |

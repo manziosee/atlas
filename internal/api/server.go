@@ -1,6 +1,6 @@
 // Package api exposes the node's HTTP control plane. api/v1/openapi.yaml is
 // the full reference; /v1 routes require a bearer token except for the
-// privacy-limited public page-view ingestion endpoint.
+// opt-in, privacy-limited telemetry ingestion endpoint.
 //
 //	GET    /healthz, /readyz                 liveness and readiness (public)
 //	GET    /v1/node, /v1/members             this node and its cluster view
@@ -16,7 +16,7 @@
 //	GET    /v1/history                       recent changes across services
 //	GET    /v1/lookup/{name}                 routed instance selection
 //	GET    /v1/events                        membership and registry event stream
-//	POST   /v1/telemetry/pageview             anonymous hosted-console page view
+//	POST   /v1/telemetry/event               anonymous hosted-console usage event
 //	*      /v1/admin/...                     admin operations (admin scope)
 package api
 
@@ -49,13 +49,18 @@ type Cluster interface {
 
 // Deps wires the handler to the rest of the node.
 type Deps struct {
-	Cluster     Cluster
-	Registry    ServiceRegistry
-	Selector    *routing.Selector
-	Auth        *security.TokenAuthenticator
-	RateLimiter *security.RateLimiter
-	Log         *slog.Logger
-	Ready       func() bool
+	Cluster          Cluster
+	Registry         ServiceRegistry
+	AnalyticsEnabled bool
+	// TelemetryKey, when set, must accompany telemetry events in the
+	// X-Atlas-Telemetry-Key header. Only then are client-supplied countries
+	// trusted, because they come from the site's own edge function.
+	TelemetryKey string
+	Selector     *routing.Selector
+	Auth         *security.TokenAuthenticator
+	RateLimiter  *security.RateLimiter
+	Log          *slog.Logger
+	Ready        func() bool
 	// Events feeds GET /v1/events and the gRPC Watch stream.
 	Events *events.Broker
 	// Replay returns a Fly-Replay header value that routes a request to the
@@ -142,7 +147,7 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/admin/analytics", d.adminAnalytics)
 	v1.HandleFunc("POST /v1/admin/backup", d.backup)
 	v1.HandleFunc("DELETE /v1/admin/nodes/{id}", d.evictNode)
-	mux.HandleFunc("POST /v1/telemetry/pageview", d.recordPageView)
+	mux.HandleFunc("POST "+telemetryPath, d.recordTelemetry)
 	mux.Handle("/v1/", d.Auth.Middleware(originMiddleware(jsonFallback(v1))))
 
 	h := corsMiddleware(d.CORSOrigins, jsonFallback(mux))
@@ -243,15 +248,15 @@ func observe(log *slog.Logger, next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
 		metrics.HTTPDuration.WithLabelValues(route).Observe(elapsed.Seconds())
-		attrs := []any{
+		if r.URL.Path == telemetryPath {
+			// Anonymous analytics: never log the client's address. The
+			// request is finished, so clearing it affects nothing else.
+			r.RemoteAddr = ""
+		}
+		log.Info("http request",
 			"request_id", id, "method", r.Method, "path", r.URL.Path,
-			"status", rec.code, "duration_ms", elapsed.Milliseconds(),
-			"token_id", security.AuthenticatedTokenID(r.Context()),
-		}
-		if r.URL.Path != "/v1/telemetry/pageview" {
-			attrs = append(attrs, "remote", r.RemoteAddr)
-		}
-		log.Info("http request", attrs...)
+			"status", rec.code, "duration_ms", elapsed.Milliseconds(), "remote", r.RemoteAddr,
+			"token_id", security.AuthenticatedTokenID(r.Context()))
 	})
 }
 

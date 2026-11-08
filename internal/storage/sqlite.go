@@ -316,7 +316,29 @@ CREATE TABLE IF NOT EXISTS analytics_page_views (
 CREATE TABLE IF NOT EXISTS analytics_visitors (
   day TEXT NOT NULL,
   visitor_hash TEXT NOT NULL,
+  country TEXT NOT NULL DEFAULT '',
+  connected INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(day, visitor_hash)
+);
+CREATE TABLE IF NOT EXISTS analytics_visitor_counts (
+  day TEXT PRIMARY KEY,
+  visitors INTEGER NOT NULL CHECK (visitors >= 0)
+);
+CREATE TABLE IF NOT EXISTS analytics_visitor_caps (
+  day TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS analytics_countries (
+  day TEXT NOT NULL,
+  country TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0 CHECK (views >= 0),
+  PRIMARY KEY(day, country)
+);
+CREATE TABLE IF NOT EXISTS analytics_connections (
+  day TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  version TEXT NOT NULL,
+  connections INTEGER NOT NULL DEFAULT 0 CHECK (connections >= 0),
+  PRIMARY KEY(day, kind, version)
 );
 `,
 }
