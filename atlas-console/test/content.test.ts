@@ -58,6 +58,10 @@ describe("API reference", () => {
     expect(find("DELETE", "/v1/admin/nodes/{id}")?.scope).toBe("admin");
     expect(find("PATCH", "/v1/services/{id}")?.params.map((p) => p.name)).toEqual(["id", "If-Match"]);
     expect(spec.errorCodes).toContain("insufficient_scope");
+    // Internal operations stay out of the public reference.
+    expect(spec.endpoints.some((e) => e.path === "/v1/admin/analytics" || e.path === "/v1/telemetry/event")).toBe(false);
+    expect(spec.schemas.some((s) => s.name === "UsageReport")).toBe(false);
+    expect(spec.tags).not.toContain("telemetry");
     expect(spec.schemas.find((s) => s.name === "Service")?.props.some((p) => p.name === "draining")).toBe(true);
   });
 });
