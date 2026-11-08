@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, Boxes, Globe2, KeyRound, Loader2, LogOut, RefreshCw, ShieldCheck, Star, Users } from "lucide-react";
+import { Activity, Boxes, Globe2, KeyRound, Loader2, LogOut, MapPin, RefreshCw, ShieldCheck, Star, Users } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { Field, Modal, Notice, Skeleton, StatusBadge } from "@/components/console/ui";
+import { UsageMap } from "./usage-map";
 import { cn, relative, timestamp } from "@/lib/format";
 
 // --- API -----------------------------------------------------------------------
@@ -31,6 +32,7 @@ interface Analytics {
   daily: Day[];
   pages: { page: string; page_views: number }[];
   countries: { country: string; page_views: number; visitors: number }[];
+  system_countries: { country: string; systems: number }[];
   versions: { version: string; connections: number }[];
   api_requests_since_start: number;
   api_errors_since_start: number;
@@ -199,7 +201,7 @@ function LoginForm({ onDone }: { onDone: (s: Session) => void }) {
     <Centered>
       <form onSubmit={submit} className="panel p-7">
         <Logo className="h-10 w-10" />
-        <h1 className="mt-5 text-xl font-semibold">Atlas operations</h1>
+        <h1 className="mt-5 text-xl font-semibold">Atlas admin</h1>
         <p className="mt-1 text-sm text-muted">Private. Sign in to continue.</p>
         <div className="mt-6 space-y-4">
           <Field label="Email">
@@ -276,6 +278,7 @@ function Dashboard({ session, onSession }: { session: Session; onSession: (s: Se
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState(false);
+  const [mapView, setMapView] = useState<"systems" | "visitors">("systems");
   const inflight = useRef<AbortController | null>(null);
 
   const load = useCallback(async (range: number) => {
@@ -344,7 +347,7 @@ function Dashboard({ session, onSession }: { session: Session; onSession: (s: Se
       <header className="glass sticky top-0 z-40 border-b border-line">
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4">
           <Logo className="h-7 w-7" />
-          <span className="font-semibold">Atlas operations</span>
+          <span className="font-semibold">Atlas admin</span>
           <span className="rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[0.68rem] text-warn">private</span>
           <div className="ml-auto flex items-center gap-2 text-xs">
             <label className="flex items-center gap-1.5 text-muted">
@@ -404,6 +407,58 @@ function Dashboard({ session, onSession }: { session: Session; onSession: (s: Se
               <Kpi label="Nodes alive" value={`${alive}/${data.members.length}`} tone={alive === data.members.length ? "ok" : "warn"} hint={data.node ? `${data.node.version} · ${data.node.node.region}` : undefined} />
               <Kpi label="Unhealthy services" value={n(data.services.unhealthy)} tone={data.services.unhealthy ? "bad" : "ok"} hint={`${n(data.services.total)} instances · ${n(data.services.names)} services`} />
             </div>
+
+            <Card
+              title="Where Atlas is used"
+              icon={MapPin}
+              aside={
+                <div role="tablist" aria-label="Map shows" className="flex gap-1 rounded-full border border-line p-1 text-xs">
+                  {(
+                    [
+                      ["systems", "Systems using Atlas"],
+                      ["visitors", "Site visitors"],
+                    ] as const
+                  ).map(([id, text]) => (
+                    <button key={id} role="tab" aria-selected={mapView === id} onClick={() => setMapView(id)} className={cn("rounded-full px-3 py-1", mapView === id ? "bg-lime/15 text-lime" : "text-muted hover:text-fg")}>
+                      {text}
+                    </button>
+                  ))}
+                </div>
+              }
+            >
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <UsageMap
+                  data={mapView === "systems" ? (a?.system_countries ?? []).map((c) => ({ country: c.country, value: c.systems })) : (a?.countries ?? []).map((c) => ({ country: c.country, value: c.visitors }))}
+                  color={mapView === "systems" ? "#b6f27a" : "#2fd3b5"}
+                  label={mapView === "systems" ? "system-days" : "browser-days"}
+                />
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-faint">{mapView === "systems" ? "Systems by country" : "Visitors by country"}</p>
+                  {(mapView === "systems" ? a?.system_countries.length : a?.countries.length) ? (
+                    <ul className="mt-3 max-h-[300px] space-y-2 overflow-y-auto pr-1 text-sm">
+                      {(mapView === "systems"
+                        ? (a?.system_countries ?? []).map((c) => ({ country: c.country, value: c.systems }))
+                        : (a?.countries ?? []).map((c) => ({ country: c.country, value: c.visitors }))
+                      ).map((c) => (
+                        <li key={c.country} className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 truncate">
+                            <span aria-hidden>{flag(c.country)}</span> {countryName(c.country)}
+                          </span>
+                          <span className="font-mono text-xs text-muted">{n(c.value)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 text-sm text-muted">{mapView === "systems" ? "No one has connected their own node yet." : "No visitors with a known country yet."}</p>
+                  )}
+                  <p className="mt-4 text-xs text-faint">
+                    {mapView === "systems"
+                      ? "A system is a browser that connected the console to its own Atlas node, counted once per day."
+                      : "Visitors are browsers, counted once per day."}
+                  </p>
+                </div>
+              </div>
+            </Card>
 
             <div className="grid gap-6 xl:grid-cols-3">
               <Card title="Traffic" icon={Activity} className="xl:col-span-2" aside={<span className="text-xs text-muted">bars: page views · line: unique visitors</span>}>

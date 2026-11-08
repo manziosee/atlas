@@ -620,6 +620,10 @@ components:
               country: { type: string }
               page_views: { type: integer }
               visitors: { type: integer, description: Browser-days }
+        system_countries:
+          type: array
+          description: Where systems using Atlas are, as system-days
+          items: { type: object, properties: { country: { type: string }, systems: { type: integer } } }
         versions:
           type: array
           items: { type: object, properties: { version: { type: string }, connections: { type: integer } } }

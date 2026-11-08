@@ -228,6 +228,9 @@ func TestAdminAnalyticsDeduplicatesAcrossNodes(t *testing.T) {
 	if day.PageViews != 3 || day.UniqueVisitors != 2 || day.Systems != 1 || day.NodeConnections != 2 {
 		t.Fatalf("day = %+v; want 3 views, 2 browsers, 1 system and 2 connections", day)
 	}
+	if fmt.Sprint(report.SystemCountries) != "[{RW 1}]" {
+		t.Fatalf("system countries = %+v, want the one system counted once", report.SystemCountries)
+	}
 	if fmt.Sprint(report.Countries) != "[{RW 3 2}]" || fmt.Sprint(report.Versions) != "[{v2 2}]" {
 		t.Fatalf("countries = %+v, versions = %+v", report.Countries, report.Versions)
 	}
