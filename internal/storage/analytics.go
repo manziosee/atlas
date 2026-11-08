@@ -85,6 +85,13 @@ type AnalyticsCountry struct {
 	Visitors  int64  `json:"visitors"`
 }
 
+// AnalyticsSystemCountry counts systems (browsers that connected a console to
+// their own node) per country, as system-days over the requested range.
+type AnalyticsSystemCountry struct {
+	Country string `json:"country"`
+	Systems int64  `json:"systems"`
+}
+
 // AnalyticsVersion counts console connections to nodes running a version.
 type AnalyticsVersion struct {
 	Version     string `json:"version"`
@@ -97,8 +104,10 @@ type Analytics struct {
 	Daily     []AnalyticsDay     `json:"daily"`
 	Pages     []AnalyticsPage    `json:"pages"`
 	Countries []AnalyticsCountry `json:"countries"`
-	Versions  []AnalyticsVersion `json:"versions"`
-	Sketches  *AnalyticsSketches `json:"sketches,omitempty"`
+	// SystemCountries says where the systems using Atlas are.
+	SystemCountries []AnalyticsSystemCountry `json:"system_countries"`
+	Versions        []AnalyticsVersion       `json:"versions"`
+	Sketches        *AnalyticsSketches       `json:"sketches,omitempty"`
 }
 
 // AnalyticsSketches are HyperLogLog sketches keyed by day or country.
@@ -106,6 +115,8 @@ type AnalyticsSketches struct {
 	Visitors  map[string][]byte `json:"visitors,omitempty"`
 	Systems   map[string][]byte `json:"systems,omitempty"`
 	Countries map[string][]byte `json:"countries,omitempty"`
+	// SystemCountries is keyed by country, over connected browsers only.
+	SystemCountries map[string][]byte `json:"system_countries,omitempty"`
 }
 
 // ValidateTelemetry checks an event before it is stored.
@@ -297,8 +308,9 @@ func (s *Store) Analytics(ctx context.Context, days int) (Analytics, error) {
 	from := today.AddDate(0, 0, -(days - 1))
 	fromDay := from.Format("2006-01-02")
 	result := Analytics{
-		Daily: make([]AnalyticsDay, days), Pages: []AnalyticsPage{}, Countries: []AnalyticsCountry{}, Versions: []AnalyticsVersion{},
-		Sketches: &AnalyticsSketches{Visitors: map[string][]byte{}, Systems: map[string][]byte{}, Countries: map[string][]byte{}},
+		Daily: make([]AnalyticsDay, days), Pages: []AnalyticsPage{}, Countries: []AnalyticsCountry{},
+		SystemCountries: []AnalyticsSystemCountry{}, Versions: []AnalyticsVersion{},
+		Sketches: &AnalyticsSketches{Visitors: map[string][]byte{}, Systems: map[string][]byte{}, Countries: map[string][]byte{}, SystemCountries: map[string][]byte{}},
 	}
 	index := make(map[string]int, days)
 	for i := range result.Daily {
@@ -322,6 +334,7 @@ func (s *Store) Analytics(ctx context.Context, days int) (Analytics, error) {
 		return Analytics{}, fmt.Errorf("storage: read analytics page views: %w", err)
 	}
 
+	systemCountries := map[string]int64{}
 	countries := map[string]*AnalyticsCountry{}
 	country := func(code string) *AnalyticsCountry {
 		if countries[code] == nil {
@@ -347,6 +360,12 @@ func (s *Store) Analytics(ctx context.Context, days int) (Analytics, error) {
 			result.Daily[i].Systems++
 			if err := addToSketch(result.Sketches.Systems, day, hash); err != nil {
 				return err
+			}
+			if code != "" {
+				systemCountries[code]++
+				if err := addToSketch(result.Sketches.SystemCountries, code, hash); err != nil {
+					return err
+				}
 			}
 		}
 		if code != "" {
@@ -389,6 +408,10 @@ func (s *Store) Analytics(ctx context.Context, days int) (Analytics, error) {
 		result.Countries = append(result.Countries, *c)
 	}
 	SortCountries(result.Countries)
+	for code, n := range systemCountries {
+		result.SystemCountries = append(result.SystemCountries, AnalyticsSystemCountry{Country: code, Systems: n})
+	}
+	SortSystemCountries(result.SystemCountries)
 
 	versions := map[string]int64{}
 	err = s.each(ctx, `SELECT day, kind, version, SUM(connections) FROM analytics_connections WHERE day >= ? GROUP BY day, kind, version`, []any{fromDay}, func(rows *sql.Rows) error {
@@ -454,6 +477,16 @@ func SortCountries(list []AnalyticsCountry) {
 		}
 		if list[i].Visitors != list[j].Visitors {
 			return list[i].Visitors > list[j].Visitors
+		}
+		return list[i].Country < list[j].Country
+	})
+}
+
+// SortSystemCountries orders countries by systems, then code.
+func SortSystemCountries(list []AnalyticsSystemCountry) {
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Systems != list[j].Systems {
+			return list[i].Systems > list[j].Systems
 		}
 		return list[i].Country < list[j].Country
 	})

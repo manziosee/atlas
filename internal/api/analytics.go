@@ -44,17 +44,18 @@ type apiRouteCount struct {
 }
 
 type adminAnalytics struct {
-	Days                  int                        `json:"days"`
-	NodeID                string                     `json:"node_id"`
-	NodesIncluded         int                        `json:"nodes_included"`
-	NodeErrors            []analyticsNodeError       `json:"node_errors"`
-	Daily                 []storage.AnalyticsDay     `json:"daily"`
-	Pages                 []storage.AnalyticsPage    `json:"pages"`
-	Countries             []storage.AnalyticsCountry `json:"countries"`
-	Versions              []storage.AnalyticsVersion `json:"versions"`
-	APIRequestsSinceStart uint64                     `json:"api_requests_since_start"`
-	APIErrorsSinceStart   uint64                     `json:"api_errors_since_start"`
-	APIRequestsByRoute    []apiRouteCount            `json:"api_requests_by_route"`
+	Days                  int                              `json:"days"`
+	NodeID                string                           `json:"node_id"`
+	NodesIncluded         int                              `json:"nodes_included"`
+	NodeErrors            []analyticsNodeError             `json:"node_errors"`
+	Daily                 []storage.AnalyticsDay           `json:"daily"`
+	Pages                 []storage.AnalyticsPage          `json:"pages"`
+	Countries             []storage.AnalyticsCountry       `json:"countries"`
+	SystemCountries       []storage.AnalyticsSystemCountry `json:"system_countries"`
+	Versions              []storage.AnalyticsVersion       `json:"versions"`
+	APIRequestsSinceStart uint64                           `json:"api_requests_since_start"`
+	APIErrorsSinceStart   uint64                           `json:"api_errors_since_start"`
+	APIRequestsByRoute    []apiRouteCount                  `json:"api_requests_by_route"`
 	// Sketches travel between nodes only; they are dropped before the
 	// report reaches a client.
 	Sketches *storage.AnalyticsSketches `json:"sketches,omitempty"`
@@ -164,7 +165,7 @@ func (d Deps) adminAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	report := adminAnalytics{
 		Days: days, NodeID: d.Cluster.LocalNode().ID, NodesIncluded: 1, NodeErrors: []analyticsNodeError{},
-		Daily: data.Daily, Pages: data.Pages, Countries: data.Countries, Versions: data.Versions,
+		Daily: data.Daily, Pages: data.Pages, Countries: data.Countries, SystemCountries: data.SystemCountries, Versions: data.Versions,
 		APIRequestsSinceStart: requests, APIErrorsSinceStart: errors, APIRequestsByRoute: byRoute,
 		Sketches: data.Sketches,
 	}
@@ -186,7 +187,7 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 	if local.Sketches == nil {
 		local.Sketches = &storage.AnalyticsSketches{}
 	}
-	for _, m := range []*map[string][]byte{&local.Sketches.Visitors, &local.Sketches.Systems, &local.Sketches.Countries} {
+	for _, m := range []*map[string][]byte{&local.Sketches.Visitors, &local.Sketches.Systems, &local.Sketches.Countries, &local.Sketches.SystemCountries} {
 		if *m == nil {
 			*m = map[string][]byte{}
 		}
@@ -202,6 +203,10 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 	countries := map[string]storage.AnalyticsCountry{}
 	for _, c := range local.Countries {
 		countries[c.Country] = c
+	}
+	systemCountries := map[string]int64{}
+	for _, c := range local.SystemCountries {
+		systemCountries[c.Country] = c.Systems
 	}
 	versions := map[string]int64{}
 	for _, v := range local.Versions {
@@ -231,10 +236,14 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 			continue
 		}
 		// Merge into copies first so a malformed peer changes nothing.
-		merged := storage.AnalyticsSketches{Visitors: clone(local.Sketches.Visitors), Systems: clone(local.Sketches.Systems), Countries: clone(local.Sketches.Countries)}
+		merged := storage.AnalyticsSketches{
+			Visitors: clone(local.Sketches.Visitors), Systems: clone(local.Sketches.Systems),
+			Countries: clone(local.Sketches.Countries), SystemCountries: clone(local.Sketches.SystemCountries),
+		}
 		if storage.MergeSketchMaps(merged.Visitors, peer.Sketches.Visitors) != nil ||
 			storage.MergeSketchMaps(merged.Systems, peer.Sketches.Systems) != nil ||
-			storage.MergeSketchMaps(merged.Countries, peer.Sketches.Countries) != nil {
+			storage.MergeSketchMaps(merged.Countries, peer.Sketches.Countries) != nil ||
+			storage.MergeSketchMaps(merged.SystemCountries, peer.Sketches.SystemCountries) != nil {
 			fail(id, "node returned an invalid visitor summary")
 			continue
 		}
@@ -291,6 +300,9 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 			entry.Visitors = estimate(local.Sketches.Countries, code, entry.Visitors)
 			countries[code] = entry
 		}
+		for code := range local.Sketches.SystemCountries {
+			systemCountries[code] = estimate(local.Sketches.SystemCountries, code, systemCountries[code])
+		}
 	}
 
 	local.Pages = local.Pages[:0]
@@ -311,6 +323,11 @@ func (d Deps) clusterAdminAnalytics(ctx context.Context, days int, local adminAn
 		local.Countries = append(local.Countries, c)
 	}
 	storage.SortCountries(local.Countries)
+	local.SystemCountries = local.SystemCountries[:0]
+	for code, n := range systemCountries {
+		local.SystemCountries = append(local.SystemCountries, storage.AnalyticsSystemCountry{Country: code, Systems: n})
+	}
+	storage.SortSystemCountries(local.SystemCountries)
 	local.Versions = local.Versions[:0]
 	for v, n := range versions {
 		local.Versions = append(local.Versions, storage.AnalyticsVersion{Version: v, Connections: n})

@@ -1,18 +1,16 @@
-# Operations area
+# Admin area
 
-A private dashboard for whoever runs the hosted site. It shows usage
-(visitors, page views, countries, systems connecting their own node, node
-versions), GitHub adoption, and the live health of the Atlas cluster
+The site owner's private dashboard at `/admin`. It shows usage (visitors,
+page views and countries), the systems using Atlas and where they are,
+node versions, GitHub adoption, and the live health of the Atlas cluster
 behind the site. It runs as Netlify Functions next to the static console.
 Netlify Blobs (store `atlas-ops`) holds the owner's password hash, login
 throttling and a short GitHub cache.
 
 ## How it is protected
 
-- The page is served only at `/<ATLAS_OPS_PATH>/`. That path lives in the
-  hosting environment, never in the repository or the built site.
-  `/ops` itself always returns 404. Without `ATLAS_OPS_PATH`, the area
-  doesn't exist.
+- `/admin` is not linked anywhere and is excluded from search engines;
+  everything behind it needs the owner's sign-in.
 - There is one owner account. The first sign-in uses
   `ATLAS_OPS_INITIAL_PASSWORD` and must set a new password before anything
   else. The new password is stored as a scrypt hash; changing it signs out
@@ -31,7 +29,6 @@ Set these as secret environment variables on the Netlify site.
 
 | Variable | Purpose |
 |----------|---------|
-| `ATLAS_OPS_PATH` | Secret URL path: 16–64 letters, digits or hyphens. |
 | `ATLAS_OPS_EMAIL` | The owner's sign-in email. |
 | `ATLAS_OPS_INITIAL_PASSWORD` | First sign-in only; replaced on first use. |
 | `ATLAS_OPS_SESSION_SECRET` | 32+ random characters for signing sessions (`openssl rand -hex 32`). |
