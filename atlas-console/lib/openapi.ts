@@ -108,7 +108,8 @@ export function loadApiSpec(): ApiSpec | null {
     const shared = (item.parameters as Json[] | undefined) ?? [];
     for (const method of METHODS) {
       const op = item[method] as Json | undefined;
-      if (!op) continue;
+      // Internal operations are documented in the spec but not on the site.
+      if (!op || op["x-internal"] === true) continue;
       const isPublic = Array.isArray(op.security) && (op.security as unknown[]).length === 0;
       const params = [...shared, ...((op.parameters as Json[] | undefined) ?? [])]
         .map((p) => resolve(p, root))
@@ -144,7 +145,8 @@ export function loadApiSpec(): ApiSpec | null {
     }
   }
 
-  const schemas: Schema[] = Object.entries(schemasNode).map(([name, s]) => {
+  const internalSchemas = new Set(["UsageReport"]);
+  const schemas: Schema[] = Object.entries(schemasNode).filter(([name]) => !internalSchemas.has(name)).map(([name, s]) => {
     const required = new Set((s.required as string[] | undefined) ?? []);
     return {
       name,
@@ -161,7 +163,8 @@ export function loadApiSpec(): ApiSpec | null {
   });
 
   const errorCode = ((schemasNode.Error?.properties as Json | undefined)?.code as Json | undefined)?.enum as string[] | undefined;
-  const tags = ((root.tags as Json[] | undefined) ?? []).map((t) => String(t.name));
+  // Spec order, keeping only tags that still have public endpoints.
+  const tags = ((root.tags as Json[] | undefined) ?? []).map((t) => String(t.name)).filter((t) => endpoints.some((e) => e.tag === t));
   for (const e of endpoints) if (!tags.includes(e.tag)) tags.push(e.tag);
 
   return {

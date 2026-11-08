@@ -928,6 +928,8 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_ROUTING_STALE_POLICY` | `prefer-live` | How lookups and DNS treat instances whose owning node isn't alive: `include`, `prefer-live` or `exclude`. |
 | `ATLAS_ROUTING_LATENCY` / `_TOLERANCE` | `nearest` / `0` | Prefer the nearest measured nodes (`nearest`) or ignore latency (`off`); the tolerance makes nodes this close to the nearest count as equal. |
 | `ATLAS_HISTORY_RETENTION` | `168h` | How long service change history is kept; `0` turns history off. |
+| `ATLAS_ANALYTICS_ENABLED` | `false` | Accept anonymous usage events from a hosted console at `POST /v1/telemetry/event`. Visitor IDs are stored only as day-scoped hashes; data is capped per day and kept 90 days. |
+| `ATLAS_TELEMETRY_KEY` 🔒 | — | Shared key (32+ characters) that telemetry events must carry. Without it, anyone can submit events and countries are ignored. |
 | `ATLAS_TLS_CLIENT_AUTH` | `false` | Require client certificates (mTLS). |
 | `ATLAS_PROBE_INTERVAL` / `_TIMEOUT` | `1s` / `500ms` | Failure-detector timing. |
 | `ATLAS_SUSPICION_TIMEOUT` | `5s` | Time a suspect has to refute. |

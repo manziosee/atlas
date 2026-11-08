@@ -27,6 +27,7 @@ tags:
   - name: registry
   - name: events
   - name: admin
+  - name: telemetry
 paths:
   /healthz:
     get:
@@ -338,6 +339,63 @@ paths:
                         expired: { type: boolean }
                         current: { type: boolean, description: True for the credential making this request }
         '403': { $ref: '#/components/responses/Error' }
+  /v1/telemetry/event:
+    post:
+      tags: [telemetry]
+      x-internal: true
+      security: []
+      summary: Record an anonymous usage event from a hosted console
+      description: >-
+        Off unless the node sets ATLAS_ANALYTICS_ENABLED=true. With
+        ATLAS_TELEMETRY_KEY set, requests must carry it in
+        X-Atlas-Telemetry-Key, and only then is `country` stored. The node
+        stores a hash of the UTC day and visitor_id, never the ID itself;
+        paths keep only their first segment. Aggregates are capped per day
+        and kept for 90 days. Rate-limited like every other route.
+      parameters:
+        - { in: header, name: X-Atlas-Telemetry-Key, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visitor_id]
+              properties:
+                type: { type: string, enum: [pageview, connect], default: pageview }
+                visitor_id: { type: string, format: uuid, description: Random per-browser ID }
+                path: { type: string, description: 'For pageview: the page path' }
+                kind: { type: string, enum: [node, demo], description: 'For connect: own node or the demo' }
+                version: { type: string, maxLength: 32, description: "For connect: the node's version" }
+                country: { type: string, pattern: '^[A-Z]{2}$', description: ISO 3166-1 alpha-2; ignored without a valid telemetry key }
+      responses:
+        '204': { description: Recorded. }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { description: Telemetry is disabled on this node. }
+        '415': { $ref: '#/components/responses/Error' }
+  /v1/admin/analytics:
+    get:
+      tags: [admin]
+      x-internal: true
+      summary: Usage totals across the cluster
+      description: >-
+        Daily page views, unique visitors and systems (browsers that connected
+        a console to their own node), pages, countries, node versions and API
+        request counters since each node started. The node asks every live
+        peer with the caller's credential and merges visitor counts with
+        sketches, so a browser seen by several nodes counts once; a single
+        node reports exact counts.
+      parameters:
+        - { in: query, name: days, schema: { type: integer, minimum: 1, maximum: 90, default: 30 } }
+      responses:
+        '200':
+          description: Cluster usage report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsageReport' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
   /v1/admin/backup:
     post:
       tags: [admin]
@@ -530,6 +588,46 @@ components:
         at: { type: string, format: date-time }
         member: { $ref: '#/components/schemas/Member' }
         service: { $ref: '#/components/schemas/Service' }
+    UsageReport:
+      type: object
+      properties:
+        days: { type: integer }
+        node_id: { type: string }
+        nodes_included: { type: integer, description: Nodes whose data is in the report }
+        node_errors:
+          type: array
+          items: { type: object, properties: { node_id: { type: string }, error: { type: string } } }
+        daily:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              page_views: { type: integer }
+              unique_visitors: { type: integer }
+              unique_visitors_capped: { type: boolean, description: The daily visitor cap was reached on some node }
+              systems: { type: integer, description: Browsers that connected a console to their own node }
+              node_connections: { type: integer }
+              demo_connections: { type: integer }
+        pages:
+          type: array
+          items: { type: object, properties: { page: { type: string }, page_views: { type: integer } } }
+        countries:
+          type: array
+          items:
+            type: object
+            properties:
+              country: { type: string }
+              page_views: { type: integer }
+              visitors: { type: integer, description: Browser-days }
+        versions:
+          type: array
+          items: { type: object, properties: { version: { type: string }, connections: { type: integer } } }
+        api_requests_since_start: { type: integer }
+        api_errors_since_start: { type: integer }
+        api_requests_by_route:
+          type: array
+          items: { type: object, properties: { route: { type: string }, count: { type: integer }, errors: { type: integer } } }
     Error:
       type: object
       required: [error, code]

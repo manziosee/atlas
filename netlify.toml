@@ -8,6 +8,9 @@
 [build.environment]
   NODE_VERSION = "22"
   NEXT_TELEMETRY_DISABLED = "1"
+  NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED = "true"
+  # The remaining settings for the private area (ATLAS_OPS_*, ATLAS_TELEMETRY_KEY)
+  # are secrets set in the Netlify UI, never here.
 
 # The read-only demo cluster, proxied so it is same-origin for the browser and
 # needs no CORS settings on the demo nodes.
@@ -16,6 +19,12 @@
   to = "https://atlas-edge.fly.dev/:splat"
   status = 200
   force = true
+
+# Functions in atlas-console/netlify/functions declare their own routes.
+# Anonymous usage events go through /telemetry/collect, which adds the
+# visitor's country and forwards to the API with ATLAS_TELEMETRY_KEY.
+[functions]
+  directory = "netlify/functions"
 
 [[headers]]
   for = "/*"

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Figtree, JetBrains_Mono } from "next/font/google";
 import { ConnectionProvider } from "@/lib/connection";
+import { PageViewTelemetry } from "@/components/analytics/page-view";
 import "./globals.css";
 
 const figtree = Figtree({ subsets: ["latin"], variable: "--font-figtree", display: "swap" });
@@ -28,7 +29,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-full focus:bg-lime focus:px-4 focus:py-2 focus:text-lime-ink">
           Skip to content
         </a>
-        <ConnectionProvider>{children}</ConnectionProvider>
+        <ConnectionProvider>
+          <PageViewTelemetry />
+          {children}
+        </ConnectionProvider>
       </body>
     </html>
   );

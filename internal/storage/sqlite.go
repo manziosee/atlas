@@ -252,10 +252,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.pruneAnalytics(ctx, time.Now().UTC()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -301,6 +305,41 @@ CREATE TABLE IF NOT EXISTS service_history (
 CREATE INDEX IF NOT EXISTS service_history_service ON service_history(service_id, seq);
 CREATE INDEX IF NOT EXISTS service_history_name ON service_history(name, seq);
 CREATE INDEX IF NOT EXISTS service_history_at ON service_history(at);
+`,
+	5: `
+CREATE TABLE IF NOT EXISTS analytics_page_views (
+  day TEXT NOT NULL,
+  page TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0 CHECK (views >= 0),
+  PRIMARY KEY(day, page)
+);
+CREATE TABLE IF NOT EXISTS analytics_visitors (
+  day TEXT NOT NULL,
+  visitor_hash TEXT NOT NULL,
+  country TEXT NOT NULL DEFAULT '',
+  connected INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(day, visitor_hash)
+);
+CREATE TABLE IF NOT EXISTS analytics_visitor_counts (
+  day TEXT PRIMARY KEY,
+  visitors INTEGER NOT NULL CHECK (visitors >= 0)
+);
+CREATE TABLE IF NOT EXISTS analytics_visitor_caps (
+  day TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS analytics_countries (
+  day TEXT NOT NULL,
+  country TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0 CHECK (views >= 0),
+  PRIMARY KEY(day, country)
+);
+CREATE TABLE IF NOT EXISTS analytics_connections (
+  day TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  version TEXT NOT NULL,
+  connections INTEGER NOT NULL DEFAULT 0 CHECK (connections >= 0),
+  PRIMARY KEY(day, kind, version)
+);
 `,
 }
 
