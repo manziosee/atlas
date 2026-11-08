@@ -120,6 +120,9 @@ func TestAnalyticsCountsSystemsAndVersions(t *testing.T) {
 	if visitors["KE"] != 1 || visitors["US"] != 1 || visitors["TZ"] != 0 {
 		t.Fatalf("country visitors = %v, want the first country per browser and day", visitors)
 	}
+	if fmt.Sprint(report.SystemCountries) != "[{KE 1} {US 1}]" {
+		t.Fatalf("system countries = %+v, want one system each in KE and US", report.SystemCountries)
+	}
 	if n, _ := EstimateUniqueVisitors(report.Sketches.Systems[day.Date]); n != 2 {
 		t.Fatalf("systems sketch estimate = %d, want 2", n)
 	}

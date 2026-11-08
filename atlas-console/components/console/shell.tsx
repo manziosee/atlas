@@ -18,7 +18,7 @@ const links = [
   { href: "/activity/", label: "Activity", icon: Activity },
   { href: "/lookup/", label: "Lookup tester", icon: Search },
   { href: "/integrations/", label: "Integrations", icon: Plug },
-  { href: "/admin/", label: "Admin", icon: Shield },
+  { href: "/node-admin/", label: "Node admin", icon: Shield },
 ];
 
 const streamLabel: Record<StreamStatus, { text: string; cls: string }> = {

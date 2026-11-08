@@ -32,7 +32,7 @@ export default function AdminPage() {
   if (!admin) {
     return (
       <>
-        <PageHeader title="Admin" desc="Backups, credentials and evicting failed nodes." />
+        <PageHeader title="Node admin" desc="Backups, credentials and evicting failed nodes on the node you are connected to." />
         <div className="panel p-6">
           <ShieldAlert className="h-6 w-6 text-warn" />
           <h2 className="mt-4 font-medium">This needs an admin token</h2>
@@ -56,7 +56,7 @@ export default function AdminPage() {
 
   return (
     <>
-      <PageHeader title="Admin" desc="Operations that need the admin scope. They act on the node you're connected to." />
+      <PageHeader title="Node admin" desc="Operations that need the admin scope. They act on the node you're connected to." />
       <div className="grid gap-6 xl:grid-cols-2">
         <section className="panel p-5 xl:col-span-2" aria-labelledby="creds-title">
           <h2 id="creds-title" className="font-medium">

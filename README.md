@@ -753,7 +753,7 @@ your token. It replaces the dashboard nodes used to embed.
 | **Service actions** | Register, edit (with `If-Match`), drain/undrain, heartbeat, and deregister after typing the ID to confirm; API errors in plain language | write |
 | **Activity** | Live membership and service events with filters, pause and clear, and reconnect/disconnected states; plus the recorded history across services | read |
 | **Lookup tester** | Runs `/v1/lookup` with region, tags, key and routing overrides, shows the chosen instance and why each candidate was picked or skipped, with the equivalent `curl` and `dig` | read |
-| **Admin** | Credential list (fingerprints, scopes, expiry; never secrets), registry backup download, and evicting failed nodes | admin |
+| **Node admin** | Credential list (fingerprints, scopes, expiry; never secrets), registry backup download, and evicting failed nodes | admin |
 | **Cluster map** | Graph, world map and matrix of the probe latency every node measures to every peer (`/v1/topology?scope=cluster`) | read |
 | **Integrations** | Kubernetes clusters and Docker hosts feeding this cluster, with setup for Helm, the controller, the Docker agent and Terraform | read |
 | **Docs, API, Security** | The site also serves the documentation, an API reference built from `openapi.yaml`, the security policy, About, Terms and Contributing, all rendered from this repository at build time | none |

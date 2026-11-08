@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/write-redirects.mjs",
+    "build": "next build",
     "start": "npx serve@14.2.4 out",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
