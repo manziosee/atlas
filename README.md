@@ -282,7 +282,8 @@ atlas-3  atlas-3:7946  local   alive  1792277220550  41s
 ```
 
 ```bash
-# 4. Break something and watch the cluster heal
+# 4. Break something and watch the cluster heal (includes packet loss,
+#    latency, link flapping and node failure)
 ./scripts/chaos.sh 3
 
 # 5. Run the authenticated API load profile (30 seconds by default)
@@ -303,6 +304,15 @@ dig @127.0.0.1 -p 5353 _demo._tcp.atlas SRV
 | Node gRPC APIs | 127.0.0.1:8084 · :8085 · :8086 |
 | Prometheus | http://127.0.0.1:9091 |
 | Grafana | http://127.0.0.1:3000 (user `admin`, password in `.env`) |
+
+The chaos script starts a separate `chaos` Compose profile that applies Linux
+`tc netem` rules in the network namespaces of `atlas-1` and `atlas-2`. Only
+those short-lived sidecars receive `NET_ADMIN`; the Atlas containers retain
+their normal dropped capabilities. The 200 ms delay stays below the default
+250 ms direct-probe deadline (`ATLAS_PROBE_TIMEOUT=500ms`, with the direct
+probe using half that timeout), so the test exercises routing under measurable
+latency rather than intentionally forcing a timeout. The loss and flap checks
+allow suspicion but fail on a false dead declaration.
 
 **Turn on TLS locally:**
 
@@ -641,6 +651,66 @@ atlas.watch("service", "payments", null, true, event -> {
 
 For a private CA or mutual TLS, pass an `HttpClient` built with your
 `SSLContext`.
+
+### Runnable Go and Python services
+
+[`examples/go`](examples/go) and [`examples/python`](examples/python) show a
+service registering itself with a hostname-based idempotency key, refreshing
+its 15-second TTL every five seconds, re-registering after an expired record,
+and deregistering on shutdown. Each also includes a client command that looks
+up the service through Atlas and calls the selected instance.
+
+Start the three-node Compose cluster, then run one service in a terminal:
+
+```bash
+set -a
+source .env
+set +a
+ATLAS_ADDR=http://127.0.0.1:8081 go run ./examples/go
+```
+
+In another terminal, with the same `ATLAS_TOKEN` and `ATLAS_ADDR`:
+
+```bash
+set -a
+source .env
+set +a
+ATLAS_ADDR=http://127.0.0.1:8081 go run ./examples/go client
+```
+
+The Python example uses the same flow and its own port. Run the service in one
+terminal and its client command in another:
+
+```bash
+set -a
+source .env
+set +a
+ATLAS_ADDR=http://127.0.0.1:8081 python3 examples/python/service.py
+```
+
+```bash
+set -a
+source .env
+set +a
+python3 examples/python/service.py client
+```
+
+Press Ctrl-C to stop the service cleanly. The examples require only Go and
+Python standard libraries, and CI runs both against a live Atlas node.
+
+For a fully containerized run, the optional Compose profile gives the service
+an address other containers can reach:
+
+```bash
+docker compose --profile examples up --build example-go
+# In another terminal:
+docker compose --profile examples exec example-go /usr/local/bin/example-go client
+```
+
+For Python, use `docker compose --profile examples up --build example-python`,
+then run `docker compose --profile examples exec example-python python
+/app/service.py client`. Stop the foreground `up` command with Ctrl-C to
+deregister the service.
 
 All four clients (Go, Python, Node.js, Java) run their tests against a freshly
 started node in CI, using [`scripts/start-test-node.sh`](scripts/start-test-node.sh).
@@ -1063,6 +1133,7 @@ atlas/
 ├── clients/python/         # Python client (sync + asyncio) and its live-node tests
 ├── clients/node/           # TypeScript client for Node.js 20+, no runtime dependencies
 ├── clients/java/           # Java 17+ client on java.net.http, no runtime dependencies
+├── examples/               # runnable Go and Python services registered with Atlas
 ├── pkg/atlas/              # public Go HTTP client
 ├── cmd/
 │   ├── atlas-node/         # the node daemon, TTL expiry and orphan reaper loops
@@ -1150,6 +1221,10 @@ atlas/
   and dashboard link), an `:edge` image from `main`, and `atlas-agent`, which
   registers Docker containers from `atlas.*` labels with health, draining and
   reconciliation.
+- [x] **Runnable examples:** Go and Python services register with hostname-based
+  idempotency keys, heartbeat TTLs, recover expired registrations, deregister on
+  shutdown, and include clients that look up and call an instance
+  (`examples/go`, `examples/python`); both run against a live node in CI.
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
   per-peer EWMA probe latency, nearest measured instance, consistent hashing,
   and round-robin fallback.
@@ -1195,8 +1270,15 @@ atlas/
 - [x] **Test follow-up:** Compose chaos CI now tests process failure and
   recovery plus a running-node network partition and reconnection.
 - [x] **Test follow-up:** authenticated k6 API load profile runs in Compose CI.
-- [ ] **Test follow-up:** TLS rotation end-to-end tests. CI enforces 60% total
-  statement coverage of hand-written code; the current measured total is 66.5%.
+- [x] **TLS rotation end-to-end test:** an mTLS watch remains open during
+  rotation, new connections receive the replacement certificate, and a client
+  certificate from an unknown CA is rejected.
+- [x] **Expanded Compose chaos:** 10% and 30% packet loss, 200 ms peer latency
+  with routing preference changes, and a flapping link; CI reports detection
+  and recovery durations. The optional `chaos-netem` sidecars alone receive
+  `NET_ADMIN`, leaving Atlas nodes' default capabilities unchanged.
+- [x] **Test coverage gate:** CI enforces 60% total statement coverage of
+  hand-written code.
 - [x] **Deployment foundation:** Compose, Kustomize dev/production overlays,
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
 - [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,
@@ -1212,7 +1294,7 @@ atlas/
   replicated service records.
 - [x] **Stretch follow-up:** public Fly.io demo: a two-node cluster in `cdg` with a
   read-only demo token, explorable from the console (see [Live demo](#live-demo)).
-- [ ] **Stretch follow-up:** expanded chaos suite and a multi-region global Fly.io demo.
+- [ ] **Stretch follow-up:** a multi-region global Fly.io demo.
 
 ## Contributing
 
