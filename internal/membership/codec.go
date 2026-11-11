@@ -45,6 +45,12 @@ func marshalMessage(msg message) ([]byte, error) {
 	if msg.PushPullReply {
 		b = appendVarintField(b, 9, 1)
 	}
+	for _, credential := range msg.Credentials {
+		b = appendBytesField(b, 10, marshalManagedCredential(credential))
+	}
+	if len(msg.CredentialDigest) > 0 {
+		b = appendBytesField(b, 11, msg.CredentialDigest)
+	}
 	return b, nil
 }
 
@@ -137,7 +143,7 @@ func unmarshalProtoMessage(data []byte, msg *message) error {
 				}
 				msg.PushPullReply = true
 			}
-		case 3, 4, 5, 6, 8:
+		case 3, 4, 5, 6, 8, 10, 11:
 			if typ != protowire.BytesType {
 				return errors.New("membership: invalid protobuf bytes field")
 			}
@@ -179,6 +185,20 @@ func unmarshalProtoMessage(data []byte, msg *message) error {
 					return errors.New("membership: invalid registry digest length")
 				}
 				msg.RegistryDigest = append(msg.RegistryDigest[:0], value...)
+			case 10:
+				if len(msg.Credentials) >= maxCredentialsPerStreamMessage {
+					return errors.New("membership: too many protobuf credentials")
+				}
+				var credential storage.ManagedCredential
+				if err := unmarshalManagedCredential(value, &credential); err != nil {
+					return err
+				}
+				msg.Credentials = append(msg.Credentials, credential)
+			case 11:
+				if len(value) != 32 {
+					return errors.New("membership: invalid credential digest length")
+				}
+				msg.CredentialDigest = append(msg.CredentialDigest[:0], value...)
 			}
 		default:
 			n := protowire.ConsumeFieldValue(number, typ, data)
@@ -187,6 +207,88 @@ func unmarshalProtoMessage(data []byte, msg *message) error {
 			}
 			data = data[n:]
 		}
+	}
+	return nil
+}
+
+func marshalManagedCredential(credential storage.ManagedCredential) []byte {
+	var b []byte
+	b = appendStringField(b, 1, credential.ID)
+	b = appendStringField(b, 2, credential.Name)
+	b = appendBytesField(b, 3, credential.Digest)
+	for _, scope := range credential.Scopes {
+		b = appendStringField(b, 4, scope)
+	}
+	b = appendVarintField(b, 5, uint64(credential.ExpiresAt.UnixNano()))
+	b = appendVarintField(b, 6, uint64(credential.CreatedAt.UnixNano()))
+	b = appendVarintField(b, 7, uint64(credential.UpdatedAt.UnixNano()))
+	if !credential.RevokedAt.IsZero() {
+		b = appendVarintField(b, 8, uint64(credential.RevokedAt.UnixNano()))
+	}
+	return b
+}
+
+func unmarshalManagedCredential(data []byte, credential *storage.ManagedCredential) error {
+	for len(data) > 0 {
+		number, typ, consumed := protowire.ConsumeTag(data)
+		if consumed < 0 {
+			return protowire.ParseError(consumed)
+		}
+		data = data[consumed:]
+		if number >= 1 && number <= 4 {
+			if typ != protowire.BytesType {
+				return errors.New("membership: invalid protobuf credential bytes field")
+			}
+			value, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			switch number {
+			case 1:
+				credential.ID = string(value)
+			case 2:
+				credential.Name = string(value)
+			case 3:
+				if len(value) != 32 {
+					return errors.New("membership: invalid credential digest length")
+				}
+				credential.Digest = append(credential.Digest[:0], value...)
+			case 4:
+				if len(credential.Scopes) >= 3 {
+					return errors.New("membership: too many credential scopes")
+				}
+				credential.Scopes = append(credential.Scopes, string(value))
+			}
+			continue
+		}
+		if number >= 5 && number <= 8 {
+			if typ != protowire.VarintType {
+				return errors.New("membership: invalid protobuf credential timestamp")
+			}
+			value, n := protowire.ConsumeVarint(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			at := time.Unix(0, signedInt64FromVarint(value)).UTC()
+			switch number {
+			case 5:
+				credential.ExpiresAt = at
+			case 6:
+				credential.CreatedAt = at
+			case 7:
+				credential.UpdatedAt = at
+			case 8:
+				credential.RevokedAt = at
+			}
+			continue
+		}
+		n := protowire.ConsumeFieldValue(number, typ, data)
+		if n < 0 {
+			return protowire.ParseError(n)
+		}
+		data = data[n:]
 	}
 	return nil
 }

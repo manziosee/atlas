@@ -317,7 +317,7 @@ paths:
   /v1/admin/credentials:
     get:
       tags: [admin]
-      summary: List configured API credentials without secrets
+      summary: List configured and runtime-managed API credentials without secrets
       responses:
         '200':
           description: Credentials by fingerprint. `id` matches token_id in access logs.
@@ -333,11 +333,84 @@ paths:
                       type: object
                       properties:
                         id: { type: string }
+                        name: { type: string }
                         scopes: { type: array, items: { type: string, enum: [read, write, admin] } }
+                        created_at: { type: string, format: date-time }
                         expires_at: { type: string, format: date-time }
-                        source: { type: string, enum: [static, scoped] }
+                        source: { type: string, enum: [static, scoped, managed] }
                         expired: { type: boolean }
+                        revoked: { type: boolean }
                         current: { type: boolean, description: True for the credential making this request }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      summary: Create a runtime-managed API credential
+      description: >-
+        Creates a cluster-wide credential. The bearer token is returned once;
+        only its SHA-256 digest is stored and replicated over authenticated
+        gossip. All cluster nodes must run a version that supports managed
+        credentials. Peer replication is asynchronous. Expiry must be within
+        one year.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes, expires_at]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 128 }
+                scopes: { type: array, minItems: 1, maxItems: 3, uniqueItems: true, items: { type: string, enum: [read, write, admin] } }
+                expires_at: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Created. The token is returned only in this response.
+          headers:
+            Cache-Control: { schema: { type: string }, example: no-store }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credential, token]
+                properties:
+                  credential: { type: object }
+                  token: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/credentials/{id}:
+    delete:
+      tags: [admin]
+      summary: Revoke a runtime-managed API credential
+      description: Revocation is permanent and converges to cluster peers through authenticated anti-entropy. A credential cannot revoke itself.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Revoked. }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/audit:
+    get:
+      tags: [admin]
+      summary: Read this node's admin audit log
+      description: Credential changes, backups, and node evictions are recorded locally and retained for 90 days. Secrets are never included.
+      parameters:
+        - { in: query, name: before, schema: { type: integer, minimum: 1 }, description: Return entries with a lower sequence number }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: Most recent admin audit entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  next_before: { type: integer }
+                  entries:
+                    type: array
+                    items: { type: object }
+        '400': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /v1/telemetry/event:
     post:

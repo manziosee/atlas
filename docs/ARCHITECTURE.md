@@ -148,6 +148,13 @@ registry snapshot (including tombstones), bounded to 100,000 rows and the same
 only on either side converge. Local health-check timestamps are excluded from
 the digest because they are not replicated state.
 
+Runtime-managed API credentials use a separate digest and are exchanged in the
+same authenticated TCP snapshots. The cluster shares only SHA-256 token
+digests, scopes, expiry and lifecycle metadata; bearer tokens never enter
+gossip. Revocation is monotonic, so a stale active record cannot undo it.
+Credential changes converge asynchronously and require every peer to run a
+version that understands the credential fields.
+
 ## 4. Deployment topologies
 
 ```mermaid

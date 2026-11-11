@@ -188,11 +188,13 @@ type Filter struct {
 // Store persists service records in SQLite. One connection serializes local
 // writes; WAL lets backup readers inspect the database without blocking them.
 type Store struct {
-	db          *sql.DB
-	path        string
-	mu          sync.Mutex
-	sampleMu    sync.Mutex
-	sampleAfter string
+	db                    *sql.DB
+	path                  string
+	mu                    sync.Mutex
+	sampleMu              sync.Mutex
+	sampleAfter           string
+	credentialListenersMu sync.RWMutex
+	credentialListeners   []func(ManagedCredential)
 
 	listenersMu sync.RWMutex
 	listeners   []func(Change)
@@ -256,10 +258,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if _, err := s.PruneAudit(ctx, time.Now().UTC()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
-const schemaVersion = 5
+const schemaVersion = 6
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -340,6 +346,27 @@ CREATE TABLE IF NOT EXISTS analytics_connections (
   connections INTEGER NOT NULL DEFAULT 0 CHECK (connections >= 0),
   PRIMARY KEY(day, kind, version)
 );
+`,
+	6: `
+CREATE TABLE IF NOT EXISTS managed_credentials (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  digest BLOB NOT NULL UNIQUE CHECK (length(digest) = 32),
+  scopes TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  revoked_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  actor_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  resource_id TEXT NOT NULL DEFAULT '',
+  details TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS admin_audit_log_at ON admin_audit_log(at);
 `,
 }
 

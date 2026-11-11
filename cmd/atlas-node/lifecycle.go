@@ -91,6 +91,25 @@ func pruneAnalytics(ctx context.Context, registry *storage.Store, log *slog.Logg
 	}
 }
 
+// pruneAudit enforces the fixed 90-day admin audit retention window.
+func pruneAudit(ctx context.Context, registry *storage.Store, log *slog.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		removed, err := registry.PruneAudit(ctx, time.Now().UTC())
+		if err != nil && ctx.Err() == nil {
+			log.Warn("could not prune admin audit log", "err", err)
+		} else if removed > 0 {
+			log.Info("pruned admin audit log", "entries", removed)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // orphanReaper deletes services whose owner has been missing from the live
 // member list for longer than after. Only the live member with the lowest ID
 // reaps, so one node normally writes each tombstone; duplicates from a brief

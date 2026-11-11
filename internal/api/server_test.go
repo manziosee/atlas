@@ -92,6 +92,87 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestManagedCredentialLifecycleAndAudit(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "admin.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	auth := security.NewTokenAuthenticator([]string{token})
+	store.OnCredentialChange(func(credential storage.ManagedCredential) {
+		var digest [32]byte
+		copy(digest[:], credential.Digest)
+		scopes := make([]security.Scope, len(credential.Scopes))
+		for i, scope := range credential.Scopes {
+			scopes[i] = security.Scope(scope)
+		}
+		auth.UpsertRuntimeCredential(security.RuntimeCredential{
+			ID: credential.ID, Name: credential.Name, Digest: digest, Scopes: scopes,
+			CreatedAt: credential.CreatedAt, ExpiresAt: credential.ExpiresAt, RevokedAt: credential.RevokedAt,
+		})
+	})
+	h := NewHandler(Deps{
+		Cluster: fakeCluster{}, Registry: store, Auth: auth,
+		RateLimiter: security.NewRateLimiter(1000, 1000),
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	body := `{"name":"deploy bot","scopes":["admin"],"expires_at":"` + time.Now().UTC().Add(24*time.Hour).Format(time.RFC3339) + `"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/admin/credentials", strings.NewReader(body))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated || createRec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("create credential = %d headers %v: %s", createRec.Code, createRec.Header(), createRec.Body.String())
+	}
+	var created struct {
+		Credential security.CredentialInfo `json:"credential"`
+		Token      string                  `json:"token"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Credential.ID == "" || created.Credential.Name != "deploy bot" || created.Token == "" {
+		t.Fatalf("create response = %+v", created)
+	}
+	if err := auth.ReplaceConfigured([]string{token}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := do(h, "/v1/node", created.Token).Code; got != http.StatusOK {
+		t.Fatalf("managed credential did not survive config reload = %d, want 200", got)
+	}
+	list := do(h, "/v1/admin/credentials", token)
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), created.Token) || !strings.Contains(list.Body.String(), `"source":"managed"`) {
+		t.Fatalf("credential listing = %d %s", list.Code, list.Body.String())
+	}
+	selfRevoke := httptest.NewRequest(http.MethodDelete, "/v1/admin/credentials/"+created.Credential.ID, nil)
+	selfRevoke.Header.Set("Authorization", "Bearer "+created.Token)
+	selfRevokeRec := httptest.NewRecorder()
+	h.ServeHTTP(selfRevokeRec, selfRevoke)
+	if selfRevokeRec.Code != http.StatusBadRequest {
+		t.Fatalf("self-revoke = %d, want 400: %s", selfRevokeRec.Code, selfRevokeRec.Body.String())
+	}
+	revoke := httptest.NewRequest(http.MethodDelete, "/v1/admin/credentials/"+created.Credential.ID, nil)
+	revoke.Header.Set("Authorization", "Bearer "+token)
+	revokeRec := httptest.NewRecorder()
+	h.ServeHTTP(revokeRec, revoke)
+	if revokeRec.Code != http.StatusNoContent {
+		t.Fatalf("revoke = %d: %s", revokeRec.Code, revokeRec.Body.String())
+	}
+	if got := do(h, "/v1/node", created.Token).Code; got != http.StatusUnauthorized {
+		t.Fatalf("revoked credential request = %d, want 401", got)
+	}
+	audit := do(h, "/v1/admin/audit?limit=10", token)
+	if audit.Code != http.StatusOK || strings.Contains(audit.Body.String(), created.Token) {
+		t.Fatalf("audit response = %d %s", audit.Code, audit.Body.String())
+	}
+	for _, action := range []string{"credential.created", "credential.revoked"} {
+		if !strings.Contains(audit.Body.String(), action) {
+			t.Errorf("audit log missing %s: %s", action, audit.Body.String())
+		}
+	}
+}
+
 func TestServiceRegistryAPI(t *testing.T) {
 	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "registry.db"))
 	if err != nil {

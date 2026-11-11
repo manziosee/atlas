@@ -59,6 +59,12 @@ type ServiceStore interface {
 	Merge(context.Context, storage.Service) error
 }
 
+type credentialStore interface {
+	ManagedCredentialDigest(context.Context) ([32]byte, error)
+	ManagedCredentialSnapshot(context.Context) ([]storage.ManagedCredential, error)
+	MergeManagedCredential(context.Context, storage.ManagedCredential) error
+}
+
 // Transport is the packet layer Memberlist depends on.
 type Transport interface {
 	Send(addr string, payload []byte) error
@@ -488,7 +494,7 @@ func (m *Memberlist) gossipLoop(ctx context.Context) {
 		if round%antiEntropyEvery == 0 {
 			if peer, ok := m.randomMember(live); ok {
 				if _, supportsStream := m.tr.(streamTransport); supportsStream {
-					if err := m.sendFullState(ctx, peer.Addr, msgPushPullRequest, nil, false); err != nil {
+					if err := m.sendFullState(ctx, peer.Addr, msgPushPullRequest, nil, nil, false); err != nil {
 						m.log.Warn("TCP push-pull failed", "peer", peer.ID, "err", err)
 					}
 				} else {
@@ -599,6 +605,13 @@ func (m *Memberlist) handle(ctx context.Context, p transport.Packet) {
 				m.log.Warn("could not merge service record", "service", service.ID, "err", err)
 			}
 		}
+		if store, ok := m.services.(credentialStore); ok {
+			for _, credential := range msg.Credentials {
+				if err := store.MergeManagedCredential(ctx, credential); err != nil {
+					m.log.Warn("could not merge managed credential", "credential_id", credential.ID, "err", err)
+				}
+			}
+		}
 	}
 
 	switch msg.Type {
@@ -644,16 +657,29 @@ func (m *Memberlist) handle(ctx context.Context, p transport.Packet) {
 			}
 		}
 	case msgPushPullRequest:
-		if err := m.sendFullState(ctx, msg.From.Addr, msgPushPullState, msg.RegistryDigest, true); err != nil {
+		if err := m.sendFullState(ctx, msg.From.Addr, msgPushPullState, msg.RegistryDigest, msg.CredentialDigest, true); err != nil {
 			m.log.Warn("TCP push-pull response failed", "peer", msg.From.ID, "err", err)
 		}
 	case msgPushPullState:
-		if msg.PushPullReply && m.services != nil {
+		if msg.PushPullReply && (m.services != nil || m.hasCredentialStore()) {
 			digestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			localDigest, err := m.services.RegistryDigest(digestCtx)
+			var localDigest [32]byte
+			var err error
+			if m.services != nil {
+				localDigest, err = m.services.RegistryDigest(digestCtx)
+			}
+			serviceMismatch := err == nil && m.services != nil && !bytes.Equal(localDigest[:], msg.RegistryDigest)
+			credentialMismatch := false
+			if err == nil {
+				if store, ok := m.services.(credentialStore); ok {
+					var localCredentialDigest [32]byte
+					localCredentialDigest, err = store.ManagedCredentialDigest(digestCtx)
+					credentialMismatch = err == nil && !bytes.Equal(localCredentialDigest[:], msg.CredentialDigest)
+				}
+			}
 			cancel()
-			if err == nil && !bytes.Equal(localDigest[:], msg.RegistryDigest) {
-				if err := m.sendFullState(ctx, msg.From.Addr, msgPushPullState, msg.RegistryDigest, false); err != nil {
+			if err == nil && (serviceMismatch || credentialMismatch) {
+				if err := m.sendFullState(ctx, msg.From.Addr, msgPushPullState, msg.RegistryDigest, msg.CredentialDigest, false); err != nil {
 					m.log.Warn("TCP push-pull registry repair failed", "peer", msg.From.ID, "err", err)
 				}
 			} else if err != nil {
@@ -664,9 +690,14 @@ func (m *Memberlist) handle(ctx context.Context, p transport.Packet) {
 	}
 }
 
+func (m *Memberlist) hasCredentialStore() bool {
+	_, ok := m.services.(credentialStore)
+	return ok
+}
+
 // sendFullState exchanges a complete bounded membership snapshot over the
 // authenticated TCP stream transport. UDP remains the fast path for gossip.
-func (m *Memberlist) sendFullState(ctx context.Context, addr string, kind msgType, peerDigest []byte, reply bool) error {
+func (m *Memberlist) sendFullState(ctx context.Context, addr string, kind msgType, peerDigest, peerCredentialDigest []byte, reply bool) error {
 	stream, ok := m.tr.(streamTransport)
 	if !ok {
 		return errors.New("membership: transport does not support TCP push-pull")
@@ -677,6 +708,8 @@ func (m *Memberlist) sendFullState(ctx context.Context, addr string, kind msgTyp
 	}
 	var digest [32]byte
 	var services []storage.Service
+	var credentialDigest []byte
+	var credentials []storage.ManagedCredential
 	if m.services != nil {
 		snapshotCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		var err error
@@ -684,12 +717,20 @@ func (m *Memberlist) sendFullState(ctx context.Context, addr string, kind msgTyp
 		if err == nil && kind == msgPushPullState && !bytes.Equal(peerDigest, digest[:]) {
 			services, err = m.services.ReplicationSnapshot(snapshotCtx)
 		}
+		if store, ok := m.services.(credentialStore); ok && err == nil {
+			var credentialHash [32]byte
+			credentialHash, err = store.ManagedCredentialDigest(snapshotCtx)
+			credentialDigest = credentialHash[:]
+			if err == nil && kind == msgPushPullState && !bytes.Equal(peerCredentialDigest, credentialHash[:]) {
+				credentials, err = store.ManagedCredentialSnapshot(snapshotCtx)
+			}
+		}
 		cancel()
 		if err != nil {
 			return fmt.Errorf("membership: snapshot registry for push-pull: %w", err)
 		}
 	}
-	payload, err := marshalMessage(message{Type: kind, From: m.LocalNode(), Members: members, Services: services, RegistryDigest: digest[:], PushPullReply: reply, SentAt: time.Now().UnixMilli()})
+	payload, err := marshalMessage(message{Type: kind, From: m.LocalNode(), Members: members, Services: services, Credentials: credentials, RegistryDigest: digest[:], CredentialDigest: credentialDigest, PushPullReply: reply, SentAt: time.Now().UnixMilli()})
 	if err != nil {
 		return fmt.Errorf("membership: encode full state: %w", err)
 	}

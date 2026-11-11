@@ -2,6 +2,8 @@ package membership
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 	"time"
@@ -13,13 +15,22 @@ func TestMessageCodecRoundTrip(t *testing.T) {
 	checked := time.Unix(1_700_000_001, 123).UTC()
 	updated := time.Unix(1_700_000_000, 456).UTC()
 	target := Member{ID: "target", Addr: "127.0.0.1:7947", Region: "eu", State: StateSuspect, Incarnation: 9}
+	credentialDigest := sha256.Sum256([]byte("codec credential"))
 	want := message{
 		Type: msgPushPullState, Seq: 42,
 		RegistryDigest: bytes.Repeat([]byte{0x5a}, 32), PushPullReply: true,
-		From:     Member{ID: "sender", Addr: "127.0.0.1:7946", APIAddr: "https://127.0.0.1:8080", Region: "af", State: StateAlive, Incarnation: 8},
-		Members:  []Member{{ID: "member", Addr: "127.0.0.1:7948", State: StateDead, Incarnation: 10}},
-		Services: []storage.Service{{ID: "svc-1", Name: "api", NodeID: "sender", Address: "127.0.0.1:8080", Region: "af", Version: "v2", Tags: []string{"blue", "public"}, HealthCheck: "http://127.0.0.1:8080/health", Health: storage.HealthUnhealthy, Revision: 11, Deleted: true, TTLSeconds: 30, CheckIntervalSeconds: 7, UnhealthyThreshold: 4, HealthyThreshold: 3, Draining: true, UpdatedAt: updated, CheckedAt: checked}},
-		Target:   &target, SentAt: 1_700_000_002_000,
+		From:    Member{ID: "sender", Addr: "127.0.0.1:7946", APIAddr: "https://127.0.0.1:8080", Region: "af", State: StateAlive, Incarnation: 8},
+		Members: []Member{{ID: "member", Addr: "127.0.0.1:7948", State: StateDead, Incarnation: 10}},
+		Services: []storage.Service{
+			{ID: "svc-1", Name: "api", NodeID: "sender", Address: "127.0.0.1:8080", Region: "af", Version: "v2", Tags: []string{"blue", "public"}, HealthCheck: "http://127.0.0.1:8080/health", Health: storage.HealthUnhealthy, Revision: 11, Deleted: true, CheckIntervalSeconds: 7, UnhealthyThreshold: 4, HealthyThreshold: 3, Draining: true, UpdatedAt: updated, CheckedAt: checked},
+			{ID: "svc-2", Name: "api", NodeID: "sender", Address: "127.0.0.1:8081", Region: "af", Health: storage.HealthUnknown, Revision: 12, TTLSeconds: 30},
+		},
+		Credentials: []storage.ManagedCredential{{
+			ID: hex.EncodeToString(credentialDigest[:12]), Name: "deployment", Digest: credentialDigest[:],
+			Scopes: []string{"read", "write"}, CreatedAt: updated, UpdatedAt: updated, ExpiresAt: updated.Add(time.Hour),
+		}},
+		CredentialDigest: bytes.Repeat([]byte{0x6b}, 32),
+		Target:           &target, SentAt: 1_700_000_002_000,
 	}
 	wire, err := marshalMessage(want)
 	if err != nil {
@@ -32,16 +43,25 @@ func TestMessageCodecRoundTrip(t *testing.T) {
 	if err := unmarshalMessage(wire, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Type != want.Type || got.Seq != want.Seq || got.From != want.From || got.SentAt != want.SentAt || !bytes.Equal(got.RegistryDigest, want.RegistryDigest) || got.PushPullReply != want.PushPullReply || len(got.Members) != 1 || got.Members[0] != want.Members[0] || len(got.Services) != 1 {
+	if err := got.validate(); err != nil {
+		t.Fatalf("decoded message is invalid: %v", err)
+	}
+	if got.Type != want.Type || got.Seq != want.Seq || got.From != want.From || got.SentAt != want.SentAt || !bytes.Equal(got.RegistryDigest, want.RegistryDigest) || !bytes.Equal(got.CredentialDigest, want.CredentialDigest) || got.PushPullReply != want.PushPullReply || len(got.Members) != 1 || got.Members[0] != want.Members[0] || len(got.Services) != 2 || len(got.Credentials) != 1 {
 		t.Fatalf("message header/member mismatch: got %#v", got)
+	}
+	if got.Credentials[0].ID != want.Credentials[0].ID || !bytes.Equal(got.Credentials[0].Digest, want.Credentials[0].Digest) || got.Credentials[0].Name != want.Credentials[0].Name || len(got.Credentials[0].Scopes) != 2 {
+		t.Fatalf("managed credential mismatch: got %#v", got.Credentials[0])
 	}
 	if got.Target == nil || *got.Target != target {
 		t.Fatalf("target mismatch: got %#v", got.Target)
 	}
 	gotService := got.Services[0]
 	wantService := want.Services[0]
-	if gotService.ID != wantService.ID || gotService.Name != wantService.Name || gotService.NodeID != wantService.NodeID || gotService.Address != wantService.Address || gotService.Region != wantService.Region || gotService.Version != wantService.Version || gotService.HealthCheck != wantService.HealthCheck || gotService.Health != wantService.Health || gotService.Revision != wantService.Revision || gotService.Deleted != wantService.Deleted || gotService.TTLSeconds != 30 || gotService.CheckIntervalSeconds != 7 || gotService.UnhealthyThreshold != 4 || gotService.HealthyThreshold != 3 || !gotService.Draining || !gotService.UpdatedAt.Equal(updated) || !gotService.CheckedAt.Equal(checked) || len(gotService.Tags) != 2 || gotService.Tags[0] != "blue" || gotService.Tags[1] != "public" {
+	if gotService.ID != wantService.ID || gotService.Name != wantService.Name || gotService.NodeID != wantService.NodeID || gotService.Address != wantService.Address || gotService.Region != wantService.Region || gotService.Version != wantService.Version || gotService.HealthCheck != wantService.HealthCheck || gotService.Health != wantService.Health || gotService.Revision != wantService.Revision || gotService.Deleted != wantService.Deleted || gotService.TTLSeconds != 0 || gotService.CheckIntervalSeconds != 7 || gotService.UnhealthyThreshold != 4 || gotService.HealthyThreshold != 3 || !gotService.Draining || !gotService.UpdatedAt.Equal(updated) || !gotService.CheckedAt.Equal(checked) || len(gotService.Tags) != 2 || gotService.Tags[0] != "blue" || gotService.Tags[1] != "public" {
 		t.Fatalf("service mismatch: got %#v", gotService)
+	}
+	if got.Services[1].TTLSeconds != 30 || got.Services[1].ID != "svc-2" {
+		t.Fatalf("TTL service mismatch: got %#v", got.Services[1])
 	}
 }
 
