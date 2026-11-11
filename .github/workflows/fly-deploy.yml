@@ -1,3 +1,7 @@
+# Deploys main to Fly after CI passes (or on demand). When the staging app is
+# set up (FLY_STAGING_API_TOKEN secret), the same commit goes to staging first,
+# must pass smoke checks there, and only then reaches production. Without it,
+# production is deployed directly, as before.
 name: Fly Deploy
 
 on:
@@ -5,28 +9,57 @@ on:
     workflows: [CI]
     branches: [main]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: fly-deploy-main
+  group: fly-staging-and-production
   cancel-in-progress: false
 
 jobs:
   deploy:
-    if: github.event.workflow_run.conclusion == 'success'
-    name: Deploy app
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    name: Stage (when configured), smoke test, deploy production
     runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 25
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      HAS_STAGING: ${{ secrets.FLY_STAGING_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
+      - name: Require successful CI for this revision
+        if: github.event_name == 'workflow_dispatch'
+        run: gh run list --workflow CI --commit "$HEAD_SHA" --status success --json databaseId --jq 'length > 0' | grep -qx true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: >-
-          flyctl deploy --remote-only --config fly.toml
-          --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
+      - name: Deploy this commit to staging
+        if: env.HAS_STAGING == 'true'
+        run: flyctl deploy --remote-only --config deploy/fly/staging.toml --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_STAGING_API_TOKEN }}
+      - name: Smoke test staging
+        if: env.HAS_STAGING == 'true'
+        run: |
+          for path in /healthz /readyz; do
+            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 "https://atlas-staging.fly.dev$path" >/dev/null
+          done
+      - name: Deploy production
+        run: flyctl deploy --remote-only --config fly.toml --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      - name: Smoke test production
+        run: |
+          for path in /healthz /readyz; do
+            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 "https://atlas-edge.fly.dev$path" >/dev/null
+          done
+          echo "Deployed $HEAD_SHA (staging: $HAS_STAGING)" >> "$GITHUB_STEP_SUMMARY"
