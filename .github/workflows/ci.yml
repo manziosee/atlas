@@ -331,6 +331,7 @@ jobs:
       - name: Load test authenticated membership and registry APIs
         run: docker compose --profile loadtest run --rm k6
       - name: Kill and restart a cluster member
+        timeout-minutes: 14
         run: ./scripts/chaos.sh 1
       - name: Collect stack state on failure
         if: failure()

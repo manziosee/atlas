@@ -10,6 +10,9 @@ set -euo pipefail
 ROUNDS="${1:-1}"
 TIMEOUT="${ATLAS_CHAOS_TIMEOUT:-90}"
 IMPAIRMENT_SECONDS="${ATLAS_CHAOS_IMPAIRMENT_SECONDS:-12}"
+# Every external command below is time-bounded: a hung docker exec or HTTP
+# request must fail the run with a message, not stall until the job timeout.
+DOCKER_TIMEOUT="${ATLAS_CHAOS_DOCKER_TIMEOUT:-60}"
 NODES=(atlas-1 atlas-2 atlas-3)
 OBSERVERS=(8081 8082 8083)
 # shellcheck disable=SC1091
@@ -17,7 +20,7 @@ source .env
 export ATLAS_TOKEN
 
 members() { # port
-  curl -fsS -H "Authorization: Bearer $ATLAS_TOKEN" "http://127.0.0.1:$1/v1/members" \
+  curl -fsS --max-time 5 -H "Authorization: Bearer $ATLAS_TOKEN" "http://127.0.0.1:$1/v1/members" \
     | grep -o '"state":"[a-z]*"' | sort | uniq -c
 }
 
@@ -43,7 +46,7 @@ assert_no_dead() {
   local unavailable_port="${1:-}" port dead
   for port in "${OBSERVERS[@]}"; do
     [[ "$port" == "$unavailable_port" ]] && continue
-    if ! curl -fsS -H "Authorization: Bearer $ATLAS_TOKEN" "http://127.0.0.1:$port/v1/members" >/dev/null; then
+    if ! curl -fsS --max-time 5 -H "Authorization: Bearer $ATLAS_TOKEN" "http://127.0.0.1:$port/v1/members" >/dev/null; then
       echo "observer API :$port was unavailable during impairment" >&2
       return 1
     fi
@@ -104,13 +107,16 @@ wait_for_stable() { # seconds
 # (the kill rounds) gives it a new namespace and strands the old sidecar, so
 # recreate them right before applying impairments.
 refresh_netem_sidecars() {
-  docker compose --profile chaos up -d --force-recreate --no-deps chaos-netem-1 chaos-netem-2 >/dev/null
+  timeout 180 docker compose --profile chaos up -d --force-recreate --no-deps chaos-netem-1 chaos-netem-2 >/dev/null
 }
 
 netem() { # node ordinal, tc arguments
   local ordinal="$1"
   shift
-  docker compose --profile chaos exec -T "chaos-netem-$ordinal" tc qdisc "$@"
+  if ! timeout "$DOCKER_TIMEOUT" docker compose --profile chaos exec -T "chaos-netem-$ordinal" tc qdisc "$@" </dev/null; then
+    echo "tc qdisc $* on chaos-netem-$ordinal failed or timed out after ${DOCKER_TIMEOUT}s" >&2
+    return 1
+  fi
 }
 
 clear_netem() {
@@ -124,7 +130,7 @@ wait_for_owner() { # service name, expected node
   local name="$1" expected="$2" deadline=$((SECONDS + TIMEOUT)) owner
   while (( SECONDS < deadline )); do
     assert_no_dead
-    owner="$(curl -fsS -H "Authorization: Bearer $ATLAS_TOKEN" \
+    owner="$(curl -fsS --max-time 5 -H "Authorization: Bearer $ATLAS_TOKEN" \
       "http://127.0.0.1:8083/v1/lookup/$name?latency=nearest" 2>/dev/null \
       | jq -r '.node_id' 2>/dev/null || true)"
     if [[ "$owner" == "$expected" ]]; then return 0; fi
@@ -137,12 +143,25 @@ wait_for_owner() { # service name, expected node
 partition_container=""
 partition_network=""
 partition_alias=""
+dump_diagnostics() {
+  local port
+  echo "---- diagnostics" >&2
+  timeout 30 docker compose --profile chaos ps -a >&2 || true
+  for port in "${OBSERVERS[@]}"; do
+    echo "members via :$port" >&2
+    members "$port" >&2 || echo "  (no response)" >&2
+  done
+  timeout 30 docker compose logs --no-color --tail=60 atlas-1 atlas-2 atlas-3 >&2 || true
+}
+
 restore_impairments() {
+  local status=$?
+  if (( status != 0 )); then dump_diagnostics; fi
   clear_netem
   if [[ -n "$partition_container" ]]; then
     docker network connect --alias "$partition_alias" "$partition_network" "$partition_container" >/dev/null 2>&1 || true
   fi
-  docker compose --profile chaos stop chaos-netem-1 chaos-netem-2 >/dev/null 2>&1 || true
+  timeout 60 docker compose --profile chaos stop chaos-netem-1 chaos-netem-2 >/dev/null 2>&1 || true
 }
 trap restore_impairments EXIT
 
@@ -151,8 +170,8 @@ trap restore_impairments EXIT
 # refutes the stale "left" record, peers never probe it, so a kill in round 1
 # would never be declared dead.
 echo "starting isolated netem sidecars"
-docker compose --profile chaos build chaos-netem-1 chaos-netem-2 >/dev/null
-docker compose --profile chaos up -d --no-deps chaos-netem-1 chaos-netem-2 >/dev/null
+timeout 300 docker compose --profile chaos build chaos-netem-1 chaos-netem-2 >/dev/null
+timeout 180 docker compose --profile chaos up -d --no-deps chaos-netem-1 chaos-netem-2 >/dev/null
 echo "waiting for initial cluster convergence"
 wait_for_all_alive
 wait_for_stable 10
@@ -163,12 +182,12 @@ for ((r = 1; r <= ROUNDS; r++)); do
   [[ "$victim" == "atlas-1" ]] && observer_port=8082
 
   echo "== round $r: killing $victim (observing via :$observer_port)"
-  docker compose kill -s SIGKILL "$victim" >/dev/null
+  timeout "$DOCKER_TIMEOUT" docker compose kill -s SIGKILL "$victim" >/dev/null
   start=$(date +%s)
   wait_for_count "$observer_port" dead 1
   echo "   failure detected after $(( $(date +%s) - start ))s: $(members "$observer_port")"
 
-  docker compose start "$victim" >/dev/null
+  timeout "$DOCKER_TIMEOUT" docker compose start "$victim" >/dev/null
   start=$(date +%s)
   wait_for_all_alive
   echo "   recovery completed after $(( $(date +%s) - start ))s"
@@ -223,10 +242,10 @@ for loss in 10 30; do
 done
 
 echo "== checking latency-aware routing under 200ms peer delay"
-curl -fsS -X POST -H "Authorization: Bearer $ATLAS_TOKEN" -H "Content-Type: application/json" \
+curl -fsS --max-time 5 -X POST -H "Authorization: Bearer $ATLAS_TOKEN" -H "Content-Type: application/json" \
   -d '{"id":"chaos-route-1","name":"chaos-route","address":"127.0.0.1:8085"}' \
   http://127.0.0.1:8081/v1/services >/dev/null
-curl -fsS -X POST -H "Authorization: Bearer $ATLAS_TOKEN" -H "Content-Type: application/json" \
+curl -fsS --max-time 5 -X POST -H "Authorization: Bearer $ATLAS_TOKEN" -H "Content-Type: application/json" \
   -d '{"id":"chaos-route-2","name":"chaos-route","address":"127.0.0.1:8086"}' \
   http://127.0.0.1:8082/v1/services >/dev/null
 
@@ -243,8 +262,8 @@ start=$(date +%s)
 netem 1 del dev eth0 root
 wait_for_owner chaos-route atlas-1
 echo "   routing recovered to atlas-1 after $(( $(date +%s) - start ))s"
-curl -fsS -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8081/v1/services/chaos-route-1 >/dev/null
-curl -fsS -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8082/v1/services/chaos-route-2 >/dev/null
+curl -fsS --max-time 5 -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8081/v1/services/chaos-route-1 >/dev/null
+curl -fsS --max-time 5 -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8082/v1/services/chaos-route-2 >/dev/null
 wait_for_stable 10
 
 echo "== flapping atlas-1 link (one second down, two seconds up; 5 cycles)"
