@@ -25,7 +25,9 @@ export function buildSpec(v: FormValues): { spec?: ServiceSpec; errors: Partial<
   const tags = v.tags.split(",").map((t) => t.trim()).filter(Boolean);
   if (tags.length > 16) errors.tags = "At most 16 tags.";
   if (tags.some((t) => t.length > 64)) errors.tags = "Each tag can be at most 64 characters.";
-  const spec: ServiceSpec = { name: v.name.trim(), address: v.address.trim(), version: v.version.trim() || undefined, tags, draining: v.draining };
+  const trafficWeight = Number(v.trafficWeight);
+  if (!Number.isInteger(trafficWeight) || trafficWeight < 1 || trafficWeight > 1000) errors.trafficWeight = "Whole number between 1 and 1000.";
+  const spec: ServiceSpec = { name: v.name.trim(), address: v.address.trim(), version: v.version.trim() || undefined, tags, draining: v.draining, traffic_weight: trafficWeight };
   if (v.id.trim()) spec.id = v.id.trim();
   if (v.mode === "ttl") {
     const ttl = Number(v.ttl);
@@ -54,6 +56,7 @@ export interface FormValues {
   check: string;
   interval: string;
   draining: boolean;
+  trafficWeight: string;
 }
 
 function initial(s?: Service): FormValues {
@@ -68,6 +71,7 @@ function initial(s?: Service): FormValues {
     check: s?.health_check ?? "",
     interval: s?.check_interval_seconds ? String(s.check_interval_seconds) : "",
     draining: !!s?.draining,
+    trafficWeight: String(s?.traffic_weight ?? 1),
   };
 }
 
@@ -108,6 +112,7 @@ export function ServiceForm({
           check_interval_seconds: spec.health_check ? (spec.check_interval_seconds ?? 0) : 0,
           ...(spec.health_check ? {} : { unhealthy_threshold: 0, healthy_threshold: 0 }),
           draining: spec.draining,
+          traffic_weight: spec.traffic_weight,
         };
         setBusy(true);
         setFailure(null);
@@ -139,6 +144,10 @@ export function ServiceForm({
           </Field>
         )}
       </div>
+
+      <Field label="Traffic weight" error={errors.trafficWeight} hint="Weighted within the healthy, regional and latency-preferred pool. Set the sum per version to the ratio you want (stable 95, canary 5); unhealthy instances are excluded automatically.">
+        <input className="field font-mono" type="number" min={1} max={1000} step={1} inputMode="numeric" value={v.trafficWeight} onChange={(e) => set("trafficWeight", e.target.value)} />
+      </Field>
 
       <fieldset>
         <legend className="text-sm font-medium">Health</legend>

@@ -1,0 +1,193 @@
+{{- if .Values.backup.enabled }}
+{{- $name := include "atlas.fullname" . }}
+{{- $secret := .Values.backup.existingSecret }}
+{{- if not .Values.backup.bucket }}{{ fail "backup.bucket is required when backup.enabled is true" }}{{ end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-backup
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+  {{- with .Values.backup.serviceAccountAnnotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}-backup
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          serviceAccountName: {{ $name }}-backup
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: snapshot
+              image: {{ include "atlas.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["atlas-cli"]
+              args: ["backup", "-output", "/backup/atlas.db"]
+              env:
+                - { name: ATLAS_ADDR, value: "{{ include "atlas.scheme" . }}://{{ $name }}:8080" }
+                - name: ATLAS_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "atlas.secretName" . }}
+                      key: ATLAS_ADMIN_TOKEN
+                {{- if .Values.tls.enabled }}
+                - { name: ATLAS_CA_FILE, value: /etc/atlas/tls/ca.crt }
+                {{- if .Values.tls.clientAuth }}
+                - { name: ATLAS_CLIENT_CERT, value: /etc/atlas/tls/tls.crt }
+                - { name: ATLAS_CLIENT_KEY, value: /etc/atlas/tls/tls.key }
+                {{- end }}
+                {{- end }}
+              volumeMounts:
+                - { name: backup, mountPath: /backup }
+                {{- if .Values.tls.enabled }}
+                - { name: tls, mountPath: /etc/atlas/tls, readOnly: true }
+                {{- end }}
+              resources: {{- toYaml .Values.backup.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+          containers:
+            - name: upload
+              image: {{ .Values.backup.awsImage | quote }}
+              imagePullPolicy: IfNotPresent
+              command: ["sh", "-ec"]
+              args:
+                - |
+                  file=/backup/atlas.db
+                  [ -s "$file" ] || { echo "snapshot is missing or empty" >&2; exit 1; }
+                  key="$ATLAS_BACKUP_PREFIX/$(date -u +%Y/%m/%d)/$(date -u +%Y%m%dT%H%M%SZ)-$(cat /proc/sys/kernel/random/uuid).db"
+                  aws s3 cp "$file" "s3://$ATLAS_BACKUP_BUCKET/$key" --sse AES256 --only-show-errors
+                  echo "uploaded s3://$ATLAS_BACKUP_BUCKET/$key"
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: ATLAS_BACKUP_BUCKET, value: {{ .Values.backup.bucket | quote }} }
+                - { name: ATLAS_BACKUP_PREFIX, value: {{ .Values.backup.prefix | trimSuffix "/" | quote }} }
+                - { name: AWS_DEFAULT_REGION, value: {{ .Values.backup.region | quote }} }
+                - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
+                {{- if .Values.backup.endpointURL }}
+                - { name: AWS_ENDPOINT_URL, value: {{ .Values.backup.endpointURL | quote }} }
+                {{- end }}
+                {{- if $secret }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: AWS_SECRET_ACCESS_KEY } }
+                {{- end }}
+              volumeMounts:
+                - { name: backup, mountPath: /backup, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+              resources: {{- toYaml .Values.backup.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+          volumes:
+            - name: backup
+              emptyDir: { sizeLimit: 2Gi }
+            - name: tmp
+              emptyDir: { sizeLimit: 64Mi }
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              secret: { secretName: {{ required "tls.secretName is required when tls.enabled is true" .Values.tls.secretName }} }
+            {{- end }}
+---
+{{- if .Values.backup.restoreDrill.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}-restore-drill
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.restoreDrill.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          serviceAccountName: {{ $name }}-backup
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: download-latest
+              image: {{ .Values.backup.awsImage | quote }}
+              imagePullPolicy: IfNotPresent
+              command: ["sh", "-ec"]
+              args:
+                - |
+                  prefix="$ATLAS_BACKUP_PREFIX/"
+                  key=$(aws s3api list-objects-v2 --bucket "$ATLAS_BACKUP_BUCKET" --prefix "$prefix" --query 'reverse(sort_by(Contents,&LastModified))[0].Key' --output text)
+                  [ -n "$key" ] && [ "$key" != None ] || { echo "no Atlas backups found" >&2; exit 1; }
+                  aws s3 cp "s3://$ATLAS_BACKUP_BUCKET/$key" /backup/snapshot.db --only-show-errors
+                  echo "downloaded s3://$ATLAS_BACKUP_BUCKET/$key"
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: ATLAS_BACKUP_BUCKET, value: {{ .Values.backup.bucket | quote }} }
+                - { name: ATLAS_BACKUP_PREFIX, value: {{ .Values.backup.prefix | trimSuffix "/" | quote }} }
+                - { name: AWS_DEFAULT_REGION, value: {{ .Values.backup.region | quote }} }
+                - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
+                {{- if .Values.backup.endpointURL }}
+                - { name: AWS_ENDPOINT_URL, value: {{ .Values.backup.endpointURL | quote }} }
+                {{- end }}
+                {{- if $secret }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: AWS_SECRET_ACCESS_KEY } }
+                {{- end }}
+              volumeMounts:
+                - { name: backup, mountPath: /backup }
+                - { name: tmp, mountPath: /tmp }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+          containers:
+            - name: restore
+              image: {{ include "atlas.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["atlas-cli"]
+              args: ["db-restore", "-input", "/backup/snapshot.db", "-db", "/tmp/restored.db"]
+              volumeMounts:
+                - { name: backup, mountPath: /backup, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+              resources: {{- toYaml .Values.backup.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+          volumes:
+            - name: backup
+              emptyDir: { sizeLimit: 2Gi }
+            - name: tmp
+              emptyDir: { sizeLimit: 2Gi }
+{{- end }}
+{{- end }}

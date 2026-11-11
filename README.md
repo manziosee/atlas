@@ -444,8 +444,13 @@ Nodes no longer embed a dashboard. With `ATLAS_CONSOLE_URL` set, `/` and
 `GET /v1/lookup/{name}?region=...&key=...` selects a healthy instance,
 preferring the requested region:
 - Unknown-health instances are used only when no healthy instance exists.
-- With a `key`, selection uses consistent hashing; without one, it's
-  round-robin.
+- Traffic weight is applied after health, stale-owner, region and latency
+  filtering. With a `key`, weighted rendezvous hashing keeps each key stable;
+  without one, weighted round-robin distributes requests by relative weight.
+  Weights are integers from 1 to 1000 (default 1). For a 5% canary, set each
+  canary instance to weight 5 and each stable instance to weight 95; when
+  running multiple instances per version, keep the version-level total ratio
+  in mind. Unhealthy and draining instances are excluded before weighting.
 - Unhealthy and draining instances are never returned.
 
 **Routing policies.** Two policies, set per node and overridable per lookup,
@@ -1059,6 +1064,12 @@ The `production` overlay adds cert-manager TLS, 5 replicas, a pinned image
 and HTTPS probes. It needs cert-manager and a `ClusterIssuer` named
 `atlas-ca-issuer`.
 
+The Helm chart can optionally scale the StatefulSet on CPU and run scheduled
+off-cluster snapshots plus a weekly restore check. Autoscaling requires the
+cluster metrics API; it keeps at least three Atlas members. Backup jobs need
+an S3 bucket and workload identity or an existing Secret with object-store
+credentials. See the chart's [backup and scaling guide](deploy/helm/atlas/README.md).
+
 The `atlas` ClusterIP service exposes Atlas DNS on port 5353 over UDP and TCP.
 It serves registry records under `atlas.`; clients can query it directly or
 configure a private CoreDNS forward rule. The NetworkPolicy limits DNS access
@@ -1101,9 +1112,25 @@ private network (each node advertises `http://[<private IP>]:8080`). Node
 IDs default to the hostname, which on Fly is the Machine ID, so if forwarding
 is unavailable a node falls back to answering with a `Fly-Replay` header.
 Either way, clients behind the public load balancer never see `not_owner`.
-Pushes to `main` deploy through
-`.github/workflows/fly-deploy.yml` once CI passes, which needs a
-`FLY_API_TOKEN` repository secret (`fly tokens create deploy`).
+Successful CI runs on `main` deploy through `.github/workflows/fly-deploy.yml`
+(it can also be started by hand). When the `FLY_STAGING_API_TOKEN` secret
+exists, the workflow first deploys the same revision to the isolated public
+`atlas-staging.fly.dev` environment and smoke-tests it, and only then deploys
+production; without it, production is deployed directly. `FLY_API_TOKEN` can
+live in the repository or the `production` GitHub environment; add required
+reviewers to that environment to gate production. To turn staging on,
+provision the staging app, persistent volume and unique secrets once:
+
+```bash
+fly apps create atlas-staging
+fly volumes create atlas_staging_data -a atlas-staging --region cdg --size 1
+fly secrets set -a atlas-staging ATLAS_GOSSIP_KEY="$(atlas-cli keygen)" \
+  ATLAS_API_TOKENS="$(atlas-cli tokengen)"
+```
+
+Staging is a separate one-node cluster with its own database and credentials;
+do not reuse production keys or data. Add the `FLY_STAGING_API_TOKEN` secret
+only after the app exists, since its presence switches staging on.
 
 The multi-region example below uses `deploy/fly/fly.toml` instead:
 
@@ -1245,8 +1272,11 @@ atlas/
   shutdown, and include clients that look up and call an instance
   (`examples/go`, `examples/python`); both run against a live node in CI.
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
-  per-peer EWMA probe latency, nearest measured instance, consistent hashing,
-  and round-robin fallback.
+  per-peer EWMA probe latency, nearest measured instance, weighted rendezvous
+  hashing, and weighted round-robin fallback.
+- [x] **Weighted canary routing:** per-instance relative traffic weights flow
+  through the API, gossip, Go/Python/Node.js/Java clients and Console form;
+  unhealthy instances are automatically removed from selection.
 - [x] **Phase 5, dashboard foundation:** an authenticated, resumable stream of
   membership and registry events.
 - [x] **Phase 5, Atlas Console:** a separate Next.js app (`atlas-console/`) that
@@ -1300,8 +1330,12 @@ atlas/
   hand-written code.
 - [x] **Deployment foundation:** Compose, Kustomize dev/production overlays,
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
-- [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,
-  scheduled off-node database backups with restore drills, and public staging.
+- [x] **Deployment follow-up foundations:** Helm and IaC, CI-gated staging with
+  manual production promotion, optional StatefulSet HPA, S3-compatible scheduled
+  off-node backups and isolated restore drills.
+- [ ] **Deployment environment activation:** provision Fly staging, configure
+  GitHub deploy secrets/production approvals, and configure a backup bucket and
+  workload identity. These require account-level access and are documented above.
 - [x] **Documentation:** architecture, API spec, run instructions, console,
   backup/restore steps, and operator runbooks for API and membership alerts.
 - [x] **Observability:** API availability and latency recording rules, SLO

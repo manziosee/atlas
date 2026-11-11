@@ -98,6 +98,57 @@ func TestSelectSkipsDrainingInstances(t *testing.T) {
 	}
 }
 
+func TestWeightedRoundRobinHonorsCanaryShareAndHealthRollback(t *testing.T) {
+	selector := NewSelector()
+	services := []storage.Service{
+		{ID: "canary-1", Version: "2.0", Health: storage.HealthHealthy, TrafficWeight: 5},
+		{ID: "stable-1", Version: "1.0", Health: storage.HealthHealthy, TrafficWeight: 95},
+	}
+	counts := map[string]int{}
+	for range 100 {
+		service, err := selector.Choose(services, Options{Policy: Policy{Latency: LatencyOff}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[service.ID]++
+	}
+	if counts["canary-1"] != 5 || counts["stable-1"] != 95 {
+		t.Fatalf("weighted traffic = %v, want 5%% canary and 95%% stable", counts)
+	}
+
+	services[0].Health = storage.HealthUnhealthy
+	for range 20 {
+		service, err := selector.Choose(services, Options{Policy: Policy{Latency: LatencyOff}})
+		if err != nil || service.ID != "stable-1" {
+			t.Fatalf("unhealthy canary selected after failure: %+v, %v", service, err)
+		}
+	}
+}
+
+func TestWeightedRendezvousIsStableAndRespectsWeight(t *testing.T) {
+	services := []storage.Service{
+		{ID: "canary-1", Health: storage.HealthHealthy, TrafficWeight: 1},
+		{ID: "stable-1", Health: storage.HealthHealthy, TrafficWeight: 19},
+	}
+	first, second := NewSelector(), NewSelector()
+	counts := map[string]int{}
+	for i := range 10_000 {
+		key := "user-" + strconv.Itoa(i)
+		got, err := first.Choose(services, Options{Key: key, Policy: Policy{Latency: LatencyOff}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := second.Choose(services, Options{Key: key, Policy: Policy{Latency: LatencyOff}})
+		if err != nil || again.ID != got.ID {
+			t.Fatalf("weighted hash for %q changed: %q / %q, %v", key, got.ID, again.ID, err)
+		}
+		counts[got.ID]++
+	}
+	if canary := counts["canary-1"]; canary < 300 || canary > 700 {
+		t.Fatalf("weighted hash sent %d/10000 keys to 5%% canary; want a statistically plausible share", canary)
+	}
+}
+
 func TestStalePolicies(t *testing.T) {
 	services := []storage.Service{
 		{ID: "live", NodeID: "n1", Health: storage.HealthUnknown},

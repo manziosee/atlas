@@ -36,6 +36,7 @@ func (e *NotOwnerError) Error() string        { return "storage: service belongs
 func (e *NotOwnerError) Is(target error) bool { return target == ErrNotOwner }
 
 const MaxReplicatedServices = 100_000
+const MaxTrafficWeight = 1000
 
 // MaxTTLSeconds bounds heartbeat TTLs to one day.
 const MaxTTLSeconds = 86_400
@@ -80,10 +81,11 @@ type Service struct {
 	HealthyThreshold     int   `json:"healthy_threshold,omitempty"`
 	// Draining keeps the record but removes it from lookups, DNS and client
 	// load balancing, so a deploy can stop sending traffic before shutdown.
-	Draining    bool      `json:"draining,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	CheckedAt   time.Time `json:"checked_at,omitzero"`
-	HeartbeatAt time.Time `json:"heartbeat_at,omitzero"`
+	Draining      bool      `json:"draining,omitempty"`
+	TrafficWeight int       `json:"traffic_weight"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	CheckedAt     time.Time `json:"checked_at,omitzero"`
+	HeartbeatAt   time.Time `json:"heartbeat_at,omitzero"`
 }
 
 func (service Service) Validate() error {
@@ -114,6 +116,9 @@ func (service Service) Validate() error {
 	}
 	if service.Health != HealthUnknown && service.Health != HealthHealthy && service.Health != HealthUnhealthy {
 		return fmt.Errorf("storage: invalid health %q", service.Health)
+	}
+	if service.TrafficWeight < 0 || service.TrafficWeight > MaxTrafficWeight {
+		return fmt.Errorf("storage: traffic_weight must be between 0 and %d", MaxTrafficWeight)
 	}
 	if service.TTLSeconds < 0 || service.TTLSeconds > MaxTTLSeconds {
 		return errors.New("storage: TTL must be between 1 second and 1 day")
@@ -265,7 +270,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -368,6 +373,9 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
 );
 CREATE INDEX IF NOT EXISTS admin_audit_log_at ON admin_audit_log(at);
 `,
+	7: `
+ALTER TABLE services ADD COLUMN traffic_weight INTEGER NOT NULL DEFAULT 1 CHECK (traffic_weight >= 0 AND traffic_weight <= 1000);
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -429,6 +437,9 @@ func (s *Store) Register(ctx context.Context, service Service) (Service, error) 
 func (s *Store) Upsert(ctx context.Context, service Service) (Service, Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if service.TrafficWeight == 0 {
+		service.TrafficWeight = 1 // zero-value and pre-weight callers keep default traffic.
+	}
 	if service.Health == "" {
 		service.Health = HealthUnknown
 	}
@@ -492,6 +503,9 @@ func (s *Store) Update(ctx context.Context, id, nodeID string, ifRevision uint64
 	if err := fn(&next); err != nil {
 		return Service{}, 0, err
 	}
+	if next.TrafficWeight == 0 {
+		next.TrafficWeight = 1
+	}
 	next.ID, next.NodeID, next.Region = current.ID, current.NodeID, current.Region
 	if sameSpec(current, next) {
 		return current, Unchanged, nil
@@ -517,7 +531,7 @@ func sameSpec(a, b Service) bool {
 	return a.Name == b.Name && a.Address == b.Address && a.Region == b.Region && a.Version == b.Version &&
 		slices.Equal(a.Tags, b.Tags) && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds &&
 		a.CheckIntervalSeconds == b.CheckIntervalSeconds && a.UnhealthyThreshold == b.UnhealthyThreshold &&
-		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining
+		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining && a.TrafficWeight == b.TrafficWeight
 }
 
 func resetsHealth(before, after Service) bool {
@@ -754,6 +768,9 @@ func (s *Store) Merge(ctx context.Context, incoming Service) error {
 		incoming.UpdatedAt = time.Unix(0, int64(incoming.Revision)).UTC()
 	}
 	incoming.CheckedAt, incoming.HeartbeatAt = time.Time{}, time.Time{}
+	if incoming.TrafficWeight == 0 {
+		incoming.TrafficWeight = 1 // legacy replicas omitted the field.
+	}
 	if err := incoming.Validate(); err != nil {
 		return err
 	}
@@ -828,19 +845,19 @@ func (s *Store) put(ctx context.Context, service Service) (Service, error) {
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
- check_interval_seconds,unhealthy_threshold,healthy_threshold,draining)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ check_interval_seconds,unhealthy_threshold,healthy_threshold,draining,traffic_weight)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
  name=excluded.name,node_id=excluded.node_id,address=excluded.address,region=excluded.region,
  version=excluded.version,tags=excluded.tags,health_check=excluded.health_check,health=excluded.health,
  revision=excluded.revision,deleted=excluded.deleted,updated_at=excluded.updated_at,checked_at=excluded.checked_at,
  ttl_seconds=excluded.ttl_seconds,check_interval_seconds=excluded.check_interval_seconds,
- unhealthy_threshold=excluded.unhealthy_threshold,healthy_threshold=excluded.healthy_threshold,draining=excluded.draining,
+ unhealthy_threshold=excluded.unhealthy_threshold,healthy_threshold=excluded.healthy_threshold,draining=excluded.draining,traffic_weight=excluded.traffic_weight,
  heartbeat_at=CASE WHEN excluded.heartbeat_at = 0 THEN services.heartbeat_at ELSE excluded.heartbeat_at END`,
 		service.ID, service.Name, service.NodeID, service.Address, service.Region, service.Version,
 		string(tags), service.HealthCheck, service.Health, service.Revision, deleted,
 		service.UpdatedAt.UnixNano(), timeNanos(service.CheckedAt), service.TTLSeconds, timeNanos(service.HeartbeatAt),
-		service.CheckIntervalSeconds, service.UnhealthyThreshold, service.HealthyThreshold, boolInt(service.Draining))
+		service.CheckIntervalSeconds, service.UnhealthyThreshold, service.HealthyThreshold, boolInt(service.Draining), service.TrafficWeight)
 	if err != nil {
 		return Service{}, fmt.Errorf("storage: save service: %w", err)
 	}
@@ -853,7 +870,7 @@ func (s *Store) updateCheckedAt(ctx context.Context, id string, at time.Time) er
 }
 
 const serviceSelect = `SELECT id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
- check_interval_seconds,unhealthy_threshold,healthy_threshold,draining FROM services`
+ check_interval_seconds,unhealthy_threshold,healthy_threshold,draining,traffic_weight FROM services`
 
 type scanner interface{ Scan(...any) error }
 
@@ -865,7 +882,7 @@ func scanService(row scanner) (Service, error) {
 	if err := row.Scan(&service.ID, &service.Name, &service.NodeID, &service.Address, &service.Region,
 		&service.Version, &tags, &service.HealthCheck, &service.Health, &service.Revision,
 		&deleted, &updatedAt, &checkedAt, &service.TTLSeconds, &heartbeatAt,
-		&service.CheckIntervalSeconds, &service.UnhealthyThreshold, &service.HealthyThreshold, &draining); err != nil {
+		&service.CheckIntervalSeconds, &service.UnhealthyThreshold, &service.HealthyThreshold, &draining, &service.TrafficWeight); err != nil {
 		return Service{}, err
 	}
 	if err := json.Unmarshal([]byte(tags), &service.Tags); err != nil {

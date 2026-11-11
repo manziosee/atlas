@@ -56,6 +56,11 @@ deleted pods are deregistered. See the
 | Value | Default | Description |
 |-------|---------|-------------|
 | `replicaCount` | `3` | Atlas nodes |
+| `autoscaling.enabled` | `false` | Create a CPU-based HPA for the Atlas StatefulSet |
+| `autoscaling.minReplicas` / `maxReplicas` | `3` / `10` | Autoscaling bounds; minimum is clamped to three |
+| `backup.enabled` | `false` | Schedule S3-compatible snapshots and (by default) weekly restore drills |
+| `backup.bucket` / `prefix` / `region` | empty / `atlas` / `us-east-1` | Object-store location; bucket is required when enabled |
+| `backup.existingSecret` | empty | Secret containing `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; omit when using workload identity |
 | `image.repository` / `image.tag` | `ghcr.io/manziosee/atlas` / appVersion | Image |
 | `config.env` | `development` | `production` requires `tls.enabled` |
 | `config.region` | `k8s` | Region for routing |
@@ -81,3 +86,47 @@ deleted pods are deregistered. See the
 ```bash
 helm test atlas -n atlas
 ```
+
+## Autoscaling
+
+The chart keeps a fixed three-node cluster by default. To enable CPU-based
+scaling, install a metrics server and set:
+
+```bash
+helm upgrade --install atlas oci://ghcr.io/manziosee/charts/atlas -n atlas \
+  --create-namespace --set autoscaling.enabled=true \
+  --set autoscaling.minReplicas=3 --set autoscaling.maxReplicas=10 \
+  --set autoscaling.targetCPUUtilizationPercentage=70
+```
+
+The HPA scales the StatefulSet, not individual processes. Atlas needs at least
+three members; service records replicate and nodes leave membership on SIGTERM.
+Review persistent volume costs and the cluster's storage limits when choosing
+the maximum. Kubernetes retains claims for scaled-down ordinals by default.
+
+## Off-cluster backups and restore drills
+
+The optional CronJobs take a consistent Atlas API snapshot and upload it to an
+S3-compatible bucket using server-side AES256 encryption. A weekly job fetches
+the newest object into an ephemeral volume and runs `atlas-cli db-restore`,
+which checks SQLite integrity and refuses to overwrite a database. This is an
+isolated integrity/restore drill; it never touches the live PVC. Configure a
+bucket lifecycle policy separately to set retention and deletion rules.
+
+For AWS, prefer workload identity. Set `backup.serviceAccountAnnotations` to
+the cloud role binding and grant that role `s3:PutObject`, `s3:GetObject`, and
+`s3:ListBucket` only for the configured backup prefix. For an S3-compatible
+store or static credentials, create a Secret with `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`, then set `backup.existingSecret`.
+
+```bash
+helm upgrade --install atlas oci://ghcr.io/manziosee/charts/atlas -n atlas \
+  --set backup.enabled=true --set backup.bucket=atlas-backups \
+  --set backup.prefix=production/atlas --set backup.region=eu-west-1 \
+  --set backup.existingSecret=atlas-backup-s3
+```
+
+Set `backup.endpointURL` for S3-compatible APIs. Jobs use the Atlas admin
+credential from the chart's existing secret and snapshot one cluster member;
+registry data is replicated across members. Monitor CronJob failures and run a
+manual restore drill before relying on a new bucket or storage provider.

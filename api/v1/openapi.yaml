@@ -244,7 +244,7 @@ paths:
       description: >-
         Order of rules: never draining or unhealthy instances; the stale-record
         policy; healthy before unknown health; the requested region; the
-        latency policy; then consistent hashing on `key`, or round-robin.
+        latency policy; then weighted rendezvous hashing on `key`, or weighted round-robin.
         `stale`, `latency` and `tolerance` override the node's
         ATLAS_ROUTING_* defaults for this request only.
       parameters:
@@ -577,6 +577,7 @@ components:
         unhealthy_threshold: { type: integer, minimum: 1, maximum: 10, description: Consecutive failed checks before a healthy service turns unhealthy (default 3). Needs health_check. }
         healthy_threshold: { type: integer, minimum: 1, maximum: 10, description: Consecutive passing checks before an unhealthy service recovers (default 2). Needs health_check. }
         draining: { type: boolean, description: 'Keep the record but send it no traffic: lookups, DNS and client load balancers skip it.' }
+        traffic_weight: { type: integer, minimum: 1, maximum: 1000, default: 1, description: 'Relative traffic share after health, stale, region and latency filtering.' }
     ServicePatch:
       type: object
       additionalProperties: false
@@ -591,6 +592,7 @@ components:
         unhealthy_threshold: { type: integer }
         healthy_threshold: { type: integer }
         draining: { type: boolean }
+        traffic_weight: { type: integer, minimum: 1, maximum: 1000 }
     Service:
       type: object
       properties:
@@ -609,6 +611,7 @@ components:
         unhealthy_threshold: { type: integer }
         healthy_threshold: { type: integer }
         draining: { type: boolean }
+        traffic_weight: { type: integer, minimum: 1, maximum: 1000 }
         updated_at: { type: string, format: date-time }
         checked_at: { type: string, format: date-time, description: Last health check (owner node only) }
         heartbeat_at: { type: string, format: date-time, description: Last heartbeat (owner node only) }

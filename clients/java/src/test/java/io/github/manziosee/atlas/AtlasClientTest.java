@@ -61,14 +61,16 @@ class AtlasClientTest {
   void idempotentRegistrationUpdateAndDelete() {
     live();
     String name = unique("java");
-    ServiceSpec spec = new ServiceSpec(name, "10.7.0.1:80").tags(List.of("java"));
+    ServiceSpec spec = new ServiceSpec(name, "10.7.0.1:80").tags(List.of("java")).trafficWeight(5);
     Service first = atlas.register(spec, null, "deploy-" + name);
     Service again = atlas.register(spec, null, "deploy-" + name);
     assertEquals(first.id(), again.id());
     assertEquals(1, again.revision());
+    assertEquals(5, first.trafficWeight());
 
-    Service updated = atlas.update(first.id(), new ServicePatch().version("2"), 1);
+    Service updated = atlas.update(first.id(), new ServicePatch().version("2").trafficWeight(7), 1);
     assertEquals("2", updated.version());
+    assertEquals(7, updated.trafficWeight());
     assertEquals("10.7.0.1:80", updated.address());
     AtlasException stale = assertThrows(AtlasException.class, () -> atlas.update(first.id(), new ServicePatch().version("3"), 1));
     assertEquals("precondition_failed", stale.code());

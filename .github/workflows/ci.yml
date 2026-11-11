@@ -180,7 +180,9 @@ jobs:
           helm lint deploy/helm/atlas --strict
           helm lint deploy/helm/atlas --strict --set k8sSync.enabled=true --set networkPolicy.enabled=true             --set tls.enabled=true --set tls.secretName=atlas-tls --set "k8sSync.namespaces={a,b}"
           helm template ci deploy/helm/atlas --set k8sSync.enabled=true --set networkPolicy.enabled=true > /tmp/chart.yaml
-          docker run --rm -v /tmp:/m ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary -ignore-missing-schemas /m/chart.yaml
+          helm lint deploy/helm/atlas --strict --set autoscaling.enabled=true --set backup.enabled=true --set backup.bucket=atlas-ci --set backup.existingSecret=atlas-backup-ci
+          helm template ci deploy/helm/atlas --set autoscaling.enabled=true --set backup.enabled=true --set backup.bucket=atlas-ci --set backup.existingSecret=atlas-backup-ci > /tmp/chart-ops.yaml
+          docker run --rm -v /tmp:/m ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary -ignore-missing-schemas /m/chart.yaml /m/chart-ops.yaml
       - name: Create a cluster and load the image
         run: |
           kind create cluster --name atlas --wait 120s

@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math"
 	"sort"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -16,15 +16,8 @@ import (
 
 var ErrNoInstance = errors.New("routing: no healthy or unknown service instances")
 
-const virtualNodes = 128
-
-type point struct {
-	hash uint64
-	id   string
-}
-
-// Selector is safe for concurrent use. Requests with a key use a consistent
-// hash ring; requests without one rotate through the sorted candidate set.
+// Selector is safe for concurrent use. Requests with a key use weighted
+// rendezvous hashing; requests without one use weighted round-robin.
 type Selector struct {
 	next atomic.Uint64
 }
@@ -201,33 +194,31 @@ func nearest(available []storage.Service, latency func(string) time.Duration, to
 func (s *Selector) pick(available []storage.Service, key string) (storage.Service, error) {
 	sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	if key == "" {
-		index := (s.next.Add(1) - 1) % uint64(len(available)) // #nosec G115 -- len is never negative.
-		return available[index], nil
+		var total uint64
+		for _, service := range available {
+			total += uint64(max(service.TrafficWeight, 1))
+		}
+		slot := (s.next.Add(1) - 1) % total
+		for _, service := range available {
+			weight := uint64(max(service.TrafficWeight, 1))
+			if slot < weight {
+				return service, nil
+			}
+			slot -= weight
+		}
+		return storage.Service{}, ErrNoInstance
 	}
-
-	ring := make([]point, 0, len(available)*virtualNodes)
+	bestScore := math.Inf(1)
+	var selected storage.Service
 	for _, service := range available {
-		for replica := range virtualNodes {
-			ring = append(ring, point{hash: hash64(service.ID + "#" + strconv.Itoa(replica)), id: service.ID})
+		weight := max(service.TrafficWeight, 1)
+		random := float64(hash64(key+"\x00"+service.ID)>>11) + 1
+		score := -math.Log(random/((1<<53)+1)) / float64(weight)
+		if score < bestScore {
+			bestScore, selected = score, service
 		}
 	}
-	sort.Slice(ring, func(i, j int) bool {
-		if ring[i].hash == ring[j].hash {
-			return ring[i].id < ring[j].id
-		}
-		return ring[i].hash < ring[j].hash
-	})
-	keyHash := hash64(key)
-	index := sort.Search(len(ring), func(i int) bool { return ring[i].hash >= keyHash })
-	if index == len(ring) {
-		index = 0
-	}
-	for _, service := range available {
-		if service.ID == ring[index].id {
-			return service, nil
-		}
-	}
-	return storage.Service{}, ErrNoInstance
+	return selected, nil
 }
 
 func hash64(value string) uint64 {
