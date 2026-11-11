@@ -11,6 +11,10 @@
   NEXT_PUBLIC_ATLAS_ANALYTICS_ENABLED = "true"
   # The remaining settings for the private area (ATLAS_OPS_*, ATLAS_TELEMETRY_KEY)
   # are secrets set in the Netlify UI, never here.
+  # These two hold public values (the demo node URL and the repository name)
+  # that appear in the source and the built pages, so the secrets scanner must
+  # not fail the deploy when they are marked secret.
+  SECRETS_SCAN_OMIT_KEYS = "ATLAS_OPS_API_URL,ATLAS_OPS_GITHUB_REPO"
 
 # The read-only demo cluster, proxied so it is same-origin for the browser and
 # needs no CORS settings on the demo nodes.
