@@ -223,12 +223,14 @@ func (s *Store) MergeManagedCredential(ctx context.Context, incoming ManagedCred
 			s.mu.Unlock()
 			return nil
 		}
-		if incoming.UpdatedAt.Equal(current.UpdatedAt) && !incoming.RevokedAt.IsZero() && current.RevokedAt.IsZero() {
+		sameTime := incoming.UpdatedAt.Equal(current.UpdatedAt)
+		switch {
+		case sameTime && !incoming.RevokedAt.IsZero() && current.RevokedAt.IsZero():
 			// A revoke wins a tie.
-		} else if incoming.UpdatedAt.Equal(current.UpdatedAt) && managedCredentialEqual(current, incoming) {
+		case sameTime && managedCredentialEqual(current, incoming):
 			s.mu.Unlock()
 			return nil
-		} else if incoming.UpdatedAt.Equal(current.UpdatedAt) && managedCredentialOrder(incoming, current) <= 0 {
+		case sameTime && managedCredentialOrder(incoming, current) <= 0:
 			s.mu.Unlock()
 			return nil
 		}
@@ -274,7 +276,7 @@ func (s *Store) ManagedCredentialDigest(ctx context.Context) ([sha256.Size]byte,
 		if uint64(len(encoded)) > uint64(^uint32(0)) {
 			return digest, errCredentialLimit
 		}
-		binary.BigEndian.PutUint32(length[:], uint32(len(encoded)))
+		binary.BigEndian.PutUint32(length[:], uint32(len(encoded))) // #nosec G115 -- bounded by the check above.
 		_, _ = h.Write(length[:])
 		_, _ = h.Write(encoded)
 	}
