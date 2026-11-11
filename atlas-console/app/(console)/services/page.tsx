@@ -143,6 +143,7 @@ function ServicesView() {
                       <div className="flex flex-wrap gap-1.5">
                         <StatusBadge tone={healthTone[s.health]}>{s.health}</StatusBadge>
                         {s.draining && <StatusBadge tone="info">draining</StatusBadge>}
+                        {(s.traffic_weight ?? 1) !== 1 && <StatusBadge tone="muted">weight {s.traffic_weight}</StatusBadge>}
                       </div>
                     </td>
                     <td className="max-w-[220px] truncate px-4 py-3 font-mono text-muted" title={s.address}>{s.address}</td>
@@ -331,6 +332,10 @@ function ServiceDetail({
         </Row>
         <Row label="Region">{s.region || "—"}</Row>
         <Row label="Version">{s.version || "—"}</Row>
+        <Row label="Traffic weight">
+          {s.traffic_weight ?? 1}
+          <span className="ml-2 text-xs text-muted">relative share among healthy instances of {s.name}</span>
+        </Row>
         <Row label="Tags">
           <div className="flex flex-wrap gap-1">{s.tags?.length ? s.tags.map((t) => <Tag key={t}>{t}</Tag>) : "—"}</div>
         </Row>
