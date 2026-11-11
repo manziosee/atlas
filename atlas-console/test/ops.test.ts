@@ -172,6 +172,17 @@ describe("dashboard data", () => {
         });
       }
       if (url.includes("/v1/topology")) return new Response(JSON.stringify({ error: "boom" }), { status: 500, statusText: "Internal Server Error" });
+      if (url.endsWith("/v1/admin/credentials")) {
+        const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+        return json({
+          credentials: [
+            { id: "c1", name: "ci", scopes: ["write"], source: "managed", expires_at: soon, expired: false },
+            { id: "c2", scopes: ["admin"], source: "static", expired: false },
+            { id: "c3", name: "old", scopes: ["read"], source: "managed", expired: false, revoked: true },
+          ],
+        });
+      }
+      if (url.includes("/v1/admin/audit")) return json({ entries: [{ seq: 1, at: "2026-11-11T00:00:00Z", actor_id: "abc", action: "credential.create", resource_id: "c1" }] });
       if (url.endsWith("/repos/manziosee/atlas")) return json({ stargazers_count: 12, forks_count: 3, subscribers_count: 2, open_issues_count: 1, pushed_at: "2026-11-08T00:00:00Z" });
       if (url.includes("/releases")) return json([{ assets: [{ download_count: 5 }, { download_count: 2 }] }]);
       throw new Error(`unexpected ${url}`);
@@ -183,6 +194,9 @@ describe("dashboard data", () => {
     expect(data.services).toMatchObject({ total: 2, names: 2, healthy: 1, unhealthy: 1, problems: [{ id: "b", health: "unhealthy" }] });
     expect(data.analytics.countries[0]).toEqual({ country: "RW", page_views: 4, visitors: 2 });
     expect(data.github).toMatchObject({ stars: 12, releaseDownloads: 7 });
+    expect(data.security.credentials).toMatchObject({ total: 3, active: 2, revoked: 1, managed: 2, expiringSoon: [{ id: "c1", name: "ci" }] });
+    expect(data.security.audit[0]).toMatchObject({ action: "credential.create" });
+    expect(seen.some((c) => c.url === "https://node.example/v1/admin/audit?limit=20")).toBe(true);
     expect(data.errors.topology).toContain("500");
     expect(JSON.stringify(data)).not.toContain(ENV.ATLAS_OPS_API_TOKEN);
     // Atlas calls carry the token; GitHub calls never do.
