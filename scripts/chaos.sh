@@ -72,6 +72,41 @@ wait_for_all_alive() {
   return 1
 }
 
+# wait_for_stable requires every node to report exactly three alive members
+# and no suspect or dead ones for a continuous window. A single snapshot is not
+# enough: right after a partition heals, a node still gossips the "dead" views
+# it formed while isolated until each peer refutes them, and starting an
+# impairment then would blame that leftover churn on the impairment.
+wait_for_stable() { # seconds
+  local need="${1:-10}" deadline=$((SECONDS + 2 * TIMEOUT)) since=-1 port ok
+  while (( SECONDS < deadline )); do
+    ok=1
+    for port in "${OBSERVERS[@]}"; do
+      if (( $(state_count "$port" alive) != 3 || $(state_count "$port" suspect) != 0 || $(state_count "$port" dead) != 0 )); then
+        ok=0
+        break
+      fi
+    done
+    if (( ok )); then
+      (( since < 0 )) && since=$SECONDS
+      (( SECONDS - since >= need )) && return 0
+    else
+      since=-1
+    fi
+    sleep 1
+  done
+  echo "cluster did not stay converged for ${need}s" >&2
+  for port in "${OBSERVERS[@]}"; do members "$port" >&2 || true; done
+  return 1
+}
+
+# The netem sidecars share their node's network namespace. Restarting a node
+# (the kill rounds) gives it a new namespace and strands the old sidecar, so
+# recreate them right before applying impairments.
+refresh_netem_sidecars() {
+  docker compose --profile chaos up -d --force-recreate --no-deps chaos-netem-1 chaos-netem-2 >/dev/null
+}
+
 netem() { # node ordinal, tc arguments
   local ordinal="$1"
   shift
@@ -131,6 +166,7 @@ for ((r = 1; r <= ROUNDS; r++)); do
   start=$(date +%s)
   wait_for_all_alive
   echo "   recovery completed after $(( $(date +%s) - start ))s"
+  wait_for_stable 10
 done
 
 victim="atlas-3"
@@ -160,8 +196,11 @@ partition_container=""
 start=$(date +%s)
 wait_for_all_alive
 echo "   partition recovery completed after $(( $(date +%s) - start ))s"
+wait_for_stable 10
+refresh_netem_sidecars
 
 for loss in 10 30; do
+  wait_for_stable 10
   echo "== applying ${loss}% packet loss to atlas-1 for ${IMPAIRMENT_SECONDS}s"
   netem 1 replace dev eth0 root netem loss "${loss}%"
   start=$(date +%s)
@@ -200,7 +239,7 @@ wait_for_owner chaos-route atlas-1
 echo "   routing recovered to atlas-1 after $(( $(date +%s) - start ))s"
 curl -fsS -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8081/v1/services/chaos-route-1 >/dev/null
 curl -fsS -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8082/v1/services/chaos-route-2 >/dev/null
-wait_for_all_alive
+wait_for_stable 10
 
 echo "== flapping atlas-1 link (one second down, two seconds up; 5 cycles)"
 start=$(date +%s)

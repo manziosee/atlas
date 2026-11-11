@@ -312,7 +312,12 @@ their normal dropped capabilities. The 200 ms delay stays below the default
 250 ms direct-probe deadline (`ATLAS_PROBE_TIMEOUT=500ms`, with the direct
 probe using half that timeout), so the test exercises routing under measurable
 latency rather than intentionally forcing a timeout. The loss and flap checks
-allow suspicion but fail on a false dead declaration.
+allow suspicion but fail on a false dead declaration. Before each impairment the script
+waits until every node has reported three alive members and nothing suspect
+or dead for ten seconds, so leftover gossip from the earlier kill and
+partition rounds is not mistaken for a false declaration; the netem sidecars
+are recreated after nodes restart because a restart gives a node a new
+network namespace.
 
 **Turn on TLS locally:**
 
