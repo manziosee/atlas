@@ -1059,6 +1059,12 @@ The `production` overlay adds cert-manager TLS, 5 replicas, a pinned image
 and HTTPS probes. It needs cert-manager and a `ClusterIssuer` named
 `atlas-ca-issuer`.
 
+The Helm chart can optionally scale the StatefulSet on CPU and run scheduled
+off-cluster snapshots plus a weekly restore check. Autoscaling requires the
+cluster metrics API; it keeps at least three Atlas members. Backup jobs need
+an S3 bucket and workload identity or an existing Secret with object-store
+credentials. See the chart's [backup and scaling guide](deploy/helm/atlas/README.md).
+
 The `atlas` ClusterIP service exposes Atlas DNS on port 5353 over UDP and TCP.
 It serves registry records under `atlas.`; clients can query it directly or
 configure a private CoreDNS forward rule. The NetworkPolicy limits DNS access
@@ -1101,9 +1107,25 @@ private network (each node advertises `http://[<private IP>]:8080`). Node
 IDs default to the hostname, which on Fly is the Machine ID, so if forwarding
 is unavailable a node falls back to answering with a `Fly-Replay` header.
 Either way, clients behind the public load balancer never see `not_owner`.
-Pushes to `main` deploy through
-`.github/workflows/fly-deploy.yml` once CI passes, which needs a
-`FLY_API_TOKEN` repository secret (`fly tokens create deploy`).
+Successful CI runs on `main` deploy to the isolated public
+`atlas-staging.fly.dev` environment through `.github/workflows/fly-staging.yml`.
+Promotion is a manual workflow on `main` that verifies CI, deploys and smoke
+tests the same revision in staging, then deploys it to production. Configure
+`FLY_STAGING_API_TOKEN` as a repository secret and `FLY_API_TOKEN` in the
+`production` GitHub environment; set required reviewers on that environment to
+gate production promotion. Provision the staging app, persistent volume and
+unique secrets once:
+
+```bash
+fly apps create atlas-staging
+fly volumes create atlas_staging_data -a atlas-staging --region cdg --size 1
+fly secrets set -a atlas-staging ATLAS_GOSSIP_KEY="$(atlas-cli keygen)" \
+  ATLAS_API_TOKENS="$(atlas-cli tokengen)"
+```
+
+Staging is a separate one-node cluster with its own database and credentials;
+do not reuse production keys or data. The staging workflow cannot deploy until
+the Fly app and GitHub secret exist.
 
 The multi-region example below uses `deploy/fly/fly.toml` instead:
 
@@ -1303,8 +1325,12 @@ atlas/
   hand-written code.
 - [x] **Deployment foundation:** Compose, Kustomize dev/production overlays,
   Prometheus/Grafana, optional Prometheus Operator resources, and a Fly config.
-- [ ] **Deployment follow-up:** Helm, IaC, staged CD/GitOps, autoscaling,
-  scheduled off-node database backups with restore drills, and public staging.
+- [x] **Deployment follow-up foundations:** Helm and IaC, CI-gated staging with
+  manual production promotion, optional StatefulSet HPA, S3-compatible scheduled
+  off-node backups and isolated restore drills.
+- [ ] **Deployment environment activation:** provision Fly staging, configure
+  GitHub deploy secrets/production approvals, and configure a backup bucket and
+  workload identity. These require account-level access and are documented above.
 - [x] **Documentation:** architecture, API spec, run instructions, console,
   backup/restore steps, and operator runbooks for API and membership alerts.
 - [x] **Observability:** API availability and latency recording rules, SLO

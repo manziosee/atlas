@@ -1,32 +1,45 @@
-name: Fly Deploy
+name: Promote Fly production
 
 on:
-  workflow_run:
-    workflows: [CI]
-    branches: [main]
-    types: [completed]
+  workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: fly-deploy-main
+  group: fly-staging-and-production
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    if: github.event.workflow_run.conclusion == 'success'
-    name: Deploy app
+  promote:
+    if: github.ref == 'refs/heads/main'
+    name: Stage, smoke test, and promote
     runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require successful CI for this revision
+        run: gh run list --workflow CI --commit "$GITHUB_SHA" --status success --json databaseId --jq 'length > 0' | grep -qx true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: >-
-          flyctl deploy --remote-only --config fly.toml
-          --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
+      - name: Deploy this commit to staging
+        run: flyctl deploy --remote-only --config deploy/fly/staging.toml --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_STAGING_API_TOKEN }}
+          HEAD_SHA: ${{ github.sha }}
+      - name: Smoke test staging
+        run: |
+          for path in /healthz /readyz; do
+            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 "https://atlas-staging.fly.dev$path" >/dev/null
+          done
+      - name: Promote the same commit to production
+        run: flyctl deploy --remote-only --config fly.toml --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ github.sha }}

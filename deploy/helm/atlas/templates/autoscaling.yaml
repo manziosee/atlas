@@ -1,0 +1,21 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "atlas.fullname" . }}
+  labels: {{- include "atlas.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ include "atlas.fullname" . }}
+  minReplicas: {{ max 3 (int .Values.autoscaling.minReplicas) }}
+  maxReplicas: {{ max (int .Values.autoscaling.maxReplicas) (max 3 (int .Values.autoscaling.minReplicas)) }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

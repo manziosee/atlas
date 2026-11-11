@@ -1,0 +1,41 @@
+name: Fly staging
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fly-staging-and-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    name: Deploy and smoke test staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy the tested commit
+        run: flyctl deploy --remote-only --config deploy/fly/staging.toml --build-arg VERSION="${HEAD_SHA::12}" --build-arg COMMIT="$HEAD_SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_STAGING_API_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      - name: Verify public health endpoints
+        run: |
+          for path in /healthz /readyz; do
+            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 3 "https://atlas-staging.fly.dev$path" >/dev/null
+          done
+      - name: Record deployed revision
+        run: echo "Staging passed smoke checks for $HEAD_SHA" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}

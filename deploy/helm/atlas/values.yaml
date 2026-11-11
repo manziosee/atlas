@@ -3,6 +3,14 @@
 
 replicaCount: 3
 
+# Optional CPU-based scale-out for the StatefulSet. Keep at least three nodes;
+# scale-in is safe because records replicate and Atlas leaves on SIGTERM.
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
 image:
   repository: ghcr.io/manziosee/atlas
   # Defaults to the chart's appVersion.
@@ -70,6 +78,25 @@ podAnnotations: {}
 podDisruptionBudget:
   enabled: true
   maxUnavailable: 1
+
+# Optional off-cluster snapshots to an S3-compatible bucket. Credentials are
+# supplied through an existing Secret or workload identity on the backup SA.
+backup:
+  enabled: false
+  schedule: "0 2 * * *"
+  restoreDrill:
+    enabled: true
+    schedule: "0 5 * * 0"
+  bucket: ""
+  prefix: atlas
+  region: us-east-1
+  endpointURL: ""
+  existingSecret: ""
+  awsImage: public.ecr.aws/aws-cli/aws-cli:2.33.5
+  serviceAccountAnnotations: {}
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { cpu: 250m, memory: 256Mi }
 
 # Restricts ingress to what Atlas needs. Needs a CNI that enforces policies.
 networkPolicy:
