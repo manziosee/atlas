@@ -146,9 +146,10 @@ func TestServerTLSCertificateRotationPreservesExistingStream(t *testing.T) {
 	}
 
 	untrustedClient := newClient(untrustedCertPath, untrustedKeyPath)
-	_, err = untrustedClient.Get(serverURL + "/")
+	untrustedResponse, err := untrustedClient.Get(serverURL + "/")
 	untrustedClient.Transport.(*http.Transport).CloseIdleConnections()
 	if err == nil {
+		_ = untrustedResponse.Body.Close()
 		t.Fatal("client certificate from an unknown CA was accepted")
 	}
 

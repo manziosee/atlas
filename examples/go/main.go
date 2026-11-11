@@ -72,8 +72,10 @@ func runService() error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	server := &http.Server{Addr: listenAddress, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := net.Listen("tcp", listenAddress)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddress)
 	if err != nil {
 		return fmt.Errorf("listen for service requests: %w", err)
 	}
@@ -84,8 +86,6 @@ func runService() error {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	registered, err := register(ctx, endpoint, token, address, idempotencyKey)
 	if err != nil {
 		_ = server.Close()
