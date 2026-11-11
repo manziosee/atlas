@@ -270,7 +270,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 7
+const schemaVersion = 6
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -372,9 +372,6 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
   details TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS admin_audit_log_at ON admin_audit_log(at);
-`,
-	7: `
-ALTER TABLE services ADD COLUMN traffic_weight INTEGER NOT NULL DEFAULT 1 CHECK (traffic_weight >= 0 AND traffic_weight <= 1000);
 `,
 }
 
