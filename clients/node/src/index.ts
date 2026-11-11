@@ -30,6 +30,7 @@ export interface Service {
   unhealthy_threshold?: number;
   healthy_threshold?: number;
   draining?: boolean;
+  traffic_weight: number;
   updated_at: string;
   checked_at?: string;
   heartbeat_at?: string;
@@ -51,6 +52,7 @@ export interface ServiceSpec {
   unhealthy_threshold?: number;
   healthy_threshold?: number;
   draining?: boolean;
+  traffic_weight?: number;
 }
 
 /** Fields to change; absent fields keep their values. */

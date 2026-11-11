@@ -75,6 +75,7 @@ type serviceSpec struct {
 	UnhealthyThreshold   int      `json:"unhealthy_threshold,omitempty"`
 	HealthyThreshold     int      `json:"healthy_threshold,omitempty"`
 	Draining             bool     `json:"draining,omitempty"`
+	TrafficWeight        *int     `json:"traffic_weight,omitempty"`
 }
 
 // servicePatch changes the non-nil fields of a service. It is also the wire
@@ -91,6 +92,7 @@ type servicePatch struct {
 	UnhealthyThreshold   *int      `json:"unhealthy_threshold,omitempty"`
 	HealthyThreshold     *int      `json:"healthy_threshold,omitempty"`
 	Draining             *bool     `json:"draining,omitempty"`
+	TrafficWeight        *int      `json:"traffic_weight,omitempty"`
 }
 
 func (p servicePatch) apply(s *serviceSpec) {
@@ -104,6 +106,10 @@ func (p servicePatch) apply(s *serviceSpec) {
 	set(&s.UnhealthyThreshold, p.UnhealthyThreshold)
 	set(&s.HealthyThreshold, p.HealthyThreshold)
 	set(&s.Draining, p.Draining)
+	if p.TrafficWeight != nil {
+		weight := *p.TrafficWeight
+		s.TrafficWeight = &weight
+	}
 }
 
 func set[T any](dst *T, value *T) {
@@ -118,11 +124,15 @@ func fullPatch(spec serviceSpec) servicePatch {
 	if tags == nil {
 		tags = []string{} // encodes as [], not null, when forwarded
 	}
+	weight := 1
+	if spec.TrafficWeight != nil {
+		weight = *spec.TrafficWeight
+	}
 	return servicePatch{
 		Name: &spec.Name, Address: &spec.Address, Version: &spec.Version, Tags: &tags,
 		HealthCheck: &spec.HealthCheck, TTLSeconds: &spec.TTLSeconds,
 		CheckIntervalSeconds: &spec.CheckIntervalSeconds, UnhealthyThreshold: &spec.UnhealthyThreshold,
-		HealthyThreshold: &spec.HealthyThreshold, Draining: &spec.Draining,
+		HealthyThreshold: &spec.HealthyThreshold, Draining: &spec.Draining, TrafficWeight: &weight,
 	}
 }
 
@@ -131,6 +141,7 @@ func specOf(s storage.Service) serviceSpec {
 		ID: s.ID, Name: s.Name, Address: s.Address, Version: s.Version, Tags: s.Tags,
 		HealthCheck: s.HealthCheck, TTLSeconds: s.TTLSeconds, CheckIntervalSeconds: s.CheckIntervalSeconds,
 		UnhealthyThreshold: s.UnhealthyThreshold, HealthyThreshold: s.HealthyThreshold, Draining: s.Draining,
+		TrafficWeight: &s.TrafficWeight,
 	}
 }
 
@@ -138,6 +149,10 @@ func (spec serviceSpec) applyTo(s *storage.Service) {
 	s.Name, s.Address, s.Version, s.Tags = spec.Name, spec.Address, spec.Version, spec.Tags
 	s.HealthCheck, s.TTLSeconds, s.CheckIntervalSeconds = spec.HealthCheck, spec.TTLSeconds, spec.CheckIntervalSeconds
 	s.UnhealthyThreshold, s.HealthyThreshold, s.Draining = spec.UnhealthyThreshold, spec.HealthyThreshold, spec.Draining
+	s.TrafficWeight = 1
+	if spec.TrafficWeight != nil {
+		s.TrafficWeight = *spec.TrafficWeight
+	}
 }
 
 // register creates or idempotently re-registers a service owned by this node.
@@ -411,6 +426,9 @@ func validateSpec(in serviceSpec) error {
 	}
 	if len(in.Version) > 128 {
 		return invalid("version must be at most 128 characters")
+	}
+	if in.TrafficWeight != nil && (*in.TrafficWeight < 1 || *in.TrafficWeight > storage.MaxTrafficWeight) {
+		return invalid("traffic_weight must be between 1 and %d", storage.MaxTrafficWeight)
 	}
 	if len(in.Tags) > 16 {
 		return invalid("at most 16 tags are allowed")

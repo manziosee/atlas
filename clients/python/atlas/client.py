@@ -60,6 +60,7 @@ class ServiceInstance(TypedDict, total=False):
     unhealthy_threshold: int
     healthy_threshold: int
     draining: bool
+    traffic_weight: int
     updated_at: str
     checked_at: str
     heartbeat_at: str
@@ -171,6 +172,7 @@ class AtlasClient:
         unhealthy_threshold: int = 0,
         healthy_threshold: int = 0,
         draining: bool = False,
+        traffic_weight: int = 1,
         service_id: str = "",
         idempotency_key: str = "",
     ) -> ServiceInstance:
@@ -187,6 +189,7 @@ class AtlasClient:
             name, address, id=service_id, version=version, tags=tags, health_check=health_check,
             ttl_seconds=ttl_seconds, check_interval_seconds=check_interval_seconds,
             unhealthy_threshold=unhealthy_threshold, healthy_threshold=healthy_threshold, draining=draining,
+            traffic_weight=traffic_weight,
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return cast(ServiceInstance, self._request("POST", "/v1/services", payload, headers=headers))
@@ -205,6 +208,7 @@ class AtlasClient:
         unhealthy_threshold: int = 0,
         healthy_threshold: int = 0,
         draining: bool = False,
+        traffic_weight: int = 1,
         if_revision: int = 0,
     ) -> ServiceInstance:
         """Create or fully replace the service with ``service_id`` (PUT).
@@ -215,7 +219,7 @@ class AtlasClient:
         payload = _spec(
             name, address, version=version, tags=tags, health_check=health_check, ttl_seconds=ttl_seconds,
             check_interval_seconds=check_interval_seconds, unhealthy_threshold=unhealthy_threshold,
-            healthy_threshold=healthy_threshold, draining=draining,
+            healthy_threshold=healthy_threshold, draining=draining, traffic_weight=traffic_weight,
         )
         return cast(
             ServiceInstance,
@@ -236,6 +240,7 @@ class AtlasClient:
         unhealthy_threshold: int = _UNSET,
         healthy_threshold: int = _UNSET,
         draining: bool = _UNSET,
+        traffic_weight: int = _UNSET,
         if_revision: int = 0,
     ) -> ServiceInstance:
         """Change only the given fields (PATCH). Any node accepts this; a node
@@ -253,6 +258,7 @@ class AtlasClient:
                 "unhealthy_threshold": unhealthy_threshold,
                 "healthy_threshold": healthy_threshold,
                 "draining": draining,
+                "traffic_weight": traffic_weight,
             }.items()
             if value is not _UNSET
         }

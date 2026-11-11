@@ -188,5 +188,5 @@ flowchart LR
 |-------|----------------|
 | 2 — indirect probes, bounded broadcast queue, TCP push-pull, protobuf gossip | `membership.probe`, `Memberlist.queueBroadcast`, `sendFullState`, `api/v1/gossip.proto` |
 | 3 — service registry + SQLite + gRPC | `internal/storage`, `ATLAS_GRPC_ADDR` |
-| 4 — health-aware selection, region affinity, per-peer EWMA RTT, consistent hashing | `internal/routing`, membership probe latency |
+| 4 — health-aware selection, region affinity, per-peer EWMA RTT, weighted rendezvous and round-robin routing | `internal/routing`, membership probe latency |
 | 5 — console | separate Next.js app in `atlas-console/` that calls nodes from the browser (`ATLAS_CORS_ORIGINS`); authenticated SSE from `Memberlist.Subscribe()` |

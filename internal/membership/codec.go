@@ -412,6 +412,9 @@ func marshalService(service storage.Service) []byte {
 	if service.Draining {
 		b = appendVarintField(b, 18, 1)
 	}
+	if service.TrafficWeight > 0 {
+		b = appendVarintField(b, 19, uint64(service.TrafficWeight)) // #nosec G115 -- validated positive and bounded.
+	}
 	return b
 }
 
@@ -452,7 +455,7 @@ func unmarshalService(data []byte, service *storage.Service) error {
 			}
 			continue
 		}
-		if number >= 9 && number <= 18 {
+		if number >= 9 && number <= 19 {
 			if typ != protowire.VarintType {
 				return errors.New("membership: invalid protobuf service varint")
 			}
@@ -503,6 +506,11 @@ func unmarshalService(data []byte, service *storage.Service) error {
 					return errors.New("membership: invalid protobuf draining flag")
 				}
 				service.Draining = value == 1
+			case 19:
+				if value < 1 || value > storage.MaxTrafficWeight {
+					return errors.New("membership: invalid protobuf traffic weight")
+				}
+				service.TrafficWeight = int(value) // #nosec G115 -- bounded by MaxTrafficWeight above.
 			}
 			continue
 		}

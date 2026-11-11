@@ -35,13 +35,15 @@ describe("AtlasClient against a live node", live, () => {
 
   it("registers idempotently, updates with If-Match, and deletes", async () => {
     const name = unique("ts");
-    const first = await atlas.register({ name, address: "10.8.0.1:80", tags: ["ts"] }, { idempotencyKey: `deploy-${name}` });
-    const again = await atlas.register({ name, address: "10.8.0.1:80", tags: ["ts"] }, { idempotencyKey: `deploy-${name}` });
+    const first = await atlas.register({ name, address: "10.8.0.1:80", tags: ["ts"], traffic_weight: 5 }, { idempotencyKey: `deploy-${name}` });
+    const again = await atlas.register({ name, address: "10.8.0.1:80", tags: ["ts"], traffic_weight: 5 }, { idempotencyKey: `deploy-${name}` });
     assert.equal(again.id, first.id);
     assert.equal(again.revision, 1);
+    assert.equal(first.traffic_weight, 5);
 
-    const updated = await atlas.update(first.id, { version: "2" }, 1);
+    const updated = await atlas.update(first.id, { version: "2", traffic_weight: 7 }, 1);
     assert.equal(updated.version, "2");
+    assert.equal(updated.traffic_weight, 7);
     assert.equal(updated.address, "10.8.0.1:80");
     const stale = await rejectsWithCode(atlas.update(first.id, { version: "3" }, 1), "precondition_failed");
     assert.equal(stale.status, 412);

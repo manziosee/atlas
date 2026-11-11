@@ -439,8 +439,13 @@ Nodes no longer embed a dashboard. With `ATLAS_CONSOLE_URL` set, `/` and
 `GET /v1/lookup/{name}?region=...&key=...` selects a healthy instance,
 preferring the requested region:
 - Unknown-health instances are used only when no healthy instance exists.
-- With a `key`, selection uses consistent hashing; without one, it's
-  round-robin.
+- Traffic weight is applied after health, stale-owner, region and latency
+  filtering. With a `key`, weighted rendezvous hashing keeps each key stable;
+  without one, weighted round-robin distributes requests by relative weight.
+  Weights are integers from 1 to 1000 (default 1). For a 5% canary, set each
+  canary instance to weight 5 and each stable instance to weight 95; when
+  running multiple instances per version, keep the version-level total ratio
+  in mind. Unhealthy and draining instances are excluded before weighting.
 - Unhealthy and draining instances are never returned.
 
 **Routing policies.** Two policies, set per node and overridable per lookup,
@@ -1240,8 +1245,11 @@ atlas/
   shutdown, and include clients that look up and call an instance
   (`examples/go`, `examples/python`); both run against a live node in CI.
 - [x] **Phase 4, health-aware routing:** healthy instances, region affinity,
-  per-peer EWMA probe latency, nearest measured instance, consistent hashing,
-  and round-robin fallback.
+  per-peer EWMA probe latency, nearest measured instance, weighted rendezvous
+  hashing, and weighted round-robin fallback.
+- [x] **Weighted canary routing:** per-instance relative traffic weights flow
+  through the API, gossip, Go/Python/Node.js/Java clients and Console form;
+  unhealthy instances are automatically removed from selection.
 - [x] **Phase 5, dashboard foundation:** an authenticated, resumable stream of
   membership and registry events.
 - [x] **Phase 5, Atlas Console:** a separate Next.js app (`atlas-console/`) that
