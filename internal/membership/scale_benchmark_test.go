@@ -57,7 +57,7 @@ func simulateConvergence(b *testing.B, size int) time.Duration {
 		if round%antiEntropyEvery == antiEntropyEvery-1 {
 			for _, node := range nodes {
 				if peer, ok := node.randomMember(func(member *Member) bool { return member.State == StateAlive }); ok {
-					_ = node.sendFullState(context.Background(), peer.Addr, msgPushPullRequest, nil, false)
+					_ = node.sendFullState(context.Background(), peer.Addr, msgPushPullRequest, nil, nil, false)
 				}
 			}
 		} else {

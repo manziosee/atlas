@@ -109,11 +109,34 @@ export interface AtlasEvent {
 
 export interface Credential {
   id: string;
+  name?: string;
   scopes: Scope[];
+  created_at?: string;
   expires_at?: string;
-  source: "static" | "scoped";
+  source: "static" | "scoped" | "managed";
   expired: boolean;
+  revoked?: boolean;
   current: boolean;
+}
+
+export interface CreatedCredential {
+  credential: Credential;
+  token: string;
+}
+
+export interface AuditEntry {
+  seq: number;
+  at: string;
+  actor_id: string;
+  action: string;
+  resource_id?: string;
+  details: Record<string, unknown>;
+}
+
+export interface AuditPage {
+  count: number;
+  entries: AuditEntry[];
+  next_before?: number;
 }
 
 export interface LookupOptions {
@@ -301,6 +324,32 @@ export class AtlasClient {
 
   async credentials(): Promise<Credential[]> {
     return (await this.json<{ credentials: Credential[] }>("GET", "/v1/admin/credentials")).credentials ?? [];
+  }
+
+  createCredential(input: { name: string; scopes: Scope[]; expires_at: string }) {
+    return this.json<CreatedCredential>("POST", "/v1/admin/credentials", { body: input });
+  }
+
+  revokeCredential(id: string) {
+    return this.json<void>("DELETE", `/v1/admin/credentials/${encodeURIComponent(id)}`);
+  }
+
+  audit(before?: number, limit = 100) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (before) query.set("before", String(before));
+    return this.json<AuditPage>("GET", "/v1/admin/audit", { query });
+  }
+
+  async allAudit(): Promise<AuditEntry[]> {
+    const entries: AuditEntry[] = [];
+    let before: number | undefined;
+    for (let page = 0; page < 100; page++) {
+      const result = await this.audit(before, 500);
+      entries.push(...result.entries);
+      if (!result.next_before) return entries;
+      before = result.next_before;
+    }
+    throw new AtlasError(0, "audit_export_limit", "audit export exceeded 50,000 entries; export a smaller time range");
   }
 
   async backup(): Promise<Blob> {

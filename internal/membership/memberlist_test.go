@@ -3,6 +3,8 @@ package membership
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -289,7 +291,7 @@ func TestTCPPushPullRepairsFullMembershipView(t *testing.T) {
 	second.merge(Member{ID: "sync-3", Addr: "127.0.0.1:7253", State: StateAlive, Incarnation: 1})
 	wg.Go(func() { first.receiveLoop(ctx) })
 	wg.Go(func() { second.receiveLoop(ctx) })
-	if err := first.sendFullState(context.Background(), second.LocalNode().Addr, msgPushPullRequest, nil, false); err != nil {
+	if err := first.sendFullState(context.Background(), second.LocalNode().Addr, msgPushPullRequest, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, time.Second, func() bool { return targetState(first, "sync-3") == StateAlive }, "TCP push-pull did not repair the missing member")
@@ -330,7 +332,7 @@ func TestTCPPushPullRepairsRegistryDigestMismatch(t *testing.T) {
 	second.merge(Member{ID: firstConfig.NodeID, Addr: firstConfig.AdvertiseAddr, State: StateAlive, Incarnation: 1})
 	wg.Go(func() { first.receiveLoop(ctx) })
 	wg.Go(func() { second.receiveLoop(ctx) })
-	if err := first.sendFullState(context.Background(), secondConfig.AdvertiseAddr, msgPushPullRequest, nil, false); err != nil {
+	if err := first.sendFullState(context.Background(), secondConfig.AdvertiseAddr, msgPushPullRequest, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
@@ -338,6 +340,67 @@ func TestTCPPushPullRepairsRegistryDigestMismatch(t *testing.T) {
 		secondRemote, secondErr := firstStore.Get(context.Background(), "payments-2")
 		return firstErr == nil && secondErr == nil && firstRemote.Name == "payments" && secondRemote.Name == "payments"
 	}, "push-pull did not repair both sides of registry digest mismatch")
+}
+
+func TestTCPPushPullReplicatesManagedCredentials(t *testing.T) {
+	ctx := context.Background()
+	firstStore, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = firstStore.Close() })
+	secondStore, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+	now := time.Now().UTC()
+	tokenDigest := sha256.Sum256([]byte("cluster credential replication test"))
+	credential := storage.ManagedCredential{
+		ID: hex.EncodeToString(tokenDigest[:12]), Name: "deployment",
+		Digest: tokenDigest[:], Scopes: []string{"read", "write"},
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := firstStore.CreateManagedCredential(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+	firstConfig := testConfig("credential-sync-1", "127.0.0.1:7271")
+	firstConfig.Services = firstStore
+	secondConfig := testConfig("credential-sync-2", "127.0.0.1:7272")
+	secondConfig.Services = secondStore
+	fn := newFakeNet()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first := New(firstConfig, fn.attach(firstConfig.AdvertiseAddr), log)
+	second := New(secondConfig, fn.attach(secondConfig.AdvertiseAddr), log)
+	first.merge(Member{ID: secondConfig.NodeID, Addr: secondConfig.AdvertiseAddr, State: StateAlive, Incarnation: 1})
+	second.merge(Member{ID: firstConfig.NodeID, Addr: firstConfig.AdvertiseAddr, State: StateAlive, Incarnation: 1})
+	clusterCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	t.Cleanup(func() { cancel(); wg.Wait() })
+	wg.Go(func() { first.receiveLoop(clusterCtx) })
+	wg.Go(func() { second.receiveLoop(clusterCtx) })
+	if err := first.sendFullState(ctx, secondConfig.AdvertiseAddr, msgPushPullRequest, nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool {
+		credentials, err := secondStore.ManagedCredentials(ctx)
+		return err == nil && len(credentials) == 1 && credentials[0].ID == credential.ID
+	}, "managed credential did not replicate to peer")
+	replica, err := secondStore.ManagedCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := secondStore.RevokeManagedCredential(ctx, replica[0].ID, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.sendFullState(ctx, firstConfig.AdvertiseAddr, msgPushPullRequest, nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool {
+		credentials, err := firstStore.ManagedCredentials(ctx)
+		return err == nil && len(credentials) == 1 && !credentials[0].RevokedAt.IsZero() && credentials[0].RevokedAt.Equal(revoked.RevokedAt)
+	}, "credential revocation did not replicate to peer")
 }
 
 func targetState(m *Memberlist, id string) State {

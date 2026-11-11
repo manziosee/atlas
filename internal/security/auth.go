@@ -34,18 +34,37 @@ type Credential struct {
 type credentialRecord struct {
 	digest    [sha256.Size]byte
 	Scopes    []Scope
+	name      string
+	createdAt time.Time
 	expiresAt time.Time
 	static    bool
+	managed   bool
+	revoked   bool
 }
 
 // CredentialInfo describes a configured credential without its secret. ID is
 // the same non-secret fingerprint written to access logs as token_id.
 type CredentialInfo struct {
 	ID        string    `json:"id"`
+	Name      string    `json:"name,omitempty"`
 	Scopes    []Scope   `json:"scopes"`
+	CreatedAt time.Time `json:"created_at,omitzero"`
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
 	Source    string    `json:"source"`
 	Expired   bool      `json:"expired"`
+	Revoked   bool      `json:"revoked,omitempty"`
+}
+
+// RuntimeCredential is a persisted managed credential. It contains only the
+// digest, never the bearer token.
+type RuntimeCredential struct {
+	ID        string
+	Name      string
+	Digest    [sha256.Size]byte
+	Scopes    []Scope
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	RevokedAt time.Time
 }
 
 // TokenAuthenticator stores SHA-256 digests and applies credential scopes and
@@ -138,9 +157,53 @@ func (a *TokenAuthenticator) ReplaceConfigured(tokens []string, credentials []Cr
 		records = append(records, credentialRecord{digest: sha256.Sum256([]byte(credential.Token)), Scopes: slices.Clone(credential.Scopes), expiresAt: credential.ExpiresAt})
 	}
 	a.mu.Lock()
+	for _, current := range a.credentials {
+		if current.managed {
+			records = append(records, current)
+		}
+	}
 	a.credentials = records
 	a.mu.Unlock()
 	return nil
+}
+
+// ReplaceRuntimeCredentials atomically replaces managed credentials loaded
+// from durable storage, preserving configured credentials.
+func (a *TokenAuthenticator) ReplaceRuntimeCredentials(credentials []RuntimeCredential) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	records := make([]credentialRecord, 0, len(a.credentials)+len(credentials))
+	for _, current := range a.credentials {
+		if !current.managed {
+			records = append(records, current)
+		}
+	}
+	for _, credential := range credentials {
+		records = append(records, runtimeRecord(credential))
+	}
+	a.credentials = records
+}
+
+// UpsertRuntimeCredential updates one managed credential by its stable ID.
+func (a *TokenAuthenticator) UpsertRuntimeCredential(credential RuntimeCredential) {
+	record := runtimeRecord(credential)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.credentials {
+		if a.credentials[i].managed && fingerprint(a.credentials[i].digest) == credential.ID {
+			a.credentials[i] = record
+			return
+		}
+	}
+	a.credentials = append(a.credentials, record)
+}
+
+func runtimeRecord(credential RuntimeCredential) credentialRecord {
+	return credentialRecord{
+		digest: credential.Digest, Scopes: slices.Clone(credential.Scopes),
+		name: credential.Name, createdAt: credential.CreatedAt, expiresAt: credential.ExpiresAt,
+		managed: true, revoked: !credential.RevokedAt.IsZero(),
+	}
 }
 
 func (a *TokenAuthenticator) Valid(token string) bool {
@@ -172,7 +235,7 @@ func (a *TokenAuthenticator) grant(token string, required Scope) (string, []Scop
 	var scopes []Scope
 	for _, credential := range a.credentials {
 		constantMatch := subtle.ConstantTimeCompare(digest[:], credential.digest[:])
-		valid := credential.expiresAt.IsZero() || now.Before(credential.expiresAt)
+		valid := !credential.revoked && (credential.expiresAt.IsZero() || now.Before(credential.expiresAt))
 		scoped := required == ""
 		for _, scope := range credential.Scopes {
 			scoped = scoped || scope == ScopeAdmin || scope == required
@@ -204,11 +267,15 @@ func (a *TokenAuthenticator) Credentials() []CredentialInfo {
 		source := "scoped"
 		if credential.static {
 			source = "static"
+		} else if credential.managed {
+			source = "managed"
 		}
 		out = append(out, CredentialInfo{
-			ID: fingerprint(credential.digest), Scopes: slices.Clone(credential.Scopes),
+			ID: fingerprint(credential.digest), Name: credential.name, Scopes: slices.Clone(credential.Scopes),
+			CreatedAt: credential.createdAt,
 			ExpiresAt: credential.expiresAt, Source: source,
 			Expired: !credential.expiresAt.IsZero() && !now.Before(credential.expiresAt),
+			Revoked: credential.revoked,
 		})
 	}
 	return out

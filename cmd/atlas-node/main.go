@@ -64,6 +64,32 @@ func run() error {
 	}
 	defer func() { _ = registry.Close() }()
 
+	auth, err := security.NewConfiguredTokenAuthenticator(cfg.APITokens, cfg.APICredentials)
+	if err != nil {
+		return fmt.Errorf("configure API credentials: %w", err)
+	}
+	managedCredentials, err := registry.ManagedCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("load managed API credentials: %w", err)
+	}
+	runtimeCredentials := make([]security.RuntimeCredential, 0, len(managedCredentials))
+	for _, credential := range managedCredentials {
+		runtimeCredential, err := runtimeCredential(credential)
+		if err != nil {
+			return fmt.Errorf("load managed API credential %s: %w", credential.ID, err)
+		}
+		runtimeCredentials = append(runtimeCredentials, runtimeCredential)
+	}
+	auth.ReplaceRuntimeCredentials(runtimeCredentials)
+	registry.OnCredentialChange(func(credential storage.ManagedCredential) {
+		runtimeCredential, err := runtimeCredential(credential)
+		if err != nil {
+			log.Error("could not apply managed API credential", "credential_id", credential.ID, "err", err)
+			return
+		}
+		auth.UpsertRuntimeCredential(runtimeCredential)
+	})
+
 	// --- gossip transport + membership ---------------------------------
 	keyring, err := security.NewKeyring(cfg.GossipKeys...)
 	if err != nil {
@@ -122,17 +148,13 @@ func run() error {
 	registry.SetHistoryEnabled(cfg.HistoryRetention > 0)
 	wg.Go(func() { pruneHistory(ctx, registry, cfg.HistoryRetention, log) })
 	wg.Go(func() { pruneAnalytics(ctx, registry, log) })
+	wg.Go(func() { pruneAudit(ctx, registry, log) })
 	if cfg.AnalyticsEnabled && cfg.TelemetryKey == "" && cfg.Env == config.EnvProduction {
 		log.Warn("telemetry is enabled without ATLAS_TELEMETRY_KEY: anyone can submit events and countries are ignored")
 	}
 	// --- HTTP API ------------------------------------------------------
 	limiter := security.NewRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.TrustedProxies...)
 	wg.Go(func() { limiter.Run(ctx) })
-	auth, err := security.NewConfiguredTokenAuthenticator(cfg.APITokens, cfg.APICredentials)
-	if err != nil {
-		return fmt.Errorf("configure API credentials: %w", err)
-	}
-
 	forwarder, err := newForwarder(cfg)
 	if err != nil {
 		return fmt.Errorf("configure write forwarding: %w", err)
@@ -241,6 +263,22 @@ func run() error {
 	wg.Wait() // membership broadcasts "left" before the transport closes
 	log.Info("atlas node stopped")
 	return err
+}
+
+func runtimeCredential(credential storage.ManagedCredential) (security.RuntimeCredential, error) {
+	if err := credential.Validate(); err != nil {
+		return security.RuntimeCredential{}, err
+	}
+	var digest [32]byte
+	copy(digest[:], credential.Digest)
+	scopes := make([]security.Scope, len(credential.Scopes))
+	for i, scope := range credential.Scopes {
+		scopes[i] = security.Scope(scope)
+	}
+	return security.RuntimeCredential{
+		ID: credential.ID, Name: credential.Name, Digest: digest, Scopes: scopes,
+		CreatedAt: credential.CreatedAt, ExpiresAt: credential.ExpiresAt, RevokedAt: credential.RevokedAt,
+	}, nil
 }
 
 func newPprofHandler() http.Handler {

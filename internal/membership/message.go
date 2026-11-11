@@ -32,17 +32,20 @@ const maxMembersPerMessage = 512
 const maxServicesPerMessage = 64
 const maxMembersPerStreamMessage = 100_000
 const maxServicesPerStreamMessage = 100_000
+const maxCredentialsPerStreamMessage = storage.MaxManagedCredentials
 
 // message is the gossip wire format. It travels as versioned protobuf wire
 // data inside the encrypted transport envelope; receivers also accept legacy JSON.
 type message struct {
-	Type           msgType           `json:"t"`
-	Seq            uint64            `json:"seq,omitempty"`
-	From           Member            `json:"from"`
-	Members        []Member          `json:"m,omitempty"`
-	Services       []storage.Service `json:"s,omitempty"`
-	RegistryDigest []byte            `json:"rd,omitempty"`
-	PushPullReply  bool              `json:"pr,omitempty"`
+	Type             msgType                     `json:"t"`
+	Seq              uint64                      `json:"seq,omitempty"`
+	From             Member                      `json:"from"`
+	Members          []Member                    `json:"m,omitempty"`
+	Services         []storage.Service           `json:"s,omitempty"`
+	Credentials      []storage.ManagedCredential `json:"c,omitempty"`
+	RegistryDigest   []byte                      `json:"rd,omitempty"`
+	CredentialDigest []byte                      `json:"cd,omitempty"`
+	PushPullReply    bool                        `json:"pr,omitempty"`
 	// Target is set only on ping-req messages.
 	Target *Member `json:"target,omitempty"`
 	// SentAt (unix ms) lets receivers reject stale or replayed packets
@@ -80,9 +83,17 @@ func (m *message) validate() error {
 		if m.Type == msgPushPullRequest && len(m.Services) != 0 {
 			return errors.New("membership: push-pull request must not contain services")
 		}
+		if m.Type == msgPushPullRequest && len(m.Credentials) != 0 {
+			return errors.New("membership: push-pull request must not contain credentials")
+		}
+		if len(m.CredentialDigest) != 0 && len(m.CredentialDigest) != 32 {
+			return errors.New("membership: invalid credential digest length")
+		}
 		if m.Type != msgPushPullState && m.PushPullReply {
 			return errors.New("membership: reply flag is only valid on push-pull state")
 		}
+	} else if len(m.Credentials) != 0 || len(m.CredentialDigest) != 0 {
+		return errors.New("membership: credential state is only valid on push-pull messages")
 	}
 	if len(m.Services) > maxServices {
 		return errors.New("membership: too many services in message")
@@ -90,6 +101,14 @@ func (m *message) validate() error {
 	for _, service := range m.Services {
 		if err := service.Validate(); err != nil {
 			return fmt.Errorf("membership: invalid service record: %w", err)
+		}
+	}
+	if len(m.Credentials) > maxCredentialsPerStreamMessage {
+		return errors.New("membership: too many credentials in message")
+	}
+	for _, credential := range m.Credentials {
+		if err := credential.Validate(); err != nil {
+			return fmt.Errorf("membership: invalid credential record: %w", err)
 		}
 	}
 	if m.Type == msgPingReq {

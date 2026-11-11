@@ -61,6 +61,29 @@ describe("AtlasClient", () => {
     expect(calls[0].init.body).toBe('{"draining":true}');
   });
 
+  it("creates and revokes credentials and pages through audit exports", async () => {
+    let auditPage = 0;
+    const calls = mockFetch((url, init) => {
+      if (init.method === "POST") return json(201, { credential: { id: "c1" }, token: "one-time-token" });
+      if (init.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.includes("/v1/admin/audit")) {
+        auditPage++;
+        return json(200, auditPage === 1
+          ? { entries: [{ seq: 2, action: "credential.revoked" }], next_before: 2 }
+          : { entries: [{ seq: 1, action: "credential.created" }] });
+      }
+      throw new Error(`unexpected ${init.method} ${url}`);
+    });
+    const client = new AtlasClient("http://node", "admin");
+    const created = await client.createCredential({ name: "deploy", scopes: ["write"], expires_at: "2030-01-01T00:00:00Z" });
+    expect(created.token).toBe("one-time-token");
+    await client.revokeCredential("fingerprint/1");
+    const exported = await client.allAudit();
+    expect(exported.map((entry) => entry.seq)).toEqual([2, 1]);
+    expect(calls.map((call) => call.init.method)).toEqual(["POST", "DELETE", "GET", "GET"]);
+    expect(calls[1].url).toBe("http://node/v1/admin/credentials/fingerprint%2F1");
+  });
+
   it("streams events, reporting ids and resets", async () => {
     const body = 'id: 4\ndata: {"id":"4","type":"join","kind":"member","at":"2026-01-01T00:00:00Z"}\n\nevent: reset\ndata: {"type":"reset"}\n\n';
     const calls = mockFetch(() => new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }));

@@ -338,6 +338,15 @@ also grants the other two. Scoped credentials have a required RFC3339
 `ATLAS_API_CREDENTIALS` for least privilege. The full reference is
 [`api/v1/openapi.yaml`](api/v1/openapi.yaml).
 
+Operators can create and revoke runtime credentials from the console or the
+admin API. Their bearer tokens are shown only once; nodes persist and replicate
+only SHA-256 digests and metadata over authenticated TCP anti-entropy. Static
+environment credentials remain operator-managed and cannot be revoked through
+the API. All cluster nodes must run a version supporting managed credentials;
+changes converge asynchronously. Admin credential changes, backups, and node
+evictions are recorded in a node-local audit log retained for 90 days; the
+console can export the retained entries as JSON.
+
 Each node persists its registrations in SQLite and replicates them to every
 other node over gossip, so any node can answer reads. A registration belongs
 to the node that accepted it: that node runs its health checks and applies its
@@ -364,7 +373,10 @@ extra. If the owner is alive but not answering, the response is
 | `GET /v1/history?name=` | Recent changes across services, or for one service name. |
 | `GET /v1/node`, `GET /v1/members` | This node, and the cluster as this node sees it. |
 | `GET /v1/events` | Membership and registry events as Server-Sent Events, resumable with `Last-Event-ID`. |
-| `GET /v1/admin/credentials` | Configured credentials by fingerprint, scopes and expiry, never the secrets. |
+| `GET /v1/admin/credentials` | List configured and runtime-managed credentials by fingerprint, scopes and expiry, never the secrets. |
+| `POST /v1/admin/credentials` | Create an expiring runtime-managed credential; its token is returned once. |
+| `DELETE /v1/admin/credentials/{id}` | Permanently revoke a runtime-managed credential. |
+| `GET /v1/admin/audit` | Page through the node-local admin audit log, retained for 90 days. |
 | `POST /v1/admin/backup` | Download a consistent SQLite snapshot of this node's registry. |
 | `DELETE /v1/admin/nodes/{id}` | Evict a failed node and delete its services. |
 
@@ -828,7 +840,7 @@ your token. It replaces the dashboard nodes used to embed.
 | **Service actions** | Register, edit (with `If-Match`), drain/undrain, heartbeat, and deregister after typing the ID to confirm; API errors in plain language | write |
 | **Activity** | Live membership and service events with filters, pause and clear, and reconnect/disconnected states; plus the recorded history across services | read |
 | **Lookup tester** | Runs `/v1/lookup` with region, tags, key and routing overrides, shows the chosen instance and why each candidate was picked or skipped, with the equivalent `curl` and `dig` | read |
-| **Node admin** | Credential list (fingerprints, scopes, expiry; never secrets), registry backup download, and evicting failed nodes | admin |
+| **Node admin** | Credential list/create/revoke (tokens shown once), exportable 90-day local audit log, registry backup download, and evicting failed nodes | admin |
 | **Cluster map** | Graph, world map and matrix of the probe latency every node measures to every peer (`/v1/topology?scope=cluster`) | read |
 | **Integrations** | Kubernetes clusters and Docker hosts feeding this cluster, with setup for Helm, the controller, the Docker agent and Terraform | read |
 | **Docs, API, Security** | The site also serves the documentation, an API reference built from `openapi.yaml`, the security policy, About, Terms and Contributing, all rendered from this repository at build time | none |
@@ -837,8 +849,10 @@ There are no user accounts. Atlas authorizes requests with bearer tokens
 scoped `read`, `write` or `admin`, and the console adapts to whatever the
 token allows. It finds out by reading, never by changing anything. Tokens stay
 in page memory, or in this tab's session storage if you tick *Keep me
-connected*. Credentials can't be created or revoked from the console because
-the API doesn't support it; change `ATLAS_API_CREDENTIALS` and send `SIGHUP`.
+connected*. Admins can create and revoke runtime credentials in the console;
+their secrets are shown once and only digests replicate between nodes.
+Environment-configured credentials remain managed through
+`ATLAS_API_CREDENTIALS` and `SIGHUP`.
 
 **Run it locally**
 

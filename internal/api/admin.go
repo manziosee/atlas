@@ -2,22 +2,34 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/manziosee/atlas/internal/httperr"
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/security"
+	"github.com/manziosee/atlas/internal/storage"
 )
 
 // Admin endpoints require the admin scope (security.RequiredScope).
 //
 //	GET    /v1/admin/credentials  configured credentials, without secrets
+//	POST   /v1/admin/credentials  create a runtime credential, token shown once
+//	DELETE /v1/admin/credentials/{id} revoke a runtime credential
+//	GET    /v1/admin/audit       this node's retained admin audit log
 //	POST   /v1/admin/backup       consistent SQLite snapshot of this node
 //	DELETE /v1/admin/nodes/{id}   evict a failed node and delete its services
 
@@ -33,6 +45,14 @@ type ownerTombstoner interface {
 	TombstoneOwnedBy(context.Context, string) (int, error)
 }
 
+type credentialAdminStore interface {
+	CreateManagedCredentialWithAudit(context.Context, storage.ManagedCredential, *storage.AuditEntry) error
+	RevokeManagedCredentialWithAudit(context.Context, string, time.Time, *storage.AuditEntry) (storage.ManagedCredential, error)
+	ManagedCredentials(context.Context) ([]storage.ManagedCredential, error)
+	Audit(context.Context, storage.AuditFilter) ([]storage.AuditEntry, int64, error)
+	AddAudit(context.Context, storage.AuditEntry) error
+}
+
 func (d Deps) listCredentials(w http.ResponseWriter, r *http.Request) {
 	current := security.AuthenticatedTokenID(r.Context())
 	type credential struct {
@@ -45,6 +65,189 @@ func (d Deps) listCredentials(w http.ResponseWriter, r *http.Request) {
 		out = append(out, credential{CredentialInfo: info, Current: info.ID == current})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"count": len(out), "credentials": out})
+}
+
+func (d Deps) createCredential(w http.ResponseWriter, r *http.Request) {
+	store, ok := d.Registry.(credentialAdminStore)
+	if !ok {
+		httperr.Write(w, http.StatusNotImplemented, httperr.CodeUnavailable, "runtime credential management is not supported")
+		return
+	}
+	var request struct {
+		Name      string           `json:"name"`
+		Scopes    []security.Scope `json:"scopes"`
+		ExpiresAt time.Time        `json:"expires_at"`
+	}
+	if !decodeBody(w, r, &request) {
+		return
+	}
+	request.Name = strings.TrimSpace(request.Name)
+	if request.Name == "" || len(request.Name) > 128 || len(request.Scopes) == 0 || request.ExpiresAt.IsZero() {
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "name, at least one scope, and expires_at are required")
+		return
+	}
+	now := time.Now().UTC()
+	if !request.ExpiresAt.After(now) || request.ExpiresAt.After(now.AddDate(1, 0, 0)) {
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "expires_at must be in the future and no more than one year away")
+		return
+	}
+	scopes := make([]string, len(request.Scopes))
+	seen := make(map[security.Scope]bool, len(request.Scopes))
+	for i, scope := range request.Scopes {
+		if scope != security.ScopeRead && scope != security.ScopeWrite && scope != security.ScopeAdmin || seen[scope] {
+			httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "scopes must be unique values from read, write, and admin")
+			return
+		}
+		seen[scope] = true
+		scopes[i] = string(scope)
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		d.Log.Error("could not generate managed credential", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not generate credential")
+		return
+	}
+	token := base64.RawURLEncoding.EncodeToString(secret)
+	digest := sha256.Sum256([]byte(token))
+	credential := storage.ManagedCredential{
+		ID: hex.EncodeToString(digest[:12]), Name: request.Name, Digest: append([]byte(nil), digest[:]...),
+		Scopes: scopes, ExpiresAt: request.ExpiresAt.UTC(), CreatedAt: now, UpdatedAt: now,
+	}
+	details, err := json.Marshal(map[string]any{"name": credential.Name, "scopes": scopes, "expires_at": credential.ExpiresAt})
+	if err != nil {
+		d.Log.Error("could not encode credential audit details", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not create credential")
+		return
+	}
+	audit := &storage.AuditEntry{
+		At: now, ActorID: security.AuthenticatedTokenID(r.Context()), Action: "credential.created",
+		ResourceID: credential.ID, Details: details,
+	}
+	if err := store.CreateManagedCredentialWithAudit(r.Context(), credential, audit); err != nil {
+		d.Log.Error("managed credential creation failed", "credential_id", credential.ID, "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not create credential")
+		return
+	}
+	if err := d.applyManagedCredential(credential); err != nil {
+		d.Log.Error("managed credential auth update failed", "credential_id", credential.ID, "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "credential was stored but could not be activated")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"credential": security.CredentialInfo{
+			ID: credential.ID, Name: credential.Name, Scopes: request.Scopes, CreatedAt: credential.CreatedAt,
+			ExpiresAt: credential.ExpiresAt, Source: "managed",
+		},
+		"token": token,
+	})
+}
+
+func (d Deps) revokeCredential(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == security.AuthenticatedTokenID(r.Context()) {
+		httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "cannot revoke the credential used for this request; connect with another admin credential")
+		return
+	}
+	store, ok := d.Registry.(credentialAdminStore)
+	if !ok {
+		httperr.Write(w, http.StatusNotImplemented, httperr.CodeUnavailable, "runtime credential management is not supported")
+		return
+	}
+	var known bool
+	for _, credential := range d.Auth.Credentials() {
+		if credential.ID == id {
+			if credential.Source != "managed" {
+				httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "only runtime-managed credentials can be revoked through the API")
+				return
+			}
+			known = true
+			break
+		}
+	}
+	if !known {
+		httperr.Write(w, http.StatusNotFound, httperr.CodeNotFound, "managed credential not found")
+		return
+	}
+	now := time.Now().UTC()
+	details, err := json.Marshal(map[string]string{"reason": "revoked by administrator"})
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not revoke credential")
+		return
+	}
+	audit := &storage.AuditEntry{
+		At: now, ActorID: security.AuthenticatedTokenID(r.Context()), Action: "credential.revoked",
+		ResourceID: id, Details: details,
+	}
+	credential, err := store.RevokeManagedCredentialWithAudit(r.Context(), id, now, audit)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httperr.Write(w, http.StatusNotFound, httperr.CodeNotFound, "managed credential not found")
+			return
+		}
+		d.Log.Error("managed credential revocation failed", "credential_id", id, "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not revoke credential")
+		return
+	}
+	if err := d.applyManagedCredential(credential); err != nil {
+		d.Log.Error("managed credential auth update failed", "credential_id", id, "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "credential was revoked in storage but could not be deactivated")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (d Deps) applyManagedCredential(credential storage.ManagedCredential) error {
+	if d.Auth == nil {
+		return errors.New("API token authenticator is unavailable")
+	}
+	if err := credential.Validate(); err != nil {
+		return err
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], credential.Digest)
+	scopes := make([]security.Scope, len(credential.Scopes))
+	for i, scope := range credential.Scopes {
+		scopes[i] = security.Scope(scope)
+	}
+	d.Auth.UpsertRuntimeCredential(security.RuntimeCredential{
+		ID: credential.ID, Name: credential.Name, Digest: digest, Scopes: scopes,
+		CreatedAt: credential.CreatedAt, ExpiresAt: credential.ExpiresAt, RevokedAt: credential.RevokedAt,
+	})
+	return nil
+}
+
+func (d Deps) listAudit(w http.ResponseWriter, r *http.Request) {
+	store, ok := d.Registry.(credentialAdminStore)
+	if !ok {
+		httperr.Write(w, http.StatusNotImplemented, httperr.CodeUnavailable, "audit log is not supported by this registry")
+		return
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > storage.MaxAuditPage {
+			httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "limit must be between 1 and 500")
+			return
+		}
+		limit = n
+	}
+	var before int64
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 1 {
+			httperr.Write(w, http.StatusBadRequest, httperr.CodeValidation, "before must be a positive audit sequence number")
+			return
+		}
+		before = n
+	}
+	entries, next, err := store.Audit(r.Context(), storage.AuditFilter{Before: before, Limit: limit})
+	if err != nil {
+		d.Log.Error("admin audit query failed", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not read audit log")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(entries), "entries": entries, "next_before": next})
 }
 
 // backup streams a point-in-time copy of this node's registry database. The
@@ -67,6 +270,18 @@ func (d Deps) backup(w http.ResponseWriter, r *http.Request) {
 		d.Log.Error("admin backup failed", "err", err)
 		httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not create backup")
 		return
+	}
+	if auditStore, ok := d.Registry.(interface {
+		AddAudit(context.Context, storage.AuditEntry) error
+	}); ok {
+		if err := auditStore.AddAudit(r.Context(), storage.AuditEntry{
+			At: time.Now().UTC(), ActorID: security.AuthenticatedTokenID(r.Context()),
+			Action: "backup.downloaded", ResourceID: d.Cluster.LocalNode().ID,
+		}); err != nil {
+			d.Log.Error("admin backup audit failed", "err", err)
+			httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "could not record backup audit event")
+			return
+		}
 	}
 	file, err := os.Open(path) // #nosec G304 -- path is inside a directory this handler created.
 	if err != nil {
@@ -126,6 +341,19 @@ func (d Deps) evictNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Log.Warn("node evicted by operator", "member", id, "services_removed", removed, "token_id", security.AuthenticatedTokenID(r.Context()))
+	if auditStore, ok := d.Registry.(interface {
+		AddAudit(context.Context, storage.AuditEntry) error
+	}); ok {
+		details, _ := json.Marshal(map[string]int{"services_removed": removed})
+		if err := auditStore.AddAudit(r.Context(), storage.AuditEntry{
+			At: time.Now().UTC(), ActorID: security.AuthenticatedTokenID(r.Context()),
+			Action: "node.evicted", ResourceID: id, Details: details,
+		}); err != nil {
+			d.Log.Error("node eviction audit failed", "member", id, "err", err)
+			httperr.Write(w, http.StatusInternalServerError, httperr.CodeInternal, "node was evicted but the audit event could not be recorded")
+			return
+		}
+	}
 	body := map[string]any{"node_id": id, "services_removed": removed}
 	if known {
 		body["member"] = member
