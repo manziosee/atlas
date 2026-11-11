@@ -64,6 +64,23 @@ jobs:
         if: failure()
         run: cat "$RUNNER_TEMP/node.log"
 
+  service-examples:
+    name: Go and Python service examples against a live node
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - name: Start a single development node
+        run: ./scripts/start-test-node.sh
+      - name: Run, call, re-register and shut down both examples
+        run: bash examples/test.sh
+      - name: Node log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/node.log"
+
   node-client:
     name: Node.js client against a live node
     runs-on: ubuntu-latest

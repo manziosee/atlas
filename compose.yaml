@@ -129,6 +129,58 @@ services:
     networks: [atlas]
     depends_on: [atlas-1]
 
+  chaos-netem-1:
+    image: atlas-chaos-netem:dev
+    profiles: [chaos]
+    build: ./deploy/chaos
+    network_mode: "service:atlas-1"
+    depends_on: [atlas-1]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+
+  chaos-netem-2:
+    image: atlas-chaos-netem:dev
+    profiles: [chaos]
+    build: ./deploy/chaos
+    network_mode: "service:atlas-2"
+    depends_on: [atlas-2]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+
+  example-go:
+    profiles: [examples]
+    build:
+      context: .
+      dockerfile: examples/go/Dockerfile
+    environment:
+      ATLAS_ADDR: http://atlas-1:8080
+      ATLAS_TOKEN: ${ATLAS_TOKEN:?run scripts/gen-secrets.sh}
+      SERVICE_ADDRESS: example-go:8085
+      SERVICE_LISTEN_ADDR: 0.0.0.0:8085
+    networks: [atlas]
+    depends_on:
+      atlas-1:
+        condition: service_healthy
+
+  example-python:
+    profiles: [examples]
+    build:
+      context: .
+      dockerfile: examples/python/Dockerfile
+    environment:
+      ATLAS_ADDR: http://atlas-1:8080
+      ATLAS_TOKEN: ${ATLAS_TOKEN:?run scripts/gen-secrets.sh}
+      SERVICE_ADDRESS: example-python:8086
+      SERVICE_LISTEN_ADDR: 0.0.0.0:8086
+    networks: [atlas]
+    depends_on:
+      atlas-1:
+        condition: service_healthy
+
   prometheus:
     <<: *hardening
     image: prom/prometheus:${PROMETHEUS_VERSION:-v3.5.0}
