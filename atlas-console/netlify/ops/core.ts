@@ -441,6 +441,40 @@ async function githubStats(deps: Deps, env: OpsEnv, fetchFn: Fetch, now: number)
   return stats;
 }
 
+interface CredentialLite {
+  id: string;
+  name?: string;
+  scopes: string[];
+  source: string;
+  expires_at?: string;
+  expired: boolean;
+  revoked?: boolean;
+}
+
+interface AuditLite {
+  seq: number;
+  at: string;
+  actor_id: string;
+  action: string;
+  resource_id?: string;
+}
+
+/** Counts by state, plus the ones that expire within a week. */
+function summarizeCredentials(list: CredentialLite[], now: number) {
+  const week = 7 * 24 * 3600 * 1000;
+  const active = list.filter((c) => !c.expired && !c.revoked);
+  return {
+    total: list.length,
+    active: active.length,
+    expired: list.filter((c) => c.expired && !c.revoked).length,
+    revoked: list.filter((c) => c.revoked).length,
+    managed: list.filter((c) => c.source === "managed").length,
+    expiringSoon: active
+      .filter((c) => c.expires_at && Date.parse(c.expires_at) - now < week)
+      .map((c) => ({ id: c.id, name: c.name ?? "", scopes: c.scopes, expires_at: c.expires_at! })),
+  };
+}
+
 type Settled<T> = { ok: true; value: T } | { ok: false; error: string };
 
 async function settle<T>(p: Promise<T>): Promise<Settled<T>> {
@@ -465,13 +499,15 @@ export async function handleOverview(req: OpsRequest, deps: Deps): Promise<Respo
   const now = deps.now?.() ?? Date.now();
   const auth = { Authorization: `Bearer ${env.apiToken}` };
 
-  const [analytics, node, members, services, topology, github] = await Promise.all([
+  const [analytics, node, members, services, topology, github, credentials, audit] = await Promise.all([
     settle(getJSON<Record<string, unknown>>(fetchFn, `${env.apiUrl}/v1/admin/analytics?days=${days}`, auth, 15000)),
     settle(getJSON<Record<string, unknown>>(fetchFn, `${env.apiUrl}/v1/node`, auth)),
     settle(getJSON<{ members: { id: string; state: string; region: string; addr: string; since?: string }[] }>(fetchFn, `${env.apiUrl}/v1/members`, auth)),
     settle(allServices(fetchFn, env)),
     settle(getJSON<Record<string, unknown>>(fetchFn, `${env.apiUrl}/v1/topology?scope=cluster`, auth, 15000)),
     settle(githubStats(deps, env, fetchFn, now)),
+    settle(getJSON<{ credentials: CredentialLite[] }>(fetchFn, `${env.apiUrl}/v1/admin/credentials`, auth)),
+    settle(getJSON<{ entries: AuditLite[] }>(fetchFn, `${env.apiUrl}/v1/admin/audit?limit=20`, auth)),
   ]);
 
   const list = services.ok ? services.value : [];
@@ -495,8 +531,12 @@ export async function handleOverview(req: OpsRequest, deps: Deps): Promise<Respo
     services: { total: list.length, names: new Set(list.map((s) => s.name)).size, ...health, problems },
     topology: topology.ok ? topology.value : null,
     github: github.ok ? github.value : null,
+    security: {
+      credentials: credentials.ok ? summarizeCredentials(credentials.value.credentials ?? [], now) : null,
+      audit: audit.ok ? (audit.value.entries ?? []) : null,
+    },
     errors: Object.fromEntries(
-      Object.entries({ analytics, node, members, services, topology, github })
+      Object.entries({ analytics, node, members, services, topology, github, credentials, audit })
         .filter(([, r]) => !r.ok)
         .map(([k, r]) => [k, (r as { error: string }).error]),
     ),

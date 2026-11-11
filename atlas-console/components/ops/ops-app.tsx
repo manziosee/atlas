@@ -56,6 +56,10 @@ interface Overview {
     problems: { id: string; name: string; node_id: string; address: string; region: string; health: string; draining: boolean; updated_at: string }[];
   };
   topology: { nodes: { id: string; view?: { peers: { id: string; rtt_ms?: number }[] }; error?: string }[] } | null;
+  security: {
+    credentials: { total: number; active: number; expired: number; revoked: number; managed: number; expiringSoon: { id: string; name: string; scopes: string[]; expires_at: string }[] } | null;
+    audit: { seq: number; at: string; actor_id: string; action: string; resource_id?: string }[] | null;
+  };
   github: { stars: number; forks: number; watchers: number; openIssues: number; releaseDownloads: number; releases: number; pushedAt: string } | null;
   errors: Record<string, string>;
 }
@@ -626,6 +630,63 @@ function Dashboard({ session, onSession }: { session: Session; onSession: (s: Se
                 )}
               </Card>
             </div>
+
+            <Card title="Security" icon={KeyRound} aside={<span className="text-xs text-muted">credentials and the admin audit log of the node the dashboard reads</span>}>
+              <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+                <div>
+                  {!data.security.credentials ? (
+                    <p className="text-sm text-muted">Credentials unavailable.</p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        <StatusBadge tone="ok">{n(data.security.credentials.active)} active</StatusBadge>
+                        <StatusBadge tone="info">{n(data.security.credentials.managed)} managed</StatusBadge>
+                        <StatusBadge tone="warn">{n(data.security.credentials.expired)} expired</StatusBadge>
+                        <StatusBadge tone="muted">{n(data.security.credentials.revoked)} revoked</StatusBadge>
+                      </div>
+                      <p className="mt-4 text-xs uppercase tracking-wider text-faint">Expiring within 7 days</p>
+                      {data.security.credentials.expiringSoon.length === 0 ? (
+                        <p className="mt-2 text-sm text-muted">None.</p>
+                      ) : (
+                        <ul className="mt-2 space-y-1.5 text-sm">
+                          {data.security.credentials.expiringSoon.map((c) => (
+                            <li key={c.id} className="flex justify-between gap-2">
+                              <span className="truncate">{c.name || <span className="font-mono">{c.id}</span>}</span>
+                              <span className="shrink-0 text-xs text-warn" title={timestamp(c.expires_at)}>
+                                {timestamp(c.expires_at)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-faint">Recent admin actions</p>
+                  {!data.security.audit ? (
+                    <p className="mt-2 text-sm text-muted">Audit log unavailable.</p>
+                  ) : data.security.audit.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted">No admin actions recorded yet.</p>
+                  ) : (
+                    <div className="mt-2 overflow-x-auto">
+                      <table className="w-full min-w-[480px] text-sm">
+                        <tbody className="divide-y divide-line">
+                          {data.security.audit.map((e) => (
+                            <tr key={e.seq}>
+                              <td className="py-1.5 pr-3 text-xs text-muted" title={timestamp(e.at)}>{relative(e.at)}</td>
+                              <td className="py-1.5 pr-3 font-mono text-xs">{e.action}</td>
+                              <td className="py-1.5 pr-3 font-mono text-xs text-muted">{e.resource_id || "—"}</td>
+                              <td className="py-1.5 font-mono text-xs text-faint">by {e.actor_id}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
 
             <p className="text-xs text-faint">
               Updated {relative(data.generatedAt)} · analytics from {a?.nodes_included ?? 0} node(s) · visitors are counted per browser per day without storing the
