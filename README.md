@@ -1107,14 +1107,14 @@ private network (each node advertises `http://[<private IP>]:8080`). Node
 IDs default to the hostname, which on Fly is the Machine ID, so if forwarding
 is unavailable a node falls back to answering with a `Fly-Replay` header.
 Either way, clients behind the public load balancer never see `not_owner`.
-Successful CI runs on `main` deploy to the isolated public
-`atlas-staging.fly.dev` environment through `.github/workflows/fly-staging.yml`.
-Promotion is a manual workflow on `main` that verifies CI, deploys and smoke
-tests the same revision in staging, then deploys it to production. Configure
-`FLY_STAGING_API_TOKEN` as a repository secret and `FLY_API_TOKEN` in the
-`production` GitHub environment; set required reviewers on that environment to
-gate production promotion. Provision the staging app, persistent volume and
-unique secrets once:
+Successful CI runs on `main` deploy through `.github/workflows/fly-deploy.yml`
+(it can also be started by hand). When the `FLY_STAGING_API_TOKEN` secret
+exists, the workflow first deploys the same revision to the isolated public
+`atlas-staging.fly.dev` environment and smoke-tests it, and only then deploys
+production; without it, production is deployed directly. `FLY_API_TOKEN` can
+live in the repository or the `production` GitHub environment; add required
+reviewers to that environment to gate production. To turn staging on,
+provision the staging app, persistent volume and unique secrets once:
 
 ```bash
 fly apps create atlas-staging
@@ -1124,8 +1124,8 @@ fly secrets set -a atlas-staging ATLAS_GOSSIP_KEY="$(atlas-cli keygen)" \
 ```
 
 Staging is a separate one-node cluster with its own database and credentials;
-do not reuse production keys or data. The staging workflow cannot deploy until
-the Fly app and GitHub secret exist.
+do not reuse production keys or data. Add the `FLY_STAGING_API_TOKEN` secret
+only after the app exists, since its presence switches staging on.
 
 The multi-region example below uses `deploy/fly/fly.toml` instead:
 
