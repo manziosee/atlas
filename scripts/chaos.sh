@@ -73,7 +73,7 @@ wait_for_all_alive() {
 }
 
 # wait_for_stable requires every node to report exactly three alive members
-# and no suspect or dead ones for a continuous window. A single snapshot is not
+# and no suspect, dead or left ones for a continuous window. A single snapshot is not
 # enough: right after a partition heals, a node still gossips the "dead" views
 # it formed while isolated until each peer refutes them, and starting an
 # impairment then would blame that leftover churn on the impairment.
@@ -82,7 +82,7 @@ wait_for_stable() { # seconds
   while (( SECONDS < deadline )); do
     ok=1
     for port in "${OBSERVERS[@]}"; do
-      if (( $(state_count "$port" alive) != 3 || $(state_count "$port" suspect) != 0 || $(state_count "$port" dead) != 0 )); then
+      if (( $(state_count "$port" alive) != 3 || $(state_count "$port" suspect) != 0 || $(state_count "$port" dead) != 0 || $(state_count "$port" left) != 0 )); then
         ok=0
         break
       fi
@@ -146,10 +146,16 @@ restore_impairments() {
 }
 trap restore_impairments EXIT
 
+# --no-deps keeps Compose from recreating the running nodes to attach the
+# sidecars. A recreated node leaves gracefully, and until its replacement
+# refutes the stale "left" record, peers never probe it, so a kill in round 1
+# would never be declared dead.
 echo "starting isolated netem sidecars"
-docker compose --profile chaos up -d --build chaos-netem-1 chaos-netem-2 >/dev/null
+docker compose --profile chaos build chaos-netem-1 chaos-netem-2 >/dev/null
+docker compose --profile chaos up -d --no-deps chaos-netem-1 chaos-netem-2 >/dev/null
 echo "waiting for initial cluster convergence"
 wait_for_all_alive
+wait_for_stable 10
 
 for ((r = 1; r <= ROUNDS; r++)); do
   victim="${NODES[RANDOM % ${#NODES[@]}]}"
