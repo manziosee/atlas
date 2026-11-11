@@ -26,6 +26,7 @@ public final class Types {
       long unhealthyThreshold,
       long healthyThreshold,
       boolean draining,
+      long trafficWeight,
       String updatedAt,
       String checkedAt,
       String heartbeatAt) {
@@ -35,7 +36,7 @@ public final class Types {
           str(m, "id"), str(m, "name"), str(m, "node_id"), str(m, "address"), str(m, "region"),
           str(m, "version"), strings(m, "tags"), str(m, "health_check"), str(m, "health"),
           num(m, "revision"), num(m, "ttl_seconds"), num(m, "check_interval_seconds"),
-          num(m, "unhealthy_threshold"), num(m, "healthy_threshold"), bool(m, "draining"),
+          num(m, "unhealthy_threshold"), num(m, "healthy_threshold"), bool(m, "draining"), num(m, "traffic_weight"),
           str(m, "updated_at"), str(m, "checked_at"), str(m, "heartbeat_at"));
     }
   }
@@ -99,6 +100,7 @@ public final class Types {
     public ServiceSpec unhealthyThreshold(long checks) { fields.put("unhealthy_threshold", checks); return this; }
     public ServiceSpec healthyThreshold(long checks) { fields.put("healthy_threshold", checks); return this; }
     public ServiceSpec draining(boolean draining) { fields.put("draining", draining); return this; }
+    public ServiceSpec trafficWeight(long weight) { fields.put("traffic_weight", weight); return this; }
   }
 
   /** Fields to change with {@link AtlasClient#update}; unset fields keep their values. */
@@ -115,6 +117,7 @@ public final class Types {
     public ServicePatch unhealthyThreshold(long checks) { fields.put("unhealthy_threshold", checks); return this; }
     public ServicePatch healthyThreshold(long checks) { fields.put("healthy_threshold", checks); return this; }
     public ServicePatch draining(boolean draining) { fields.put("draining", draining); return this; }
+    public ServicePatch trafficWeight(long weight) { fields.put("traffic_weight", weight); return this; }
   }
 
   /** Narrows listings. A service must carry every tag. */

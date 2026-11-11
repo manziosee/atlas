@@ -212,6 +212,23 @@ func TestPatchAndConditionalUpdates(t *testing.T) {
 	}
 }
 
+func TestTrafficWeightCanBeUpdatedAndValidated(t *testing.T) {
+	h := newHarness(t, nil)
+	service, response := h.register(`{"id":"canary-1","name":"payments","address":"10.0.0.10:8080","version":"2.0","traffic_weight":5}`)
+	if response.Code != http.StatusCreated || service.TrafficWeight != 5 {
+		t.Fatalf("canary registration = %d %+v", response.Code, service)
+	}
+	patched := h.do(http.MethodPatch, "/v1/services/canary-1", writeToken, `{"traffic_weight":95}`)
+	var updated storage.Service
+	patched.json(t, &updated)
+	if patched.Code != http.StatusOK || updated.TrafficWeight != 95 {
+		t.Fatalf("weighted PATCH = %d %+v", patched.Code, updated)
+	}
+	if invalid := h.do(http.MethodPatch, "/v1/services/canary-1", writeToken, `{"traffic_weight":0}`); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("zero traffic weight accepted: %d %s", invalid.Code, invalid.Body.String())
+	}
+}
+
 func TestTTLHeartbeats(t *testing.T) {
 	h := newHarness(t, nil)
 	service, rec := h.register(`{"name":"worker","address":"10.0.0.10:9000","ttl_seconds":15}`)

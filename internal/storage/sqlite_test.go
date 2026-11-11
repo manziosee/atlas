@@ -19,7 +19,7 @@ func TestServiceStorePersistsAndFilters(t *testing.T) {
 	defer store.Close()
 	service, err := store.Register(ctx, Service{
 		ID: "orders-1", Name: "orders", NodeID: "node-a", Address: "10.0.0.1:8080",
-		Region: "jnb", Version: "v1", Tags: []string{"blue", "public"}, Health: HealthHealthy,
+		Region: "jnb", Version: "v1", Tags: []string{"blue", "public"}, Health: HealthHealthy, TrafficWeight: 17,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +42,7 @@ func TestServiceStorePersistsAndFilters(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	persisted, err := store.Get(ctx, service.ID)
-	if err != nil || persisted.Revision != 1 || len(persisted.Tags) != 2 {
+	if err != nil || persisted.Revision != 1 || len(persisted.Tags) != 2 || persisted.TrafficWeight != 17 {
 		t.Fatalf("persisted service = %+v, err = %v", persisted, err)
 	}
 }

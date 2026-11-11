@@ -42,10 +42,11 @@ type Service struct {
 	UnhealthyThreshold   int   `json:"unhealthy_threshold,omitempty"`
 	HealthyThreshold     int   `json:"healthy_threshold,omitempty"`
 	// Draining instances stay registered but receive no traffic.
-	Draining    bool      `json:"draining,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	CheckedAt   time.Time `json:"checked_at,omitzero"`
-	HeartbeatAt time.Time `json:"heartbeat_at,omitzero"`
+	Draining      bool      `json:"draining,omitempty"`
+	TrafficWeight int       `json:"traffic_weight"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	CheckedAt     time.Time `json:"checked_at,omitzero"`
+	HeartbeatAt   time.Time `json:"heartbeat_at,omitzero"`
 }
 
 // RegisterRequest describes a service instance. ID is optional: supply a
@@ -64,6 +65,7 @@ type RegisterRequest struct {
 	UnhealthyThreshold   int      `json:"unhealthy_threshold,omitempty"`
 	HealthyThreshold     int      `json:"healthy_threshold,omitempty"`
 	Draining             bool     `json:"draining,omitempty"`
+	TrafficWeight        int      `json:"traffic_weight,omitempty"`
 }
 
 // ServicePatch changes only the non-nil fields.
@@ -79,6 +81,7 @@ type ServicePatch struct {
 	UnhealthyThreshold   *int   `json:"unhealthy_threshold,omitempty"`
 	HealthyThreshold     *int   `json:"healthy_threshold,omitempty"`
 	Draining             *bool  `json:"draining,omitempty"`
+	TrafficWeight        *int   `json:"traffic_weight,omitempty"`
 }
 
 // Filter narrows List and ListPage. A service must carry every tag in Tags.
