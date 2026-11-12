@@ -96,7 +96,7 @@ type Dispatcher struct {
 	opts   Options
 
 	mu      sync.Mutex
-	runCtx  context.Context
+	running bool
 	workers map[string]*worker
 }
 
@@ -129,7 +129,7 @@ func New(store Store, broker *events.Broker, log *slog.Logger, opts Options) *Di
 // Run delivers events until ctx ends.
 func (d *Dispatcher) Run(ctx context.Context) {
 	d.mu.Lock()
-	d.runCtx = ctx
+	d.running = true
 	d.mu.Unlock()
 	if err := d.Reload(ctx); err != nil {
 		d.log.Warn("could not load webhooks", "err", err)
@@ -173,8 +173,8 @@ func (d *Dispatcher) Reload(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.runCtx == nil {
-		return nil // Run loads them when it starts.
+	if !d.running {
+		return nil // Run loads them when it starts; after it ends, nothing delivers.
 	}
 	keep := make(map[string]bool, len(hooks))
 	for _, hook := range hooks {
@@ -182,7 +182,10 @@ func (d *Dispatcher) Reload(ctx context.Context) error {
 		if _, ok := d.workers[hook.ID]; ok {
 			continue
 		}
-		workerCtx, cancel := context.WithCancel(d.runCtx)
+		// Workers outlive the request that triggered a reload: they keep its
+		// values but not its cancellation, and stop through cancel when the
+		// webhook is deleted or Run ends.
+		workerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		w := &worker{hook: hook, queue: make(chan events.Event, d.opts.QueueSize), cancel: cancel, done: make(chan struct{})}
 		d.workers[hook.ID] = w
 		go d.work(workerCtx, w)
@@ -220,6 +223,7 @@ func (d *Dispatcher) Test(ctx context.Context, hook storage.Webhook) Result {
 func (d *Dispatcher) stopAll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.running = false
 	for id, w := range d.workers {
 		w.cancel()
 		delete(d.workers, id)
