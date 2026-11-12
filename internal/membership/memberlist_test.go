@@ -661,9 +661,22 @@ func TestRejoinHealsPartitionAfterBothSidesDeclaredDead(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool { return countState(nodes[0], StateAlive) == size }, "cluster did not converge")
 
 	fn.partition(isolated.LocalNode().Addr)
+	// Wait for every node, not just one per side: a majority node still
+	// holding the isolated one as suspect would probe it after the heal, and
+	// its refutation would legitimately rejoin the cluster on its own.
 	waitFor(t, 10*time.Second, func() bool {
-		return countState(nodes[0], StateDead) == 1 && countState(isolated, StateDead) == size-1
+		for _, n := range nodes[:size-1] {
+			if countState(n, StateDead) != 1 {
+				return false
+			}
+		}
+		return countState(isolated, StateDead) == size-1
 	}, "partition was not detected on both sides")
+	// A probe started while the isolated node was only suspect can still be
+	// running (up to ProbeTimeout × (1 + maxLocalHealthScore) = 900ms here). Its
+	// ping would reach the healed node, which refutes and rejoins by itself:
+	// correct SWIM behaviour, but not the stuck case this test is about.
+	time.Sleep(1500 * time.Millisecond)
 
 	fn.heal(isolated.LocalNode().Addr)
 	time.Sleep(time.Second)
