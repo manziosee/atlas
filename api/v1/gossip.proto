@@ -68,4 +68,8 @@ message Service {
   uint32 unhealthy_threshold = 16;
   uint32 healthy_threshold = 17;
   bool draining = 18;
+  // Relative traffic share among routable instances (1 when absent).
+  uint32 traffic_weight = 19;
+  // Client labels (at most 16 entries, 512 bytes). Older nodes skip it.
+  map<string, string> metadata = 20;
 }

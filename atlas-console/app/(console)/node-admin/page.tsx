@@ -9,6 +9,7 @@ import { downloadBlob, memberTone, timestamp } from "@/lib/format";
 import { CodeBlock } from "@/components/copy-button";
 import { ConfirmDialog, Empty, Notice, PageHeader, Skeleton, StatusBadge } from "@/components/console/ui";
 import { useToast } from "@/components/console/toast";
+import { WebhooksPanel } from "@/components/console/webhooks-panel";
 
 export default function AdminPage() {
   const { conn, client } = useConnection();
@@ -73,7 +74,7 @@ export default function AdminPage() {
 
   return (
     <>
-      <PageHeader title="Node admin" desc="Credentials replicate cluster-wide; audit entries and backups are local to the node you're connected to." />
+      <PageHeader title="Node admin" desc="Credentials replicate cluster-wide; webhooks, audit entries and backups are local to the node you're connected to." />
       <div className="grid gap-6 xl:grid-cols-2">
         <section className="panel p-5 xl:col-span-2" aria-labelledby="creds-title">
           <h2 id="creds-title" className="font-medium">
@@ -195,6 +196,8 @@ export default function AdminPage() {
             </div>
           )}
         </section>
+
+        {client && <WebhooksPanel client={client} toast={toast} />}
 
         <section className="panel p-5 xl:col-span-2" aria-labelledby="audit-title">
           <div className="flex flex-wrap items-start justify-between gap-3">

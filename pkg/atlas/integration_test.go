@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/manziosee/atlas/internal/membership"
 	"github.com/manziosee/atlas/internal/security"
 	"github.com/manziosee/atlas/internal/storage"
+	"github.com/manziosee/atlas/internal/webhooks"
 )
 
 type singleNode struct{}
@@ -31,6 +34,12 @@ func (singleNode) Evict(string) (membership.Member, error) {
 // newLiveClient serves the real API handler over a SQLite store.
 func newLiveClient(t *testing.T) *Client {
 	t.Helper()
+	return newLiveClientWith(t, nil)
+}
+
+// newLiveClientWith lets a test adjust the node's dependencies.
+func newLiveClientWith(t *testing.T, configure func(*api.Deps)) *Client {
+	t.Helper()
 	store, err := storage.Open(context.Background(), filepath.Join(t.TempDir(), "registry.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -43,12 +52,16 @@ func newLiveClient(t *testing.T) *Client {
 		}
 	})
 	token := "integration-token-integration-token"
-	server := httptest.NewServer(api.NewHandler(api.Deps{
+	deps := api.Deps{
 		Cluster: singleNode{}, Registry: store, Events: broker,
 		Auth:        security.NewTokenAuthenticator([]string{token}),
 		RateLimiter: security.NewRateLimiter(1000, 1000),
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}))
+	}
+	if configure != nil {
+		configure(&deps)
+	}
+	server := httptest.NewServer(api.NewHandler(deps))
 	t.Cleanup(server.Close)
 	client, err := NewClient(server.URL, token, server.Client())
 	if err != nil {
@@ -211,5 +224,102 @@ func TestHistoryAndLookupOptions(t *testing.T) {
 	}
 	if _, err := client.LookupWithOptions(ctx, "history-go", LookupOptions{Stale: "sometimes"}); !IsCode(err, "validation_failed") {
 		t.Fatalf("invalid stale policy err = %v", err)
+	}
+}
+
+func TestMetadataRoundTripsAndFilters(t *testing.T) {
+	client := newLiveClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	grpc, err := client.Register(ctx, RegisterRequest{Name: "pay", Address: "10.4.0.1:80", Metadata: map[string]string{"team": "payments", "protocol": "grpc"}})
+	if err != nil || grpc.Metadata["protocol"] != "grpc" {
+		t.Fatalf("Register with metadata = %+v %v", grpc, err)
+	}
+	if _, err := client.Register(ctx, RegisterRequest{Name: "pay", Address: "10.4.0.2:80", Metadata: map[string]string{"team": "payments", "protocol": "http"}}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := client.List(ctx, Filter{Name: "pay", Metadata: map[string]string{"team": "payments", "protocol": "grpc"}})
+	if err != nil || len(listed) != 1 || listed[0].ID != grpc.ID {
+		t.Fatalf("List by metadata = %+v %v", listed, err)
+	}
+	picked, err := client.LookupWithOptions(ctx, "pay", LookupOptions{Metadata: map[string]string{"protocol": "grpc"}})
+	if err != nil || picked.ID != grpc.ID {
+		t.Fatalf("Lookup by metadata = %+v %v", picked, err)
+	}
+	replacement := map[string]string{"team": "billing"}
+	updated, err := client.Update(ctx, grpc.ID, ServicePatch{Metadata: &replacement}, 0)
+	if err != nil || len(updated.Metadata) != 1 || updated.Metadata["team"] != "billing" {
+		t.Fatalf("Update metadata = %+v %v", updated, err)
+	}
+}
+
+func TestWebhooksAndVerification(t *testing.T) {
+	type delivery struct {
+		header http.Header
+		body   []byte
+	}
+	received := make(chan delivery, 4)
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- delivery{header: r.Header.Clone(), body: body}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(receiver.Close)
+	client := newLiveClientWith(t, func(d *api.Deps) {
+		dispatcher := webhooks.New(d.Registry.(webhooks.Store), d.Events, slog.New(slog.NewTextHandler(io.Discard, nil)), webhooks.Options{Client: &http.Client{}})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { dispatcher.Run(ctx); close(done) }()
+		t.Cleanup(func() { cancel(); <-done })
+		for d.Events.Subscribers() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		d.Webhooks = dispatcher
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hook, secret, err := client.CreateWebhook(ctx, WebhookRequest{URL: receiver.URL, Kinds: []string{"service"}})
+	if err != nil || hook.ID == "" || secret == "" {
+		t.Fatalf("CreateWebhook = %+v %q %v", hook, secret, err)
+	}
+	if _, err := client.Register(ctx, RegisterRequest{Name: "hooked", Address: "10.5.0.1:80"}); err != nil {
+		t.Fatal(err)
+	}
+	var got delivery
+	select {
+	case got = <-received:
+	case <-ctx.Done():
+		t.Fatal("no delivery")
+	}
+	if err := VerifyWebhook(secret, got.header, got.body, 0); err != nil {
+		t.Fatalf("VerifyWebhook rejected a genuine delivery: %v", err)
+	}
+	if err := VerifyWebhook("wrong-secret", got.header, got.body, 0); !errors.Is(err, ErrWebhookSignature) {
+		t.Fatalf("wrong secret = %v", err)
+	}
+	if err := VerifyWebhook(secret, got.header, append([]byte(nil), append(got.body, ' ')...), 0); !errors.Is(err, ErrWebhookSignature) {
+		t.Fatalf("tampered body = %v", err)
+	}
+	stale := got.header.Clone()
+	stale.Set("X-Atlas-Timestamp", strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10))
+	if err := VerifyWebhook(secret, stale, got.body, 0); !errors.Is(err, ErrWebhookStale) {
+		t.Fatalf("stale timestamp = %v", err)
+	}
+
+	listed, err := client.Webhooks(ctx)
+	if err != nil || len(listed) != 1 || listed[0].Status.Delivered < 1 {
+		t.Fatalf("Webhooks = %+v %v", listed, err)
+	}
+	if result, err := client.TestWebhook(ctx, hook.ID); err != nil || !result.Delivered {
+		t.Fatalf("TestWebhook = %+v %v", result, err)
+	}
+	if err := client.DeleteWebhook(ctx, hook.ID); err != nil {
+		t.Fatal(err)
+	}
+	var apiErr *APIError
+	if err := client.DeleteWebhook(ctx, hook.ID); !errors.As(err, &apiErr) || apiErr.Code != "not_found" {
+		t.Fatalf("second delete = %v", err)
 	}
 }

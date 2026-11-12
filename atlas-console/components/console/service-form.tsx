@@ -8,6 +8,28 @@ import { Field, Notice } from "./ui";
 type HealthMode = "ttl" | "check" | "none";
 
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const META_KEY = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,62}$/;
+
+/** Parses "key=value" lines into metadata, mirroring the node's limits. Exported for tests. */
+export function parseMetadata(text: string): { metadata: Record<string, string>; error?: string } {
+  const metadata: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const eq = line.indexOf("=");
+    const key = (eq < 0 ? line : line.slice(0, eq)).trim();
+    const value = eq < 0 ? "" : line.slice(eq + 1).trim();
+    if (!META_KEY.test(key)) return { metadata, error: `"${key}" is not a valid key: 1–63 letters, digits, . _ - or /, starting with a letter or digit.` };
+    if (key in metadata) return { metadata, error: `"${key}" appears more than once.` };
+    if (new TextEncoder().encode(value).length > 256) return { metadata, error: `The value for "${key}" is longer than 256 bytes.` };
+    metadata[key] = value;
+  }
+  const entries = Object.entries(metadata);
+  if (entries.length > 16) return { metadata, error: "At most 16 entries." };
+  const bytes = entries.reduce((n, [k, v]) => n + new TextEncoder().encode(k + v).length, 0);
+  if (bytes > 512) return { metadata, error: "Keys and values can total at most 512 bytes." };
+  return { metadata };
+}
 
 export function healthMode(s?: Pick<Service, "ttl_seconds" | "health_check">): HealthMode {
   if (s?.ttl_seconds) return "ttl";
@@ -27,7 +49,10 @@ export function buildSpec(v: FormValues): { spec?: ServiceSpec; errors: Partial<
   if (tags.some((t) => t.length > 64)) errors.tags = "Each tag can be at most 64 characters.";
   const trafficWeight = Number(v.trafficWeight);
   if (!Number.isInteger(trafficWeight) || trafficWeight < 1 || trafficWeight > 1000) errors.trafficWeight = "Whole number between 1 and 1000.";
+  const { metadata, error: metadataError } = parseMetadata(v.metadata);
+  if (metadataError) errors.metadata = metadataError;
   const spec: ServiceSpec = { name: v.name.trim(), address: v.address.trim(), version: v.version.trim() || undefined, tags, draining: v.draining, traffic_weight: trafficWeight };
+  if (Object.keys(metadata).length) spec.metadata = metadata;
   if (v.id.trim()) spec.id = v.id.trim();
   if (v.mode === "ttl") {
     const ttl = Number(v.ttl);
@@ -57,6 +82,7 @@ export interface FormValues {
   interval: string;
   draining: boolean;
   trafficWeight: string;
+  metadata: string;
 }
 
 function initial(s?: Service): FormValues {
@@ -72,6 +98,10 @@ function initial(s?: Service): FormValues {
     interval: s?.check_interval_seconds ? String(s.check_interval_seconds) : "",
     draining: !!s?.draining,
     trafficWeight: String(s?.traffic_weight ?? 1),
+    metadata: Object.entries(s?.metadata ?? {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, value]) => `${k}=${value}`)
+      .join("\n"),
   };
 }
 
@@ -113,6 +143,8 @@ export function ServiceForm({
           ...(spec.health_check ? {} : { unhealthy_threshold: 0, healthy_threshold: 0 }),
           draining: spec.draining,
           traffic_weight: spec.traffic_weight,
+          // The whole map is replaced, so removed lines remove entries.
+          metadata: spec.metadata ?? {},
         };
         setBusy(true);
         setFailure(null);
@@ -147,6 +179,10 @@ export function ServiceForm({
 
       <Field label="Traffic weight" error={errors.trafficWeight} hint="Weighted within the healthy, regional and latency-preferred pool. Set the sum per version to the ratio you want (stable 95, canary 5); unhealthy instances are excluded automatically.">
         <input className="field font-mono" type="number" min={1} max={1000} step={1} inputMode="numeric" value={v.trafficWeight} onChange={(e) => set("trafficWeight", e.target.value)} />
+      </Field>
+
+      <Field label="Metadata" error={errors.metadata} hint="optional; one key=value per line, such as team=payments. Lookups and listings can filter on these with meta=key:value.">
+        <textarea className="field min-h-[84px] font-mono" value={v.metadata} onChange={(e) => set("metadata", e.target.value)} placeholder={"team=payments\nprotocol=grpc"} spellCheck={false} />
       </Field>
 
       <fieldset>

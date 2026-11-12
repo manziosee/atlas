@@ -114,6 +114,22 @@ class AtlasClientTest(unittest.TestCase):
         self.assertEqual(len(self.client.list_services(name=name, tags=["even"])), 3)
         self.assertEqual(self.client.lookup(name, tags=["odd"])["name"], name)
 
+    def test_metadata(self) -> None:
+        name = unique("meta")
+        grpc = self.client.register(name, "10.9.6.1:80", metadata={"team": "payments", "protocol": "grpc"})
+        self.assertEqual(grpc["metadata"], {"team": "payments", "protocol": "grpc"})
+        self.client.register(name, "10.9.6.2:80", metadata={"team": "payments", "protocol": "http"})
+        matched = self.client.list_services(name=name, metadata={"team": "payments", "protocol": "grpc"})
+        self.assertEqual([s["id"] for s in matched], [grpc["id"]])
+        self.assertEqual(self.client.lookup(name, metadata={"protocol": "grpc"})["id"], grpc["id"])
+        replaced = self.client.update(grpc["id"], metadata={"team": "billing"})
+        self.assertEqual(replaced["metadata"], {"team": "billing"})
+        cleared = self.client.update(grpc["id"], metadata={})
+        self.assertNotIn("metadata", cleared)
+        with self.assertRaises(AtlasError) as bad:
+            self.client.register(name, "10.9.6.3:80", metadata={"bad key": "v"})
+        self.assertEqual(bad.exception.code, "validation_failed")
+
     def test_admin_operations(self) -> None:
         credentials = self.client.credentials()
         self.assertTrue(any(c["current"] for c in credentials))

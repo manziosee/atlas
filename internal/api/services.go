@@ -95,9 +95,14 @@ func (d Deps) listServices(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
+	metadata, err := parseMetadataFilters(query["meta"])
+	if err != nil {
+		d.writeError(w, r, err)
+		return
+	}
 	filter := storage.Filter{
 		Name: query.Get("name"), Region: query.Get("region"), Health: storage.Health(query.Get("health")),
-		Version: query.Get("version"), NodeID: query.Get("node_id"), Tags: query["tag"],
+		Version: query.Get("version"), NodeID: query.Get("node_id"), Tags: query["tag"], Metadata: metadata,
 	}
 	page, err := d.listPage(r.Context(), filter, query.Get("cursor"), limit)
 	if err != nil {
@@ -113,8 +118,13 @@ func (d Deps) listServices(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) lookupService(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+	metadata, err := parseMetadataFilters(query["meta"])
+	if err != nil {
+		d.writeError(w, r, err)
+		return
+	}
 	service, err := d.lookup(r.Context(), lookupRequest{
-		Name: r.PathValue("name"), Region: query.Get("region"), Key: query.Get("key"), Tags: query["tag"],
+		Name: r.PathValue("name"), Region: query.Get("region"), Key: query.Get("key"), Tags: query["tag"], Metadata: metadata,
 		Stale: query.Get("stale"), Latency: query.Get("latency"), Tolerance: query.Get("tolerance"),
 	})
 	d.writeServiceResult(w, r, service, storage.Updated, err)

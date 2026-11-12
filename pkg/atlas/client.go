@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -42,11 +44,13 @@ type Service struct {
 	UnhealthyThreshold   int   `json:"unhealthy_threshold,omitempty"`
 	HealthyThreshold     int   `json:"healthy_threshold,omitempty"`
 	// Draining instances stay registered but receive no traffic.
-	Draining      bool      `json:"draining,omitempty"`
-	TrafficWeight int       `json:"traffic_weight"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	CheckedAt     time.Time `json:"checked_at,omitzero"`
-	HeartbeatAt   time.Time `json:"heartbeat_at,omitzero"`
+	Draining      bool `json:"draining,omitempty"`
+	TrafficWeight int  `json:"traffic_weight"`
+	// Metadata holds the instance's key/value labels, such as team or protocol.
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	CheckedAt   time.Time         `json:"checked_at,omitzero"`
+	HeartbeatAt time.Time         `json:"heartbeat_at,omitzero"`
 }
 
 // RegisterRequest describes a service instance. ID is optional: supply a
@@ -66,6 +70,9 @@ type RegisterRequest struct {
 	HealthyThreshold     int      `json:"healthy_threshold,omitempty"`
 	Draining             bool     `json:"draining,omitempty"`
 	TrafficWeight        int      `json:"traffic_weight,omitempty"`
+	// Metadata: at most 16 entries totalling 512 bytes; keys are letters,
+	// digits, '.', '_', '-' and '/'.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // ServicePatch changes only the non-nil fields.
@@ -82,16 +89,20 @@ type ServicePatch struct {
 	HealthyThreshold     *int   `json:"healthy_threshold,omitempty"`
 	Draining             *bool  `json:"draining,omitempty"`
 	TrafficWeight        *int   `json:"traffic_weight,omitempty"`
+	// Metadata replaces the whole map; an empty map removes every entry.
+	Metadata *map[string]string `json:"metadata,omitempty"`
 }
 
-// Filter narrows List and ListPage. A service must carry every tag in Tags.
+// Filter narrows List and ListPage. A service must carry every tag in Tags
+// and every Metadata entry with exactly that value.
 type Filter struct {
-	Name    string
-	Region  string
-	Health  Health
-	Version string
-	NodeID  string
-	Tags    []string
+	Name     string
+	Region   string
+	Health   Health
+	Version  string
+	NodeID   string
+	Tags     []string
+	Metadata map[string]string
 }
 
 // Page is one page of a listing; NextCursor is empty on the last page.
@@ -231,6 +242,7 @@ func (c *Client) ListPage(ctx context.Context, filter Filter, cursor string, lim
 	for _, tag := range filter.Tags {
 		query.Add("tag", tag)
 	}
+	addMetadataFilters(query, filter.Metadata)
 	if limit > 0 {
 		query.Set("limit", strconv.Itoa(limit))
 	}
@@ -272,6 +284,8 @@ type LookupOptions struct {
 	// instance while it stays routable.
 	Key  string
 	Tags []string
+	// Metadata keeps only instances carrying every entry with that value.
+	Metadata map[string]string
 	// Stale: "include", "prefer-live" or "exclude" instances whose owning
 	// node is not alive.
 	Stale string
@@ -292,6 +306,7 @@ func (c *Client) LookupWithOptions(ctx context.Context, name string, opts Lookup
 	for _, tag := range opts.Tags {
 		query.Add("tag", tag)
 	}
+	addMetadataFilters(query, opts.Metadata)
 	if opts.Tolerance > 0 {
 		query.Set("tolerance", opts.Tolerance.String())
 	}
@@ -644,4 +659,12 @@ func responseError(resp *http.Response) error {
 		apiErr.Message, apiErr.Code, apiErr.RequestID, apiErr.OwnerNode = decoded.Error, decoded.Code, decoded.RequestID, decoded.OwnerNode
 	}
 	return apiErr
+}
+
+// addMetadataFilters encodes metadata filters as repeated meta=key:value
+// parameters, in key order so requests are stable.
+func addMetadataFilters(query url.Values, metadata map[string]string) {
+	for _, key := range slices.Sorted(maps.Keys(metadata)) {
+		query.Add("meta", key+":"+metadata[key])
+	}
 }

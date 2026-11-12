@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -64,18 +65,19 @@ func (e ownerAliveError) Error() string { return "the owning node " + e.owner + 
 
 // serviceSpec is the client-owned part of a registration.
 type serviceSpec struct {
-	ID                   string   `json:"id,omitempty"`
-	Name                 string   `json:"name"`
-	Address              string   `json:"address"`
-	Version              string   `json:"version,omitempty"`
-	Tags                 []string `json:"tags,omitempty"`
-	HealthCheck          string   `json:"health_check,omitempty"`
-	TTLSeconds           int64    `json:"ttl_seconds,omitempty"`
-	CheckIntervalSeconds int64    `json:"check_interval_seconds,omitempty"`
-	UnhealthyThreshold   int      `json:"unhealthy_threshold,omitempty"`
-	HealthyThreshold     int      `json:"healthy_threshold,omitempty"`
-	Draining             bool     `json:"draining,omitempty"`
-	TrafficWeight        *int     `json:"traffic_weight,omitempty"`
+	ID                   string            `json:"id,omitempty"`
+	Name                 string            `json:"name"`
+	Address              string            `json:"address"`
+	Version              string            `json:"version,omitempty"`
+	Tags                 []string          `json:"tags,omitempty"`
+	HealthCheck          string            `json:"health_check,omitempty"`
+	TTLSeconds           int64             `json:"ttl_seconds,omitempty"`
+	CheckIntervalSeconds int64             `json:"check_interval_seconds,omitempty"`
+	UnhealthyThreshold   int               `json:"unhealthy_threshold,omitempty"`
+	HealthyThreshold     int               `json:"healthy_threshold,omitempty"`
+	Draining             bool              `json:"draining,omitempty"`
+	TrafficWeight        *int              `json:"traffic_weight,omitempty"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
 }
 
 // servicePatch changes the non-nil fields of a service. It is also the wire
@@ -93,6 +95,8 @@ type servicePatch struct {
 	HealthyThreshold     *int      `json:"healthy_threshold,omitempty"`
 	Draining             *bool     `json:"draining,omitempty"`
 	TrafficWeight        *int      `json:"traffic_weight,omitempty"`
+	// Metadata replaces the whole map, like tags; {} removes every entry.
+	Metadata *map[string]string `json:"metadata,omitempty"`
 }
 
 func (p servicePatch) apply(s *serviceSpec) {
@@ -106,6 +110,7 @@ func (p servicePatch) apply(s *serviceSpec) {
 	set(&s.UnhealthyThreshold, p.UnhealthyThreshold)
 	set(&s.HealthyThreshold, p.HealthyThreshold)
 	set(&s.Draining, p.Draining)
+	set(&s.Metadata, p.Metadata)
 	if p.TrafficWeight != nil {
 		weight := *p.TrafficWeight
 		s.TrafficWeight = &weight
@@ -128,11 +133,16 @@ func fullPatch(spec serviceSpec) servicePatch {
 	if spec.TrafficWeight != nil {
 		weight = *spec.TrafficWeight
 	}
+	metadata := spec.Metadata
+	if metadata == nil {
+		metadata = map[string]string{} // encodes as {}, so a forwarded replace clears it
+	}
 	return servicePatch{
 		Name: &spec.Name, Address: &spec.Address, Version: &spec.Version, Tags: &tags,
 		HealthCheck: &spec.HealthCheck, TTLSeconds: &spec.TTLSeconds,
 		CheckIntervalSeconds: &spec.CheckIntervalSeconds, UnhealthyThreshold: &spec.UnhealthyThreshold,
 		HealthyThreshold: &spec.HealthyThreshold, Draining: &spec.Draining, TrafficWeight: &weight,
+		Metadata: &metadata,
 	}
 }
 
@@ -141,7 +151,7 @@ func specOf(s storage.Service) serviceSpec {
 		ID: s.ID, Name: s.Name, Address: s.Address, Version: s.Version, Tags: s.Tags,
 		HealthCheck: s.HealthCheck, TTLSeconds: s.TTLSeconds, CheckIntervalSeconds: s.CheckIntervalSeconds,
 		UnhealthyThreshold: s.UnhealthyThreshold, HealthyThreshold: s.HealthyThreshold, Draining: s.Draining,
-		TrafficWeight: &s.TrafficWeight,
+		TrafficWeight: &s.TrafficWeight, Metadata: s.Metadata,
 	}
 }
 
@@ -152,6 +162,10 @@ func (spec serviceSpec) applyTo(s *storage.Service) {
 	s.TrafficWeight = 1
 	if spec.TrafficWeight != nil {
 		s.TrafficWeight = *spec.TrafficWeight
+	}
+	s.Metadata = nil
+	if len(spec.Metadata) > 0 {
+		s.Metadata = maps.Clone(spec.Metadata)
 	}
 }
 
@@ -309,7 +323,40 @@ func validateFilter(filter storage.Filter) error {
 			return invalid("filter values must be at most 128 characters")
 		}
 	}
+	return validateMetadataFilter(filter.Metadata)
+}
+
+func validateMetadataFilter(metadata map[string]string) error {
+	if len(metadata) > storage.MaxMetadataFilters {
+		return invalid("at most %d metadata filters are allowed", storage.MaxMetadataFilters)
+	}
+	for key, value := range metadata {
+		if !storage.ValidMetadataKey(key) || len(value) > storage.MaxMetadataValueBytes {
+			return invalid("metadata filters are key:value with a valid key and a value of at most %d bytes", storage.MaxMetadataValueBytes)
+		}
+	}
 	return nil
+}
+
+// parseMetadataFilters turns repeated meta=key:value query values into a
+// filter. A key given twice must match both values, which no record can, so
+// it is rejected instead of silently matching nothing.
+func parseMetadataFilters(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	filters := make(map[string]string, len(values))
+	for _, raw := range values {
+		key, value, ok := strings.Cut(raw, ":")
+		if !ok {
+			return nil, invalid("meta filters must be key:value, got %q", raw)
+		}
+		if _, dup := filters[key]; dup {
+			return nil, invalid("metadata key %q is filtered more than once", key)
+		}
+		filters[key] = value
+	}
+	return filters, validateMetadataFilter(filters)
 }
 
 // lookupRequest is one routed lookup. Stale, Latency and Tolerance override
@@ -317,6 +364,7 @@ func validateFilter(filter storage.Filter) error {
 type lookupRequest struct {
 	Name, Region, Key string
 	Tags              []string
+	Metadata          map[string]string
 	Stale, Latency    string
 	Tolerance         string
 }
@@ -328,11 +376,14 @@ func (d Deps) lookup(ctx context.Context, req lookupRequest) (storage.Service, e
 	if req.Name == "" || len(req.Name) > 128 || len(req.Region) > 64 || len(req.Key) > 256 || len(req.Tags) > maxTagFilters {
 		return storage.Service{}, invalid("lookup parameters are missing or exceed limits")
 	}
+	if err := validateMetadataFilter(req.Metadata); err != nil {
+		return storage.Service{}, err
+	}
 	policy, err := d.lookupPolicy(req)
 	if err != nil {
 		return storage.Service{}, err
 	}
-	services, err := d.Registry.List(ctx, storage.Filter{Name: req.Name, Tags: req.Tags})
+	services, err := d.Registry.List(ctx, storage.Filter{Name: req.Name, Tags: req.Tags, Metadata: req.Metadata})
 	if err != nil {
 		return storage.Service{}, err
 	}
@@ -437,6 +488,9 @@ func validateSpec(in serviceSpec) error {
 		if strings.TrimSpace(tag) == "" || len(tag) > 64 {
 			return invalid("tags must contain 1-64 non-whitespace characters")
 		}
+	}
+	if err := storage.ValidateMetadata(in.Metadata); err != nil {
+		return invalid("%s", err.Error())
 	}
 	if in.TTLSeconds < 0 || in.TTLSeconds > storage.MaxTTLSeconds {
 		return invalid("ttl_seconds must be between 1 and %d", storage.MaxTTLSeconds)

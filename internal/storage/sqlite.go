@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -81,11 +82,14 @@ type Service struct {
 	HealthyThreshold     int   `json:"healthy_threshold,omitempty"`
 	// Draining keeps the record but removes it from lookups, DNS and client
 	// load balancing, so a deploy can stop sending traffic before shutdown.
-	Draining      bool      `json:"draining,omitempty"`
-	TrafficWeight int       `json:"traffic_weight"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	CheckedAt     time.Time `json:"checked_at,omitzero"`
-	HeartbeatAt   time.Time `json:"heartbeat_at,omitzero"`
+	Draining      bool `json:"draining,omitempty"`
+	TrafficWeight int  `json:"traffic_weight"`
+	// Metadata holds arbitrary client labels, such as team or protocol; see
+	// ValidateMetadata for limits. Unlike tags, entries are key/value pairs.
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	CheckedAt   time.Time         `json:"checked_at,omitzero"`
+	HeartbeatAt time.Time         `json:"heartbeat_at,omitzero"`
 }
 
 func (service Service) Validate() error {
@@ -113,6 +117,9 @@ func (service Service) Validate() error {
 		if strings.TrimSpace(tag) == "" || len(tag) > 64 {
 			return errors.New("storage: invalid service tag")
 		}
+	}
+	if err := ValidateMetadata(service.Metadata); err != nil {
+		return fmt.Errorf("storage: %w", err)
 	}
 	if service.Health != HealthUnknown && service.Health != HealthHealthy && service.Health != HealthUnhealthy {
 		return fmt.Errorf("storage: invalid health %q", service.Health)
@@ -188,6 +195,8 @@ type Filter struct {
 	Version string
 	NodeID  string
 	Tags    []string
+	// Metadata entries a service must carry with exactly these values.
+	Metadata map[string]string
 }
 
 // Store persists service records in SQLite. One connection serializes local
@@ -270,7 +279,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 7
+const schemaVersion = 9
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -375,6 +384,20 @@ CREATE INDEX IF NOT EXISTS admin_audit_log_at ON admin_audit_log(at);
 `,
 	7: `
 ALTER TABLE services ADD COLUMN traffic_weight INTEGER NOT NULL DEFAULT 1 CHECK (traffic_weight >= 0 AND traffic_weight <= 1000);
+`,
+	8: `
+ALTER TABLE services ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+`,
+	9: `
+CREATE TABLE IF NOT EXISTS webhooks (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  kinds TEXT NOT NULL DEFAULT '[]',
+  service TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
 `,
 }
 
@@ -500,6 +523,7 @@ func (s *Store) Update(ctx context.Context, id, nodeID string, ifRevision uint64
 	}
 	next := current
 	next.Tags = slices.Clone(current.Tags)
+	next.Metadata = maps.Clone(current.Metadata)
 	if err := fn(&next); err != nil {
 		return Service{}, 0, err
 	}
@@ -531,7 +555,8 @@ func sameSpec(a, b Service) bool {
 	return a.Name == b.Name && a.Address == b.Address && a.Region == b.Region && a.Version == b.Version &&
 		slices.Equal(a.Tags, b.Tags) && a.HealthCheck == b.HealthCheck && a.TTLSeconds == b.TTLSeconds &&
 		a.CheckIntervalSeconds == b.CheckIntervalSeconds && a.UnhealthyThreshold == b.UnhealthyThreshold &&
-		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining && a.TrafficWeight == b.TrafficWeight
+		a.HealthyThreshold == b.HealthyThreshold && a.Draining == b.Draining && a.TrafficWeight == b.TrafficWeight &&
+		maps.Equal(a.Metadata, b.Metadata)
 }
 
 func resetsHealth(before, after Service) bool {
@@ -615,6 +640,12 @@ func filterQuery(filter Filter) (string, []any) {
 	for _, tag := range filter.Tags {
 		query += ` AND EXISTS (SELECT 1 FROM json_each(services.tags) WHERE json_each.value = ?)`
 		args = append(args, tag)
+	}
+	for _, key := range SortedMetadataKeys(filter.Metadata) {
+		// Keys are validated to letters, digits and . _ - /, so quoting them
+		// inside the JSON path cannot escape it; the path is still a parameter.
+		query += ` AND json_extract(services.metadata, ?) = ?`
+		args = append(args, `$."`+key+`"`, filter.Metadata[key])
 	}
 	return query, args
 }
@@ -836,6 +867,12 @@ func (s *Store) put(ctx context.Context, service Service) (Service, error) {
 	if err != nil {
 		return Service{}, fmt.Errorf("storage: encode tags: %w", err)
 	}
+	metadata := []byte("{}")
+	if len(service.Metadata) > 0 {
+		if metadata, err = json.Marshal(service.Metadata); err != nil {
+			return Service{}, fmt.Errorf("storage: encode metadata: %w", err)
+		}
+	}
 	if service.UpdatedAt.IsZero() {
 		service.UpdatedAt = time.Now().UTC()
 	}
@@ -845,19 +882,20 @@ func (s *Store) put(ctx context.Context, service Service) (Service, error) {
 	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO services (id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
- check_interval_seconds,unhealthy_threshold,healthy_threshold,draining,traffic_weight)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ check_interval_seconds,unhealthy_threshold,healthy_threshold,draining,traffic_weight,metadata)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
  name=excluded.name,node_id=excluded.node_id,address=excluded.address,region=excluded.region,
  version=excluded.version,tags=excluded.tags,health_check=excluded.health_check,health=excluded.health,
  revision=excluded.revision,deleted=excluded.deleted,updated_at=excluded.updated_at,checked_at=excluded.checked_at,
  ttl_seconds=excluded.ttl_seconds,check_interval_seconds=excluded.check_interval_seconds,
  unhealthy_threshold=excluded.unhealthy_threshold,healthy_threshold=excluded.healthy_threshold,draining=excluded.draining,traffic_weight=excluded.traffic_weight,
+ metadata=excluded.metadata,
  heartbeat_at=CASE WHEN excluded.heartbeat_at = 0 THEN services.heartbeat_at ELSE excluded.heartbeat_at END`,
 		service.ID, service.Name, service.NodeID, service.Address, service.Region, service.Version,
 		string(tags), service.HealthCheck, service.Health, service.Revision, deleted,
 		service.UpdatedAt.UnixNano(), timeNanos(service.CheckedAt), service.TTLSeconds, timeNanos(service.HeartbeatAt),
-		service.CheckIntervalSeconds, service.UnhealthyThreshold, service.HealthyThreshold, boolInt(service.Draining), service.TrafficWeight)
+		service.CheckIntervalSeconds, service.UnhealthyThreshold, service.HealthyThreshold, boolInt(service.Draining), service.TrafficWeight, string(metadata))
 	if err != nil {
 		return Service{}, fmt.Errorf("storage: save service: %w", err)
 	}
@@ -870,23 +908,28 @@ func (s *Store) updateCheckedAt(ctx context.Context, id string, at time.Time) er
 }
 
 const serviceSelect = `SELECT id,name,node_id,address,region,version,tags,health_check,health,revision,deleted,updated_at,checked_at,ttl_seconds,heartbeat_at,
- check_interval_seconds,unhealthy_threshold,healthy_threshold,draining,traffic_weight FROM services`
+ check_interval_seconds,unhealthy_threshold,healthy_threshold,draining,traffic_weight,metadata FROM services`
 
 type scanner interface{ Scan(...any) error }
 
 func scanService(row scanner) (Service, error) {
 	var service Service
-	var tags string
+	var tags, metadata string
 	var deleted, draining int
 	var updatedAt, checkedAt, heartbeatAt int64
 	if err := row.Scan(&service.ID, &service.Name, &service.NodeID, &service.Address, &service.Region,
 		&service.Version, &tags, &service.HealthCheck, &service.Health, &service.Revision,
 		&deleted, &updatedAt, &checkedAt, &service.TTLSeconds, &heartbeatAt,
-		&service.CheckIntervalSeconds, &service.UnhealthyThreshold, &service.HealthyThreshold, &draining, &service.TrafficWeight); err != nil {
+		&service.CheckIntervalSeconds, &service.UnhealthyThreshold, &service.HealthyThreshold, &draining, &service.TrafficWeight, &metadata); err != nil {
 		return Service{}, err
 	}
 	if err := json.Unmarshal([]byte(tags), &service.Tags); err != nil {
 		return Service{}, fmt.Errorf("storage: decode tags: %w", err)
+	}
+	if metadata != "" && metadata != "{}" {
+		if err := json.Unmarshal([]byte(metadata), &service.Metadata); err != nil {
+			return Service{}, fmt.Errorf("storage: decode metadata: %w", err)
+		}
 	}
 	service.Deleted = deleted != 0
 	service.Draining = draining != 0

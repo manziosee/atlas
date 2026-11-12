@@ -86,9 +86,10 @@ public sealed class OfflineTests
             Stale = "exclude",
             Latency = "nearest",
             Tolerance = TimeSpan.FromMilliseconds(2.5),
+            Metadata = new Dictionary<string, string> { ["team"] = "pay", ["app/name"] = "api" },
         });
         Assert.Equal(
-            "http://atlas.test/v1/lookup/pay%20ments?region=eu&key=user-7&tag=blue&tag=v2&stale=exclude&latency=nearest&tolerance=2.5ms",
+            "http://atlas.test/v1/lookup/pay%20ments?region=eu&key=user-7&tag=blue&tag=v2&meta=app%2Fname%3Aapi&meta=team%3Apay&stale=exclude&latency=nearest&tolerance=2.5ms",
             Assert.Single(handler.Requests).Url);
     }
 

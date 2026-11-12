@@ -38,6 +38,8 @@ public sealed record Service
     public bool Draining { get; init; }
     /// <summary>Relative share of traffic among routable instances (1 by default).</summary>
     public int TrafficWeight { get; init; }
+    /// <summary>Key/value labels such as team or protocol, or null when there are none.</summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
     /// <summary>When the record last changed.</summary>
     public DateTimeOffset UpdatedAt { get; init; }
     /// <summary>When a health check last ran, if ever.</summary>

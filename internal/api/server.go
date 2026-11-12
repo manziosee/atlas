@@ -78,6 +78,8 @@ type Deps struct {
 	ConsoleURL string
 	// Location places this node on maps (ATLAS_LOCATION); nil when unset.
 	Location *Location
+	// Webhooks delivers this node's webhooks; nil disables the webhook API.
+	Webhooks WebhookDispatcher
 }
 
 // NewHandler builds the full middleware chain and routes.
@@ -147,6 +149,10 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("POST /v1/admin/credentials", d.createCredential)
 	v1.HandleFunc("DELETE /v1/admin/credentials/{id}", d.revokeCredential)
 	v1.HandleFunc("GET /v1/admin/audit", d.listAudit)
+	v1.HandleFunc("GET /v1/admin/webhooks", d.listWebhooks)
+	v1.HandleFunc("POST /v1/admin/webhooks", d.createWebhook)
+	v1.HandleFunc("DELETE /v1/admin/webhooks/{id}", d.deleteWebhook)
+	v1.HandleFunc("POST /v1/admin/webhooks/{id}/test", d.testWebhook)
 	v1.HandleFunc("GET /v1/admin/analytics", d.adminAnalytics)
 	v1.HandleFunc("POST /v1/admin/backup", d.backup)
 	v1.HandleFunc("DELETE /v1/admin/nodes/{id}", d.evictNode)

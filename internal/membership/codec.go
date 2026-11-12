@@ -415,6 +415,14 @@ func marshalService(service storage.Service) []byte {
 	if service.TrafficWeight > 0 {
 		b = appendVarintField(b, 19, uint64(service.TrafficWeight)) // #nosec G115 -- validated positive and bounded.
 	}
+	// map<string, string> metadata = 20: one entry message per key, in key
+	// order so equal records encode identically.
+	for _, key := range storage.SortedMetadataKeys(service.Metadata) {
+		var entry []byte
+		entry = appendStringField(entry, 1, key)
+		entry = appendStringField(entry, 2, service.Metadata[key])
+		b = appendBytesField(b, 20, entry)
+	}
 	return b
 }
 
@@ -514,6 +522,28 @@ func unmarshalService(data []byte, service *storage.Service) error {
 			}
 			continue
 		}
+		if number == 20 {
+			if typ != protowire.BytesType {
+				return errors.New("membership: invalid protobuf service metadata")
+			}
+			entry, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return protowire.ParseError(n)
+			}
+			data = data[n:]
+			key, value, err := decodeMetadataEntry(entry)
+			if err != nil {
+				return err
+			}
+			if service.Metadata == nil {
+				service.Metadata = make(map[string]string)
+			}
+			service.Metadata[key] = value
+			if err := storage.ValidateMetadata(service.Metadata); err != nil {
+				return errors.New("membership: invalid protobuf service metadata")
+			}
+			continue
+		}
 		n := protowire.ConsumeFieldValue(number, typ, data)
 		if n < 0 {
 			return protowire.ParseError(n)
@@ -521,6 +551,40 @@ func unmarshalService(data []byte, service *storage.Service) error {
 		data = data[n:]
 	}
 	return nil
+}
+
+// decodeMetadataEntry reads one map entry message: key = 1, value = 2.
+func decodeMetadataEntry(data []byte) (string, string, error) {
+	var key, value string
+	for len(data) > 0 {
+		number, typ, consumed := protowire.ConsumeTag(data)
+		if consumed < 0 {
+			return "", "", protowire.ParseError(consumed)
+		}
+		data = data[consumed:]
+		if (number == 1 || number == 2) && typ == protowire.BytesType {
+			field, n := protowire.ConsumeBytes(data)
+			if n < 0 {
+				return "", "", protowire.ParseError(n)
+			}
+			data = data[n:]
+			if number == 1 {
+				key = string(field)
+			} else {
+				value = string(field)
+			}
+			continue
+		}
+		n := protowire.ConsumeFieldValue(number, typ, data)
+		if n < 0 {
+			return "", "", protowire.ParseError(n)
+		}
+		data = data[n:]
+	}
+	if !storage.ValidMetadataKey(key) {
+		return "", "", errors.New("membership: invalid protobuf metadata key")
+	}
+	return key, value, nil
 }
 
 // signedInt64FromVarint preserves the two's-complement bit pattern used by
