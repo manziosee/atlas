@@ -126,12 +126,12 @@ clear_netem() {
   done
 }
 
-wait_for_owner() { # service name, expected node
-  local name="$1" expected="$2" deadline=$((SECONDS + TIMEOUT)) owner
+wait_for_owner() { # service name, expected node, [extra lookup query]
+  local name="$1" expected="$2" extra="${3:-}" deadline=$((SECONDS + TIMEOUT)) owner
   while (( SECONDS < deadline )); do
     assert_no_dead
     owner="$(curl -fsS --max-time 5 -H "Authorization: Bearer $ATLAS_TOKEN" \
-      "http://127.0.0.1:8083/v1/lookup/$name?latency=nearest" 2>/dev/null \
+      "http://127.0.0.1:8083/v1/lookup/$name?latency=nearest$extra" 2>/dev/null \
       | jq -r '.node_id' 2>/dev/null || true)"
     if [[ "$owner" == "$expected" ]]; then return 0; fi
     sleep 1
@@ -258,9 +258,14 @@ start=$(date +%s)
 wait_for_owner chaos-route atlas-2
 echo "   routing moved away from slow atlas-1 after $(( $(date +%s) - start ))s"
 
+# With zero tolerance only the single fastest node is eligible, and once the
+# delay is gone atlas-1 and atlas-2 differ by microseconds of jitter, so either
+# may win. Recovery means atlas-1 is eligible again: with a 50ms tolerance both
+# healthy nodes share traffic as soon as atlas-1's RTT average (which decays
+# by 1/8 per probe) falls back near atlas-2's.
 start=$(date +%s)
 netem 1 del dev eth0 root
-wait_for_owner chaos-route atlas-1
+wait_for_owner chaos-route atlas-1 "&tolerance=50ms"
 echo "   routing recovered to atlas-1 after $(( $(date +%s) - start ))s"
 curl -fsS --max-time 5 -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8081/v1/services/chaos-route-1 >/dev/null
 curl -fsS --max-time 5 -X DELETE -H "Authorization: Bearer $ATLAS_TOKEN" http://127.0.0.1:8082/v1/services/chaos-route-2 >/dev/null
