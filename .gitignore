@@ -37,3 +37,9 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# .NET build output
+clients/csharp/**/bin/
+clients/csharp/**/obj/
+examples/csharp/bin/
+examples/csharp/obj/

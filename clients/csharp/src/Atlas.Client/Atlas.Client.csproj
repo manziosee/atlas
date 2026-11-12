@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>Atlas.Client</RootNamespace>
+
+    <PackageId>Manziosee.Atlas.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Atlas contributors</Authors>
+    <Description>Client for the Atlas service registry HTTP API: registration, heartbeats, routed lookups, paging, resumable event streams and admin calls. No dependencies beyond .NET.</Description>
+    <PackageTags>atlas;service-discovery;service-registry;gossip</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/manziosee/atlas</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/manziosee/atlas</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Atlas.Client.DependencyInjection" />
+    <InternalsVisibleTo Include="Atlas.Client.Tests" />
+  </ItemGroup>
+
+</Project>
