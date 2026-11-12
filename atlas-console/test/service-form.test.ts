@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildSpec, type FormValues } from "@/components/console/service-form";
+import { buildSpec, parseMetadata, type FormValues } from "@/components/console/service-form";
 
-const base: FormValues = { id: "", name: "payments", address: "10.0.0.8:8080", version: "", tags: "a, b", mode: "ttl", ttl: "15", check: "", interval: "", draining: false, trafficWeight: "1" };
+const base: FormValues = { id: "", name: "payments", address: "10.0.0.8:8080", version: "", tags: "a, b", mode: "ttl", ttl: "15", check: "", interval: "", draining: false, trafficWeight: "1", metadata: "" };
 
 describe("buildSpec", () => {
   it("builds a TTL registration", () => {
@@ -21,5 +21,27 @@ describe("buildSpec", () => {
     expect(Object.keys(errors).sort()).toEqual(["address", "name", "ttl"]);
     expect(buildSpec({ ...base, mode: "check", check: "ftp://x" }).errors.check).toBeDefined();
     expect(buildSpec({ ...base, trafficWeight: "1001" }).errors.trafficWeight).toBeDefined();
+  });
+});
+
+describe("metadata", () => {
+  it("parses key=value lines into the spec", () => {
+    const { spec } = buildSpec({ ...base, metadata: "team=payments\n\n protocol = grpc \nempty=" });
+    expect(spec?.metadata).toEqual({ team: "payments", protocol: "grpc", empty: "" });
+    expect(buildSpec(base).spec?.metadata).toBeUndefined();
+  });
+
+  it("keeps everything after the first = in the value", () => {
+    expect(parseMetadata("url=https://x.test/?a=b").metadata).toEqual({ url: "https://x.test/?a=b" });
+  });
+
+  it("rejects keys and sizes the node would reject", () => {
+    expect(parseMetadata("bad key=v").error).toBeDefined();
+    expect(parseMetadata(".hidden=v").error).toBeDefined();
+    expect(parseMetadata("team=a\nteam=b").error).toBeDefined();
+    expect(parseMetadata(Array.from({ length: 17 }, (_, i) => `k${i}=v`).join("\n")).error).toBeDefined();
+    expect(parseMetadata(`a=${"v".repeat(300)}`).error).toBeDefined();
+    expect(parseMetadata(["a", "b", "c"].map((k) => `${k}=${"v".repeat(200)}`).join("\n")).error).toBeDefined();
+    expect(buildSpec({ ...base, metadata: "bad key=v" }).errors.metadata).toBeDefined();
   });
 });

@@ -41,6 +41,7 @@ export interface Service {
   healthy_threshold?: number;
   draining?: boolean;
   traffic_weight: number;
+  metadata?: Record<string, string>;
   updated_at: string;
   checked_at?: string;
   heartbeat_at?: string;
@@ -59,6 +60,7 @@ export interface ServiceSpec {
   healthy_threshold?: number;
   draining?: boolean;
   traffic_weight?: number;
+  metadata?: Record<string, string>;
 }
 
 export type ServicePatch = Partial<Omit<ServiceSpec, "id">>;

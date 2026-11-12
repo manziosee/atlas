@@ -112,6 +112,22 @@ class AtlasClientTest {
   }
 
   @Test
+  void metadataFiltersAndReplacement() {
+    live();
+    String name = unique("meta");
+    Service grpc = atlas.register(new ServiceSpec(name, "10.7.6.1:80").metadata(Map.of("team", "payments", "protocol", "grpc")));
+    assertEquals(Map.of("team", "payments", "protocol", "grpc"), grpc.metadata());
+    atlas.register(new ServiceSpec(name, "10.7.6.2:80").metadata(Map.of("team", "payments", "protocol", "http")));
+    List<Service> matched = atlas.listServices(new Filter().name(name).meta("team", "payments").meta("protocol", "grpc"));
+    assertEquals(List.of(grpc.id()), matched.stream().map(Service::id).toList());
+    assertEquals(grpc.id(), atlas.lookup(name, new LookupOptions().meta("protocol", "grpc")).id());
+    assertEquals(Map.of("team", "billing"), atlas.update(grpc.id(), new ServicePatch().metadata(Map.of("team", "billing")), 0).metadata());
+    assertTrue(atlas.update(grpc.id(), new ServicePatch().metadata(Map.of()), 0).metadata().isEmpty());
+    AtlasException bad = assertThrows(AtlasException.class, () -> atlas.register(new ServiceSpec(name, "10.7.6.3:80").metadata(Map.of("bad key", "v"))));
+    assertEquals("validation_failed", bad.code());
+  }
+
+  @Test
   void drainingAndRoutingOverrides() {
     live();
     String name = unique("drain");

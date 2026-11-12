@@ -27,6 +27,7 @@ public final class Types {
       long healthyThreshold,
       boolean draining,
       long trafficWeight,
+      Map<String, String> metadata,
       String updatedAt,
       String checkedAt,
       String heartbeatAt) {
@@ -37,7 +38,7 @@ public final class Types {
           str(m, "version"), strings(m, "tags"), str(m, "health_check"), str(m, "health"),
           num(m, "revision"), num(m, "ttl_seconds"), num(m, "check_interval_seconds"),
           num(m, "unhealthy_threshold"), num(m, "healthy_threshold"), bool(m, "draining"), num(m, "traffic_weight"),
-          str(m, "updated_at"), str(m, "checked_at"), str(m, "heartbeat_at"));
+          stringMap(m, "metadata"), str(m, "updated_at"), str(m, "checked_at"), str(m, "heartbeat_at"));
     }
   }
 
@@ -101,6 +102,8 @@ public final class Types {
     public ServiceSpec healthyThreshold(long checks) { fields.put("healthy_threshold", checks); return this; }
     public ServiceSpec draining(boolean draining) { fields.put("draining", draining); return this; }
     public ServiceSpec trafficWeight(long weight) { fields.put("traffic_weight", weight); return this; }
+    /** Key/value labels: at most 16 entries totalling 512 bytes. */
+    public ServiceSpec metadata(Map<String, String> metadata) { fields.put("metadata", new LinkedHashMap<>(metadata)); return this; }
   }
 
   /** Fields to change with {@link AtlasClient#update}; unset fields keep their values. */
@@ -118,12 +121,15 @@ public final class Types {
     public ServicePatch healthyThreshold(long checks) { fields.put("healthy_threshold", checks); return this; }
     public ServicePatch draining(boolean draining) { fields.put("draining", draining); return this; }
     public ServicePatch trafficWeight(long weight) { fields.put("traffic_weight", weight); return this; }
+    /** Replaces the whole map; an empty map removes every entry. */
+    public ServicePatch metadata(Map<String, String> metadata) { fields.put("metadata", new LinkedHashMap<>(metadata)); return this; }
   }
 
-  /** Narrows listings. A service must carry every tag. */
+  /** Narrows listings. A service must carry every tag and metadata entry. */
   public static final class Filter {
     final Map<String, String> fields = new LinkedHashMap<>();
     final List<String> tags = new ArrayList<>();
+    final Map<String, String> metadata = new java.util.TreeMap<>();
 
     public Filter name(String name) { fields.put("name", name); return this; }
     public Filter region(String region) { fields.put("region", region); return this; }
@@ -131,6 +137,8 @@ public final class Types {
     public Filter version(String version) { fields.put("version", version); return this; }
     public Filter nodeId(String nodeId) { fields.put("node_id", nodeId); return this; }
     public Filter tag(String tag) { tags.add(tag); return this; }
+    /** Only services whose metadata has {@code key} set to exactly {@code value}. */
+    public Filter meta(String key, String value) { metadata.put(key, value); return this; }
   }
 
   /**
@@ -141,10 +149,13 @@ public final class Types {
   public static final class LookupOptions {
     final Map<String, String> fields = new LinkedHashMap<>();
     final List<String> tags = new ArrayList<>();
+    final Map<String, String> metadata = new java.util.TreeMap<>();
 
     public LookupOptions region(String region) { fields.put("region", region); return this; }
     public LookupOptions key(String key) { fields.put("key", key); return this; }
     public LookupOptions tag(String tag) { tags.add(tag); return this; }
+    /** Only instances whose metadata has {@code key} set to exactly {@code value}. */
+    public LookupOptions meta(String key, String value) { metadata.put(key, value); return this; }
     public LookupOptions stale(String policy) { fields.put("stale", policy); return this; }
     public LookupOptions latency(String mode) { fields.put("latency", mode); return this; }
     public LookupOptions tolerance(String duration) { fields.put("tolerance", duration); return this; }
@@ -177,6 +188,14 @@ public final class Types {
       }
     }
     return out;
+  }
+
+  static Map<String, String> stringMap(Map<String, Object> m, String key) {
+    Map<String, String> out = new LinkedHashMap<>();
+    if (m.get(key) instanceof Map<?, ?> map) {
+      map.forEach((k, v) -> out.put(String.valueOf(k), v == null ? "" : String.valueOf(v)));
+    }
+    return Map.copyOf(out);
   }
 
   static List<String> strings(Map<String, Object> m, String key) {

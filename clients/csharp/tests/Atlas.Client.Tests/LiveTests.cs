@@ -95,6 +95,27 @@ public sealed class LiveTests : IDisposable
     }
 
     [LiveFact]
+    public async Task MetadataFiltersAndReplacement()
+    {
+        var name = LiveNode.Unique("meta");
+        var grpc = await Atlas.RegisterAsync(new ServiceSpec(name, "10.8.7.1:80") { Metadata = new Dictionary<string, string> { ["team"] = "payments", ["protocol"] = "grpc" } });
+        Assert.Equal("grpc", grpc.Metadata?["protocol"]);
+        await Atlas.RegisterAsync(new ServiceSpec(name, "10.8.7.2:80") { Metadata = new Dictionary<string, string> { ["team"] = "payments", ["protocol"] = "http" } });
+
+        var matched = await Atlas.ListServicesAsync(new ServiceFilter { Name = name, Metadata = new Dictionary<string, string> { ["team"] = "payments", ["protocol"] = "grpc" } });
+        Assert.Equal(grpc.Id, Assert.Single(matched).Id);
+        var picked = await Atlas.LookupAsync(name, new LookupOptions { Metadata = new Dictionary<string, string> { ["protocol"] = "grpc" } });
+        Assert.Equal(grpc.Id, picked.Id);
+
+        var replaced = await Atlas.UpdateAsync(grpc.Id, new ServicePatch { Metadata = new Dictionary<string, string> { ["team"] = "billing" } });
+        Assert.Equal("billing", Assert.Single(replaced.Metadata!).Value);
+        var cleared = await Atlas.UpdateAsync(grpc.Id, new ServicePatch { Metadata = new Dictionary<string, string>() });
+        Assert.Null(cleared.Metadata);
+        var bad = await Assert.ThrowsAsync<AtlasException>(() => Atlas.RegisterAsync(new ServiceSpec(name, "10.8.7.3:80") { Metadata = new Dictionary<string, string> { ["bad key"] = "v" } }));
+        Assert.Equal("validation_failed", bad.Code);
+    }
+
+    [LiveFact]
     public async Task DrainingAndRoutingOverrides()
     {
         var name = LiveNode.Unique("drain");

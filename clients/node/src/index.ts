@@ -31,6 +31,8 @@ export interface Service {
   healthy_threshold?: number;
   draining?: boolean;
   traffic_weight: number;
+  /** Key/value labels such as team or protocol. */
+  metadata?: Record<string, string>;
   updated_at: string;
   checked_at?: string;
   heartbeat_at?: string;
@@ -53,6 +55,12 @@ export interface ServiceSpec {
   healthy_threshold?: number;
   draining?: boolean;
   traffic_weight?: number;
+  /**
+   * Key/value labels: at most 16 entries totalling 512 bytes; keys are letters,
+   * digits, ".", "_", "-" and "/". In a patch, the whole map is replaced and
+   * `{}` removes every entry.
+   */
+  metadata?: Record<string, string>;
 }
 
 /** Fields to change; absent fields keep their values. */
@@ -114,6 +122,8 @@ export interface ServiceFilter {
   node_id?: string;
   /** A service must carry every tag. */
   tags?: string[];
+  /** A service must carry every entry with exactly that value. */
+  metadata?: Record<string, string>;
 }
 
 export interface LookupOptions {
@@ -121,6 +131,8 @@ export interface LookupOptions {
   /** Consistent-hash key: the same key keeps selecting the same instance. */
   key?: string;
   tags?: string[];
+  /** Only instances carrying every entry with exactly that value. */
+  metadata?: Record<string, string>;
   /** How to treat instances whose owning node is not alive. */
   stale?: "include" | "prefer-live" | "exclude";
   latency?: "nearest" | "off";
@@ -272,6 +284,7 @@ export class AtlasClient {
       if (value) query.push([key, value]);
     }
     for (const tag of options.tags ?? []) query.push(["tag", tag]);
+    query.push(...metaQuery(options.metadata));
     return this.request<Service>("GET", `/v1/lookup/${encodeURIComponent(name)}`, query);
   }
 
@@ -432,7 +445,15 @@ function filterQuery(filter: ServiceFilter): Query {
     if (value) query.push([key, value]);
   }
   for (const tag of filter.tags ?? []) query.push(["tag", tag]);
+  query.push(...metaQuery(filter.metadata));
   return query;
+}
+
+/** Metadata filters as repeated meta=key:value parameters, in key order. */
+function metaQuery(metadata: Record<string, string> | undefined): Query {
+  return Object.keys(metadata ?? {})
+    .sort()
+    .map((key): [string, string] => ["meta", `${key}:${metadata![key]}`]);
 }
 
 async function errorFrom(response: Response): Promise<AtlasError> {

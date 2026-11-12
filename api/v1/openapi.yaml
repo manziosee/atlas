@@ -128,6 +128,15 @@ paths:
           style: form
           explode: true
           schema: { type: array, maxItems: 16, items: { type: string } }
+        - in: query
+          name: meta
+          description: >-
+            Required metadata entry as key:value, for example team:payments. Repeat
+            for several (at most 8, one per key); a service must carry all of them
+            with exactly those values.
+          style: form
+          explode: true
+          schema: { type: array, maxItems: 8, items: { type: string, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,62}:' } }
         - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
         - { in: query, name: cursor, description: next_cursor from the previous page, schema: { type: string } }
       responses:
@@ -252,6 +261,15 @@ paths:
         - { in: query, name: region, schema: { type: string, maxLength: 64 } }
         - { in: query, name: key, description: Stable consistent-hash key, schema: { type: string, maxLength: 256 } }
         - { in: query, name: tag, style: form, explode: true, schema: { type: array, items: { type: string } } }
+        - in: query
+          name: meta
+          description: >-
+            Required metadata entry as key:value, for example team:payments. Repeat
+            for several (at most 8, one per key); a service must carry all of them
+            with exactly those values.
+          style: form
+          explode: true
+          schema: { type: array, maxItems: 8, items: { type: string, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,62}:' } }
         - in: query
           name: stale
           description: >-
@@ -578,6 +596,16 @@ components:
         healthy_threshold: { type: integer, minimum: 1, maximum: 10, description: Consecutive passing checks before an unhealthy service recovers (default 2). Needs health_check. }
         draining: { type: boolean, description: 'Keep the record but send it no traffic: lookups, DNS and client load balancers skip it.' }
         traffic_weight: { type: integer, minimum: 1, maximum: 1000, default: 1, description: 'Relative traffic share after health, stale, region and latency filtering.' }
+        metadata: { $ref: '#/components/schemas/Metadata' }
+    Metadata:
+      type: object
+      description: >-
+        Key/value labels such as team, protocol or git commit; filter on them with
+        meta=key:value. At most 16 entries whose keys and values total 512 bytes.
+      maxProperties: 16
+      propertyNames: { pattern: '^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,62}$' }
+      additionalProperties: { type: string, maxLength: 256 }
+      examples: [{ team: payments, protocol: grpc, git.commit: 3f9c2e1 }]
     ServicePatch:
       type: object
       additionalProperties: false
@@ -593,6 +621,9 @@ components:
         healthy_threshold: { type: integer }
         draining: { type: boolean }
         traffic_weight: { type: integer, minimum: 1, maximum: 1000 }
+        metadata:
+          allOf: [{ $ref: '#/components/schemas/Metadata' }]
+          description: Replaces the whole map, like tags; {} removes every entry.
     Service:
       type: object
       properties:
@@ -612,6 +643,7 @@ components:
         healthy_threshold: { type: integer }
         draining: { type: boolean }
         traffic_weight: { type: integer, minimum: 1, maximum: 1000 }
+        metadata: { $ref: '#/components/schemas/Metadata' }
         updated_at: { type: string, format: date-time }
         checked_at: { type: string, format: date-time, description: Last health check (owner node only) }
         heartbeat_at: { type: string, format: date-time, description: Last heartbeat (owner node only) }

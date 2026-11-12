@@ -160,6 +160,7 @@ public sealed class AtlasClient : IDisposable
             Add(query, "version", filter.Version);
             Add(query, "node_id", filter.NodeId);
             AddTags(query, filter.Tags);
+            AddMetadata(query, filter.Metadata);
         }
         Add(query, "cursor", cursor);
         if (limit > 0)
@@ -194,6 +195,7 @@ public sealed class AtlasClient : IDisposable
             Add(query, "region", options.Region);
             Add(query, "key", options.Key);
             AddTags(query, options.Tags);
+            AddMetadata(query, options.Metadata);
             Add(query, "stale", options.Stale);
             Add(query, "latency", options.Latency);
             if (options.Tolerance is { } tolerance)
@@ -560,6 +562,18 @@ public sealed class AtlasClient : IDisposable
         foreach (var tag in tags ?? [])
         {
             query.Add(new("tag", tag));
+        }
+    }
+
+    private static void AddMetadata(List<KeyValuePair<string, string>> query, IReadOnlyDictionary<string, string>? metadata)
+    {
+        if (metadata is null)
+        {
+            return;
+        }
+        foreach (var key in metadata.Keys.OrderBy(key => key, StringComparer.Ordinal))
+        {
+            query.Add(new("meta", key + ":" + metadata[key]));
         }
     }
 

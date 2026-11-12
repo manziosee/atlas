@@ -125,6 +125,7 @@ public final class AtlasClient {
     List<String[]> query = new ArrayList<>();
     filter.fields.forEach((k, v) -> query.add(new String[] {k, v}));
     filter.tags.forEach(tag -> query.add(new String[] {"tag", tag}));
+    filter.metadata.forEach((k, v) -> query.add(new String[] {"meta", k + ":" + v}));
     if (cursor != null && !cursor.isEmpty()) query.add(new String[] {"cursor", cursor});
     if (limit > 0) query.add(new String[] {"limit", String.valueOf(limit)});
     Map<String, Object> body = object("GET", "/v1/services", query, null, Map.of());
@@ -151,6 +152,7 @@ public final class AtlasClient {
     List<String[]> query = new ArrayList<>();
     options.fields.forEach((k, v) -> query.add(new String[] {k, v}));
     options.tags.forEach(tag -> query.add(new String[] {"tag", tag}));
+    options.metadata.forEach((k, v) -> query.add(new String[] {"meta", k + ":" + v}));
     return Service.from(object("GET", "/v1/lookup/" + encode(name), query, null, Map.of()));
   }
 

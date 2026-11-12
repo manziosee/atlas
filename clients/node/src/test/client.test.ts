@@ -77,6 +77,21 @@ describe("AtlasClient against a live node", live, () => {
     assert.equal((await atlas.listServices({ name, tags: ["even"] })).length, 3);
   });
 
+  it("stores, filters on and replaces metadata", async () => {
+    const name = unique("meta");
+    const grpc = await atlas.register({ name, address: "10.8.6.1:80", metadata: { team: "payments", protocol: "grpc" } });
+    assert.deepEqual(grpc.metadata, { team: "payments", protocol: "grpc" });
+    await atlas.register({ name, address: "10.8.6.2:80", metadata: { team: "payments", protocol: "http" } });
+    const matched = await atlas.listServices({ name, metadata: { team: "payments", protocol: "grpc" } });
+    assert.deepEqual(matched.map((s) => s.id), [grpc.id]);
+    assert.equal((await atlas.lookup(name, { metadata: { protocol: "grpc" } })).id, grpc.id);
+    const replaced = await atlas.update(grpc.id, { metadata: { team: "billing" } });
+    assert.deepEqual(replaced.metadata, { team: "billing" });
+    const cleared = await atlas.update(grpc.id, { metadata: {} });
+    assert.equal(cleared.metadata, undefined);
+    await rejectsWithCode(atlas.register({ name, address: "10.8.6.3:80", metadata: { "bad key": "v" } }), "validation_failed");
+  });
+
   it("drains instances out of lookups and applies routing overrides", async () => {
     const name = unique("drain");
     const blue = await atlas.register({ name, address: "10.8.3.1:80" });

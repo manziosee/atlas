@@ -67,9 +67,13 @@ function typeOf(schema: Json | undefined, root: Json): string {
   if (!schema) return "";
   if (typeof schema.$ref === "string") return schema.$ref.split("/").pop()!;
   if (Array.isArray(schema.oneOf)) return (schema.oneOf as Json[]).map((s) => typeOf(s, root)).join(" | ");
+  if (Array.isArray(schema.allOf)) return (schema.allOf as Json[]).map((s) => typeOf(s, root)).join(" & ");
   if (schema.type === "array") return `${typeOf(schema.items as Json, root) || "any"}[]`;
   if (Array.isArray(schema.enum)) return (schema.enum as string[]).map((v) => JSON.stringify(v)).join(" | ");
-  if (schema.type === "object" && !schema.properties) return "object";
+  if (schema.type === "object" && !schema.properties) {
+    const values = schema.additionalProperties;
+    return values && typeof values === "object" ? `map<string, ${typeOf(values as Json, root) || "any"}>` : "object";
+  }
   const base = Array.isArray(schema.type) ? schema.type.join(" | ") : String(schema.type ?? "object");
   return schema.format ? `${base} (${schema.format})` : base;
 }

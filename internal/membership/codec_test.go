@@ -81,3 +81,38 @@ func TestMessageCodecLegacyJSONAndVersion(t *testing.T) {
 		t.Fatal("unsupported protobuf version accepted")
 	}
 }
+
+func TestServiceMetadataCodec(t *testing.T) {
+	service := storage.Service{
+		ID: "svc-1", Name: "api", NodeID: "n1", Address: "10.0.0.1:80", Region: "af", Health: storage.HealthHealthy,
+		Revision: 3, TrafficWeight: 1, Metadata: map[string]string{"team": "payments", "protocol": "grpc", "empty": ""},
+	}
+	encoded := marshalService(service)
+	if !bytes.Equal(encoded, marshalService(service)) {
+		t.Fatal("metadata encoding is not deterministic")
+	}
+	var decoded storage.Service
+	if err := unmarshalService(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Metadata) != 3 || decoded.Metadata["team"] != "payments" || decoded.Metadata["protocol"] != "grpc" {
+		t.Fatalf("decoded metadata = %v", decoded.Metadata)
+	}
+	if value, ok := decoded.Metadata["empty"]; !ok || value != "" {
+		t.Fatalf("empty metadata value lost: %v", decoded.Metadata)
+	}
+
+	var plain storage.Service
+	if err := unmarshalService(marshalService(storage.Service{ID: "x", Name: "x", NodeID: "n", Address: "1.2.3.4:5", Health: storage.HealthUnknown}), &plain); err != nil || plain.Metadata != nil {
+		t.Fatalf("service without metadata decoded as %v, err %v", plain.Metadata, err)
+	}
+
+	bad := marshalService(storage.Service{ID: "x", Name: "x", NodeID: "n", Address: "1.2.3.4:5", Health: storage.HealthUnknown})
+	var entry []byte
+	entry = appendStringField(entry, 1, "bad key")
+	entry = appendStringField(entry, 2, "v")
+	bad = appendBytesField(bad, 20, entry)
+	if err := unmarshalService(bad, &storage.Service{}); err == nil {
+		t.Fatal("invalid metadata key from a peer was accepted")
+	}
+}

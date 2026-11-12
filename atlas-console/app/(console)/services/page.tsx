@@ -339,6 +339,22 @@ function ServiceDetail({
         <Row label="Tags">
           <div className="flex flex-wrap gap-1">{s.tags?.length ? s.tags.map((t) => <Tag key={t}>{t}</Tag>) : "—"}</div>
         </Row>
+        <Row label="Metadata">
+          {s.metadata && Object.keys(s.metadata).length ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+              {Object.entries(s.metadata)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([k, v]) => (
+                  <div key={k} className="contents">
+                    <dt className="text-muted">{k}</dt>
+                    <dd className="break-all">{v || <span className="text-muted">(empty)</span>}</dd>
+                  </div>
+                ))}
+            </dl>
+          ) : (
+            "—"
+          )}
+        </Row>
         <Row label="Source">
           <SourceBadge service={s} detailed />
         </Row>

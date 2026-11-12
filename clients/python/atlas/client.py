@@ -61,6 +61,7 @@ class ServiceInstance(TypedDict, total=False):
     healthy_threshold: int
     draining: bool
     traffic_weight: int
+    metadata: dict[str, str]
     updated_at: str
     checked_at: str
     heartbeat_at: str
@@ -173,6 +174,7 @@ class AtlasClient:
         healthy_threshold: int = 0,
         draining: bool = False,
         traffic_weight: int = 1,
+        metadata: dict[str, str] | None = None,
         service_id: str = "",
         idempotency_key: str = "",
     ) -> ServiceInstance:
@@ -184,12 +186,14 @@ class AtlasClient:
         ``health_check`` is an ``http(s)://``, ``tcp://`` or ``grpc(s)://`` URL
         on ``address``; the interval and thresholds tune it (zero uses the
         node defaults: 3 failures to turn unhealthy, 2 successes to recover).
+        ``metadata`` holds key/value labels such as ``{"team": "payments"}``
+        (at most 16 entries totalling 512 bytes).
         """
         payload = _spec(
             name, address, id=service_id, version=version, tags=tags, health_check=health_check,
             ttl_seconds=ttl_seconds, check_interval_seconds=check_interval_seconds,
             unhealthy_threshold=unhealthy_threshold, healthy_threshold=healthy_threshold, draining=draining,
-            traffic_weight=traffic_weight,
+            traffic_weight=traffic_weight, metadata=metadata,
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return cast(ServiceInstance, self._request("POST", "/v1/services", payload, headers=headers))
@@ -209,6 +213,7 @@ class AtlasClient:
         healthy_threshold: int = 0,
         draining: bool = False,
         traffic_weight: int = 1,
+        metadata: dict[str, str] | None = None,
         if_revision: int = 0,
     ) -> ServiceInstance:
         """Create or fully replace the service with ``service_id`` (PUT).
@@ -220,6 +225,7 @@ class AtlasClient:
             name, address, version=version, tags=tags, health_check=health_check, ttl_seconds=ttl_seconds,
             check_interval_seconds=check_interval_seconds, unhealthy_threshold=unhealthy_threshold,
             healthy_threshold=healthy_threshold, draining=draining, traffic_weight=traffic_weight,
+            metadata=metadata,
         )
         return cast(
             ServiceInstance,
@@ -241,10 +247,12 @@ class AtlasClient:
         healthy_threshold: int = _UNSET,
         draining: bool = _UNSET,
         traffic_weight: int = _UNSET,
+        metadata: dict[str, str] = _UNSET,
         if_revision: int = 0,
     ) -> ServiceInstance:
         """Change only the given fields (PATCH). Any node accepts this; a node
-        that does not own the service forwards it to the owner."""
+        that does not own the service forwards it to the owner. ``metadata``
+        replaces the whole map; ``{}`` removes every entry."""
         patch = {
             key: value
             for key, value in {
@@ -259,6 +267,7 @@ class AtlasClient:
                 "healthy_threshold": healthy_threshold,
                 "draining": draining,
                 "traffic_weight": traffic_weight,
+                "metadata": metadata,
             }.items()
             if value is not _UNSET
         }
@@ -290,6 +299,7 @@ class AtlasClient:
         version: str = "",
         node_id: str = "",
         tags: list[str] | None = None,
+        metadata: dict[str, str] | None = None,
         cursor: str = "",
         limit: int = 0,
     ) -> Page:
@@ -307,6 +317,7 @@ class AtlasClient:
             if value
         ]
         params += [("tag", tag) for tag in tags or []]
+        params += _meta_params(metadata)
         if limit:
             params.append(("limit", str(limit)))
         query = urlencode(params)
@@ -332,10 +343,14 @@ class AtlasClient:
         version: str = "",
         node_id: str = "",
         tags: list[str] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> list[ServiceInstance]:
-        """List all active instances matching the filters (every page)."""
+        """List all active instances matching the filters (every page).
+        ``metadata`` keeps only instances carrying every entry with that value."""
         return list(
-            self.iter_services(name=name, region=region, health=health, version=version, node_id=node_id, tags=tags)
+            self.iter_services(
+                name=name, region=region, health=health, version=version, node_id=node_id, tags=tags, metadata=metadata
+            )
         )
 
     def lookup(
@@ -345,6 +360,7 @@ class AtlasClient:
         region: str = "",
         key: str = "",
         tags: list[str] | None = None,
+        metadata: dict[str, str] | None = None,
         stale: str = "",
         latency: str = "",
         tolerance: str = "",
@@ -362,6 +378,7 @@ class AtlasClient:
             if v
         ]
         params += [("tag", tag) for tag in tags or []]
+        params += _meta_params(metadata)
         query = urlencode(params)
         path = f"/v1/lookup/{quote(name, safe='')}" + (f"?{query}" if query else "")
         return cast(ServiceInstance, self._request("GET", path))
@@ -540,6 +557,11 @@ def _spec(name: str, address: str, **fields: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"name": name, "address": address}
     payload.update({key: value for key, value in fields.items() if value})
     return payload
+
+
+def _meta_params(metadata: dict[str, str] | None) -> list[tuple[str, str]]:
+    """Encode metadata filters as repeated ``meta=key:value`` parameters."""
+    return [("meta", f"{key}:{value}") for key, value in sorted((metadata or {}).items())]
 
 
 def _if_match(revision: int) -> dict[str, str] | None:

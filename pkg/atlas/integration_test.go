@@ -213,3 +213,30 @@ func TestHistoryAndLookupOptions(t *testing.T) {
 		t.Fatalf("invalid stale policy err = %v", err)
 	}
 }
+
+func TestMetadataRoundTripsAndFilters(t *testing.T) {
+	client := newLiveClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	grpc, err := client.Register(ctx, RegisterRequest{Name: "pay", Address: "10.4.0.1:80", Metadata: map[string]string{"team": "payments", "protocol": "grpc"}})
+	if err != nil || grpc.Metadata["protocol"] != "grpc" {
+		t.Fatalf("Register with metadata = %+v %v", grpc, err)
+	}
+	if _, err := client.Register(ctx, RegisterRequest{Name: "pay", Address: "10.4.0.2:80", Metadata: map[string]string{"team": "payments", "protocol": "http"}}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := client.List(ctx, Filter{Name: "pay", Metadata: map[string]string{"team": "payments", "protocol": "grpc"}})
+	if err != nil || len(listed) != 1 || listed[0].ID != grpc.ID {
+		t.Fatalf("List by metadata = %+v %v", listed, err)
+	}
+	picked, err := client.LookupWithOptions(ctx, "pay", LookupOptions{Metadata: map[string]string{"protocol": "grpc"}})
+	if err != nil || picked.ID != grpc.ID {
+		t.Fatalf("Lookup by metadata = %+v %v", picked, err)
+	}
+	replacement := map[string]string{"team": "billing"}
+	updated, err := client.Update(ctx, grpc.ID, ServicePatch{Metadata: &replacement}, 0)
+	if err != nil || len(updated.Metadata) != 1 || updated.Metadata["team"] != "billing" {
+		t.Fatalf("Update metadata = %+v %v", updated, err)
+	}
+}

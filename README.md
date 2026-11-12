@@ -465,6 +465,24 @@ decide the rest:
 A node's own instances always count as nearest. DNS answers follow the same
 stale-record policy.
 
+**Metadata.** Besides tags, an instance can carry key/value `metadata`, such
+as the owning team, protocol or git commit:
+
+```json
+{"name": "payments", "address": "10.0.0.7:8443", "metadata": {"team": "payments", "protocol": "grpc"}}
+```
+
+Listings and lookups filter on it with `meta=key:value`, repeatable, and an
+instance must match every entry: for example
+`GET /v1/lookup/payments?meta=protocol:grpc`. Metadata replicates with the
+record. A `PATCH` replaces the whole map, like `tags`, and `{}` removes it.
+
+- **Limits:** at most 16 entries, with keys and values totalling 512 bytes.
+- **Keys:** letters, digits, `.`, `_`, `-` and `/`.
+- **Values:** at most 256 bytes.
+
+The limits keep a record small enough to travel in ordinary gossip packets.
+
 **History.** Every node records each committed change to a service (registered,
 updated, health, deregistered) with the record as it was afterwards. That
 includes changes learned from peers, and history survives deregistration. It
@@ -1316,6 +1334,9 @@ atlas/
 - [x] **Weighted canary routing:** per-instance relative traffic weights flow
   through the API, gossip, Go/Python/Node.js/Java clients and Console form;
   unhealthy instances are automatically removed from selection.
+- [x] **Service metadata:** key/value labels on every instance, replicated
+  through gossip within a fixed size budget, filterable in listings and lookups
+  (`meta=key:value`), editable in the console and supported by every client.
 - [x] **Phase 5, dashboard foundation:** an authenticated, resumable stream of
   membership and registry events.
 - [x] **Phase 5, Atlas Console:** a separate Next.js app (`atlas-console/`) that

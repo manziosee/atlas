@@ -28,6 +28,8 @@ public sealed record ServiceSpec(string Name, string Address)
     public bool? Draining { get; init; }
     /// <summary>Relative share of traffic, 0 to 1000 (default 1).</summary>
     public int? TrafficWeight { get; init; }
+    /// <summary>Key/value labels: at most 16 entries totalling 512 bytes; keys are letters, digits, '.', '_', '-' and '/'.</summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 }
 
 /// <summary>Fields to change with <see cref="AtlasClient.UpdateAsync"/>; null fields keep their values.</summary>
@@ -55,6 +57,8 @@ public sealed record ServicePatch
     public bool? Draining { get; init; }
     /// <summary>New traffic weight, 0 to 1000.</summary>
     public int? TrafficWeight { get; init; }
+    /// <summary>Replaces the whole metadata map; an empty dictionary removes every entry.</summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 }
 
 /// <summary>Narrows a service listing. A service must carry every tag.</summary>
@@ -72,6 +76,8 @@ public sealed record ServiceFilter
     public string? NodeId { get; init; }
     /// <summary>Only services carrying all of these tags.</summary>
     public IReadOnlyList<string>? Tags { get; init; }
+    /// <summary>Only services carrying every entry with exactly that value.</summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 }
 
 /// <summary>
@@ -87,6 +93,8 @@ public sealed record LookupOptions
     public string? Key { get; init; }
     /// <summary>Only instances carrying all of these tags.</summary>
     public IReadOnlyList<string>? Tags { get; init; }
+    /// <summary>Only instances carrying every entry with exactly that value.</summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
     /// <summary><c>include</c>, <c>prefer-live</c> or <c>exclude</c> instances of nodes that are not alive.</summary>
     public string? Stale { get; init; }
     /// <summary><c>nearest</c> or <c>off</c>.</summary>
