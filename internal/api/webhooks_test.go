@@ -24,7 +24,7 @@ func TestWebhookLifecycleAndDelivery(t *testing.T) {
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		deliveries = append(deliveries, r.Clone(context.Background()))
+		deliveries = append(deliveries, r.Clone(r.Context()))
 		bodies = append(bodies, body)
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
