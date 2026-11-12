@@ -163,6 +163,10 @@ func TestLoadRejects(t *testing.T) {
 		"bad seed":                {map[string]string{"ATLAS_SEEDS": "no-port"}, "ATLAS_SEEDS"},
 		"admission excludes self": {map[string]string{"ATLAS_ALLOWED_NODE_IDS": "n2,n3"}, "must include this node"},
 		"duplicate admission ID":  {map[string]string{"ATLAS_ALLOWED_NODE_IDS": "n1,n1"}, "duplicate node ID"},
+		"bad xds addr":            {map[string]string{"ATLAS_XDS_ADDR": "no-port"}, "ATLAS_XDS_ADDR"},
+		"public xds in production": {map[string]string{
+			"ATLAS_ENV": "production", "ATLAS_TLS_ENABLED": "true", "ATLAS_TLS_CERT_FILE": "c", "ATLAS_TLS_KEY_FILE": "k", "ATLAS_XDS_ADDR": "0.0.0.0:18000",
+		}, "ATLAS_XDS_ADDR must bind to a loopback IP"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -205,5 +209,17 @@ func TestProductionWithUpstreamTLS(t *testing.T) {
 	m["ATLAS_TLS_TERMINATED_UPSTREAM"] = "true"
 	if _, err := Load(env(m)); err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestLoadXDS(t *testing.T) {
+	values := base()
+	cfg, err := Load(env(values))
+	if err != nil || cfg.XDSAddr != "" || cfg.XDSCluster != "atlas_xds" {
+		t.Fatalf("xDS defaults = %q %q, err %v; want disabled with cluster atlas_xds", cfg.XDSAddr, cfg.XDSCluster, err)
+	}
+	values["ATLAS_XDS_ADDR"] = "0.0.0.0:18000"
+	if _, err := Load(env(values)); err != nil {
+		t.Fatalf("development may expose xDS: %v", err)
 	}
 }

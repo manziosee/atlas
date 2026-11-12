@@ -33,6 +33,8 @@ import (
 	"github.com/manziosee/atlas/internal/storage"
 	"github.com/manziosee/atlas/internal/transport"
 	"github.com/manziosee/atlas/internal/version"
+	"github.com/manziosee/atlas/internal/webhooks"
+	"github.com/manziosee/atlas/internal/xds"
 )
 
 const shutdownTimeout = 15 * time.Second
@@ -149,6 +151,8 @@ func run() error {
 	wg.Go(func() { pruneHistory(ctx, registry, cfg.HistoryRetention, log) })
 	wg.Go(func() { pruneAnalytics(ctx, registry, log) })
 	wg.Go(func() { pruneAudit(ctx, registry, log) })
+	webhookDispatcher := webhooks.New(registry, broker, log.With("component", "webhooks"), webhooks.Options{UserAgent: "Atlas-Webhook/" + version.Version})
+	wg.Go(func() { webhookDispatcher.Run(ctx) })
 	if cfg.AnalyticsEnabled && cfg.TelemetryKey == "" && cfg.Env == config.EnvProduction {
 		log.Warn("telemetry is enabled without ATLAS_TELEMETRY_KEY: anyone can submit events and countries are ignored")
 	}
@@ -175,6 +179,7 @@ func run() error {
 		CORSOrigins:      cfg.CORSOrigins,
 		ConsoleURL:       cfg.ConsoleURL,
 		Location:         apiLocation(cfg.Location),
+		Webhooks:         webhookDispatcher,
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))
@@ -202,8 +207,26 @@ func run() error {
 		MaxHeaderBytes: 16 << 10,
 	}
 
-	errCh := make(chan error, 5)
+	var xdsSrv *http.Server
+	if cfg.XDSAddr != "" {
+		xdsSrv = api.NewServer(cfg.XDSAddr, xds.Handler(registry, xds.Config{
+			XDSCluster: cfg.XDSCluster, OwnerAlive: memberAlive(ml), Log: log.With("component", "xds"),
+		}))
+		xdsSrv.TLSConfig = tlsConfig
+		if cfg.Env != config.EnvProduction && !cfg.TLS.RequireClientCert {
+			if host, _, err := net.SplitHostPort(cfg.XDSAddr); err == nil {
+				if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+					log.Warn("xDS listener is reachable without authentication; bind it to loopback or enable mutual TLS in production", "addr", cfg.XDSAddr)
+				}
+			}
+		}
+	}
+
+	errCh := make(chan error, 6)
 	go func() { errCh <- serve(apiSrv, cfg.TLS.Enabled) }()
+	if xdsSrv != nil {
+		go func() { errCh <- serve(xdsSrv, cfg.TLS.Enabled) }()
+	}
 	go func() { errCh <- serve(metricsSrv, false) }()
 	go func() { errCh <- serve(pprofSrv, false) }()
 	go func() {
@@ -234,6 +257,7 @@ func run() error {
 		"metrics", cfg.MetricsAddr,
 		"pprof", cfg.PprofAddr,
 		"dns", cfg.DNSAddr,
+		"xds", cfg.XDSAddr,
 		"tls", cfg.TLS.Enabled,
 		"mtls", cfg.TLS.Enabled && cfg.TLS.RequireClientCert,
 		"seeds", cfg.Seeds,
@@ -253,6 +277,9 @@ func run() error {
 	_ = apiSrv.Shutdown(shutdownCtx)
 	_ = metricsSrv.Shutdown(shutdownCtx)
 	_ = pprofSrv.Shutdown(shutdownCtx)
+	if xdsSrv != nil {
+		_ = xdsSrv.Shutdown(shutdownCtx)
+	}
 	grpcStopped := make(chan struct{})
 	go func() { grpcSrv.GracefulStop(); close(grpcStopped) }()
 	select {

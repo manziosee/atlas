@@ -1,0 +1,59 @@
+# Envoy bootstrap that takes its clusters and endpoints from Atlas.
+#
+# Run Envoy next to an Atlas node started with ATLAS_XDS_ADDR=127.0.0.1:18000.
+# Every Atlas service becomes an Envoy cluster of the same name. Routes below
+# name those clusters; requests to http://localhost:10000/ go to "payments".
+#
+#   envoy -c deploy/envoy/envoy.yaml
+#
+# Endpoints carry Atlas health (unhealthy, draining, degraded for instances of
+# nodes that are down), traffic weights as load-balancing weights, regions as
+# localities, and version and metadata under envoy.lb for subset routing.
+node: { id: envoy-1, cluster: edge }
+admin:
+  address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
+
+dynamic_resources:
+  cds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: REST
+      transport_api_version: V3
+      cluster_names: [atlas_xds] # must match ATLAS_XDS_CLUSTER on the node
+      refresh_delay: 1s
+
+static_resources:
+  clusters:
+    - name: atlas_xds
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: atlas_xds
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: 127.0.0.1, port_value: 18000 } } }
+      # With ATLAS_TLS_CLIENT_AUTH, add a transport_socket with your client
+      # certificate here instead of relying on a loopback bind.
+
+  listeners:
+    - name: ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 10000 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                route_config:
+                  # Clusters arrive from Atlas after startup.
+                  validate_clusters: false
+                  virtual_hosts:
+                    - name: services
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: payments }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }

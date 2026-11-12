@@ -87,14 +87,18 @@ type Config struct {
 	MetricsAddr      string
 	PprofAddr        string
 	DNSAddr          string
-	DNSZone          string
-	DNSTTL           time.Duration
-	TLS              TLS
-	APITokens        []string
-	APICredentials   []security.Credential
-	RateLimitRPS     float64
-	RateLimitBurst   int
-	TrustedProxies   []*net.IPNet
+	// XDSAddr serves Envoy REST xDS (CDS and EDS) when set; XDSCluster is
+	// the name of the bootstrap cluster Envoy uses to reach it.
+	XDSAddr        string
+	XDSCluster     string
+	DNSZone        string
+	DNSTTL         time.Duration
+	TLS            TLS
+	APITokens      []string
+	APICredentials []security.Credential
+	RateLimitRPS   float64
+	RateLimitBurst int
+	TrustedProxies []*net.IPNet
 	// CORSOrigins lists browser origins (scheme://host[:port]) allowed to
 	// call the API, for a console hosted elsewhere; "*" allows any origin.
 	// Bearer tokens are still required; no cookies are used.
@@ -182,6 +186,8 @@ func Load(lookup LookupFunc) (*Config, error) {
 		MetricsAddr:      p.str("ATLAS_METRICS_ADDR", "0.0.0.0:9090"),
 		PprofAddr:        p.str("ATLAS_PPROF_ADDR", "127.0.0.1:6060"),
 		DNSAddr:          p.str("ATLAS_DNS_ADDR", ""),
+		XDSAddr:          p.str("ATLAS_XDS_ADDR", ""),
+		XDSCluster:       p.str("ATLAS_XDS_CLUSTER", "atlas_xds"),
 		DNSZone:          p.str("ATLAS_DNS_ZONE", "atlas"),
 		DNSTTL:           p.duration("ATLAS_DNS_TTL", 5*time.Second),
 		TLS: TLS{
@@ -269,7 +275,7 @@ var knownConfigKeys = map[string]struct{}{
 	"ATLAS_GOSSIP_BIND_ADDR": {}, "ATLAS_GOSSIP_ADVERTISE_ADDR": {}, "ATLAS_SEEDS": {}, "ATLAS_ALLOWED_NODE_IDS": {},
 	"ATLAS_GOSSIP_KEY": {}, "ATLAS_GOSSIP_KEYS_SECONDARY": {}, "ATLAS_PROBE_INTERVAL": {}, "ATLAS_PROBE_TIMEOUT": {},
 	"ATLAS_SUSPICION_TIMEOUT": {}, "ATLAS_GOSSIP_INTERVAL": {}, "ATLAS_GOSSIP_FANOUT": {}, "ATLAS_DEAD_NODE_REAP": {}, "ATLAS_MAX_CLOCK_SKEW": {},
-	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
+	"ATLAS_HTTP_ADDR": {}, "ATLAS_API_ADVERTISE_ADDR": {}, "ATLAS_GRPC_ADDR": {}, "ATLAS_METRICS_ADDR": {}, "ATLAS_PPROF_ADDR": {}, "ATLAS_DNS_ADDR": {}, "ATLAS_XDS_ADDR": {}, "ATLAS_XDS_CLUSTER": {}, "ATLAS_DNS_ZONE": {}, "ATLAS_DNS_TTL": {}, "ATLAS_TLS_ENABLED": {}, "ATLAS_TLS_CERT_FILE": {},
 	"ATLAS_TLS_KEY_FILE": {}, "ATLAS_TLS_CA_FILE": {}, "ATLAS_TLS_CLIENT_AUTH": {}, "ATLAS_TLS_TERMINATED_UPSTREAM": {},
 	"ATLAS_API_TOKENS": {}, "ATLAS_API_CREDENTIALS": {}, "ATLAS_RATE_LIMIT_RPS": {}, "ATLAS_RATE_LIMIT_BURST": {}, "ATLAS_TRUSTED_PROXIES": {}, "ATLAS_CORS_ORIGINS": {}, "ATLAS_CONSOLE_URL": {}, "ATLAS_ANALYTICS_ENABLED": {}, "ATLAS_TELEMETRY_KEY": {}, "ATLAS_LOCATION": {},
 	"ATLAS_HEALTH_CHECK_INTERVAL": {}, "ATLAS_HEALTH_CHECK_TIMEOUT": {}, "ATLAS_ORPHAN_SERVICE_REAP": {},
@@ -360,6 +366,21 @@ func (c *Config) Validate() error {
 		} else if port, err := strconv.Atoi(portText); err != nil || port < 1 || port > 65535 {
 			add("ATLAS_DNS_ADDR must use a port from 1 to 65535, got %q", c.DNSAddr)
 		}
+	}
+	if c.XDSAddr != "" {
+		host, portText, err := net.SplitHostPort(c.XDSAddr)
+		if err != nil {
+			add("ATLAS_XDS_ADDR: invalid host:port %q", c.XDSAddr)
+		} else if port, err := strconv.Atoi(portText); err != nil || port < 1 || port > 65535 {
+			add("ATLAS_XDS_ADDR must use a port from 1 to 65535, got %q", c.XDSAddr)
+		} else if ip := net.ParseIP(host); c.Env == EnvProduction && (!c.TLS.Enabled || !c.TLS.RequireClientCert) && (ip == nil || !ip.IsLoopback()) {
+			// Envoy's REST xDS client cannot send a bearer token, so the
+			// listener is protected by where it binds or by mutual TLS.
+			add("ATLAS_XDS_ADDR must bind to a loopback IP unless ATLAS_TLS_CLIENT_AUTH requires client certificates, got %q", c.XDSAddr)
+		}
+	}
+	if c.XDSCluster == "" || len(c.XDSCluster) > 128 {
+		add("ATLAS_XDS_CLUSTER must be 1-128 characters")
 	}
 	if c.DNSTTL < time.Second || c.DNSTTL > time.Hour {
 		add("ATLAS_DNS_TTL must be between 1s and 1h")

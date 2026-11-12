@@ -123,6 +123,32 @@ export interface Credential {
   current: boolean;
 }
 
+export type WebhookKind = "member" | "service";
+
+/** An endpoint this node POSTs signed events to. */
+export interface Webhook {
+  id: string;
+  url: string;
+  kinds?: WebhookKind[];
+  service?: string;
+  description?: string;
+  created_at: string;
+  status: {
+    delivered: number;
+    failed: number;
+    dropped: number;
+    pending: number;
+    last_success_at?: string;
+    last_failure_at?: string;
+    last_error?: string;
+  };
+}
+
+export interface WebhookTestResult {
+  delivered: boolean;
+  result: { status_code?: number; error?: string; duration_ms: number };
+}
+
 export interface CreatedCredential {
   credential: Credential;
   token: string;
@@ -336,6 +362,22 @@ export class AtlasClient {
 
   revokeCredential(id: string) {
     return this.json<void>("DELETE", `/v1/admin/credentials/${encodeURIComponent(id)}`);
+  }
+
+  async webhooks(): Promise<Webhook[]> {
+    return (await this.json<{ webhooks: Webhook[] }>("GET", "/v1/admin/webhooks")).webhooks ?? [];
+  }
+
+  createWebhook(input: { url: string; kinds?: WebhookKind[]; service?: string; description?: string }) {
+    return this.json<{ webhook: Webhook; secret: string }>("POST", "/v1/admin/webhooks", { body: input });
+  }
+
+  deleteWebhook(id: string) {
+    return this.json<void>("DELETE", `/v1/admin/webhooks/${encodeURIComponent(id)}`);
+  }
+
+  testWebhook(id: string) {
+    return this.json<WebhookTestResult>("POST", `/v1/admin/webhooks/${encodeURIComponent(id)}/test`);
   }
 
   audit(before?: number, limit = 100) {
