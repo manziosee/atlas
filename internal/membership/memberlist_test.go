@@ -436,6 +436,25 @@ func TestMergePrecedence(t *testing.T) {
 	}
 }
 
+// A refutation must be relayed as the refuted state, never as the stale one at
+// the new incarnation: relaying "dead@6" after hearing "alive@6" is a false
+// death claim that forces the peer to refute again, forever.
+func TestMergeRelaysRefutationNotStaleState(t *testing.T) {
+	for _, stale := range []State{StateSuspect, StateDead} {
+		m := New(testConfig("self", "127.0.0.1:1"), newFakeNet().attach("x"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		m.merge(Member{ID: "p", Addr: "127.0.0.1:2", State: StateAlive, Incarnation: 5})
+		m.merge(Member{ID: "p", Addr: "127.0.0.1:2", State: stale, Incarnation: 5})
+		m.merge(Member{ID: "p", Addr: "127.0.0.1:2", State: StateAlive, Incarnation: 6})
+
+		m.broadcastMu.Lock()
+		queued := m.broadcasts["p"].member
+		m.broadcastMu.Unlock()
+		if queued.Incarnation != 6 || queued.State != StateAlive {
+			t.Fatalf("after refuting %s@5, queued broadcast is %s@%d, want alive@6", stale, queued.State, queued.Incarnation)
+		}
+	}
+}
+
 func TestBroadcastQueueRetransmitsAndPrioritizesUpdates(t *testing.T) {
 	m := New(testConfig("self", "127.0.0.1:1"), newFakeNet().attach("x"), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	first := Member{ID: "first", Addr: "127.0.0.1:2", State: StateAlive, Incarnation: 1}

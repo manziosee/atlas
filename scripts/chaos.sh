@@ -229,7 +229,7 @@ for loss in 10 30; do
   echo "== applying ${loss}% packet loss to atlas-1 for ${IMPAIRMENT_SECONDS}s"
   netem 1 replace dev eth0 root netem loss "${loss}%"
   start=$(date +%s)
-  deadline=$((start + IMPAIRMENT_SECONDS))
+  deadline=$((SECONDS + IMPAIRMENT_SECONDS))
   while (( SECONDS < deadline )); do
     assert_no_dead 8081
     sleep 1
