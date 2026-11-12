@@ -591,6 +591,42 @@ local registry replica; answers converge through Atlas gossip. Set
 `ATLAS_DNS_ZONE=atlas`, and `ATLAS_DNS_TTL=5s` to enable it. Applications can
 use a custom DNS port by pointing a resolver or CoreDNS forward rule at Atlas.
 
+### Envoy (xDS)
+
+A node can act as an Envoy control plane. Set `ATLAS_XDS_ADDR` (for example
+`127.0.0.1:18000`) and the node serves the REST form of xDS v3:
+`POST /v3/discovery:clusters` (CDS) and `POST /v3/discovery:endpoints` (EDS).
+Point Envoy's `cds_config` at it; [`deploy/envoy/envoy.yaml`](deploy/envoy/envoy.yaml)
+is a working bootstrap. Every Atlas service becomes an Envoy cluster of the
+same name, so routes simply name the service.
+
+Each instance becomes an endpoint:
+
+| Atlas | Envoy |
+|-------|-------|
+| Region | Endpoint locality (`region`) |
+| `traffic_weight` | `load_balancing_weight` |
+| Healthy / unknown | `HEALTHY` / `UNKNOWN` (both receive traffic) |
+| Unhealthy / draining | `UNHEALTHY` / `DRAINING` |
+| Owning node not alive | `DEGRADED`, used only when too few healthy endpoints remain |
+| `version`, `metadata`, ID, node | `envoy.lb` filter metadata, for subset load balancing (for example, route a header to `version: 2.0`) |
+
+Envoy requires IP endpoints, so the node resolves hostname addresses when
+serving them and sets the endpoint's `hostname`. Envoy polls every second
+(`refresh_delay` in the generated clusters), so registrations, health changes
+and drains reach Envoy within about a second.
+
+**Security.** Envoy's REST xDS client can't send a bearer token, so the xDS
+listener has no token check:
+
+- **Production:** it must bind to loopback, which suits Envoy running as a
+  sidecar on the same host, unless `ATLAS_TLS_CLIENT_AUTH=true` requires
+  client certificates. The listener uses the node's TLS settings.
+- **Development:** any address is allowed, with a warning in the log.
+
+`ATLAS_XDS_CLUSTER` (default `atlas_xds`) must match the name of the static
+cluster that points Envoy at the node.
+
 ### Python client
 
 The client needs only the standard library and supports bearer auth, custom
@@ -1101,6 +1137,7 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_TLS_ENABLED` | `false` | HTTPS for the API (TLS 1.3). |
 | `ATLAS_GRPC_ADDR` | `0.0.0.0:8082` | gRPC listener using the same TLS and bearer-token settings. |
 | `ATLAS_PPROF_ADDR` | `127.0.0.1:6060` | Local-only Go pprof listener; configuration rejects non-loopback bind addresses. |
+| `ATLAS_XDS_ADDR` / `ATLAS_XDS_CLUSTER` | off / `atlas_xds` | Serve Envoy REST xDS (CDS and EDS) on this address; see [Envoy (xDS)](#envoy-xds). Production requires a loopback bind unless client certificates are required. |
 | `ATLAS_CORS_ORIGINS` | empty (`*` in dev mode) | Browser origins allowed to call the API, such as the Atlas Console's URL: comma-separated `https://host[:port]`, or `*` for any. Tokens are still required and no cookies are used. |
 | `ATLAS_LOCATION` | empty | `latitude,longitude` for the console's cluster map. Unset, the map places the node by its region code (Fly.io, AWS, GCP, Azure). |
 | `ATLAS_CONSOLE_URL` | empty | Where the Atlas Console is hosted. `/` and `/dashboard` redirect there, and the dev-mode banner prints a one-click connect link. |
@@ -1380,6 +1417,10 @@ atlas/
   filtered by kind and service, retried with backoff in per-webhook order,
   with SSRF protections, delivery counters, a test endpoint, console
   management and `VerifyWebhook` in the Go client.
+- [x] **Envoy integration:** nodes serve REST xDS v3 (CDS and EDS), mapping
+  regions, traffic weights, health, draining, dead owners and metadata onto
+  Envoy localities, weights, health statuses and subset metadata; verified
+  against Envoy 1.32.
 - [x] **Phase 5, dashboard foundation:** an authenticated, resumable stream of
   membership and registry events.
 - [x] **Phase 5, Atlas Console:** a separate Next.js app (`atlas-console/`) that
