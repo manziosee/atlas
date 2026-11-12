@@ -808,10 +808,14 @@ func (m *Memberlist) merge(in Member) {
 		return
 	}
 	cur.Incarnation, cur.Addr, cur.Region, cur.APIAddr = in.Incarnation, in.Addr, in.Region, in.APIAddr
-	m.queueBroadcast(*cur)
+	// Apply the new state before queueing. Queueing first would relay the old
+	// state at the new incarnation ("dead@N" after hearing "alive@N"): a false
+	// claim that outranks the refutation and makes the peer refute forever.
 	if in.State != cur.State {
-		m.setState(cur, in.State)
+		m.setState(cur, in.State) // queues the updated record
+		return
 	}
+	m.queueBroadcast(*cur)
 }
 
 func (m *Memberlist) suspect(id string, incarnation uint64) {
