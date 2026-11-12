@@ -205,7 +205,7 @@ func Load(lookup LookupFunc) (*Config, error) {
 		HistoryRetention:        p.duration("ATLAS_HISTORY_RETENTION", 7*24*time.Hour),
 		RoutingStalePolicy:      p.str("ATLAS_ROUTING_STALE_POLICY", string(routing.StalePreferLive)),
 		RoutingLatency:          p.str("ATLAS_ROUTING_LATENCY", string(routing.LatencyNearest)),
-		RoutingLatencyTolerance: p.duration("ATLAS_ROUTING_LATENCY_TOLERANCE", 0),
+		RoutingLatencyTolerance: p.duration("ATLAS_ROUTING_LATENCY_TOLERANCE", routing.DefaultLatencyTolerance),
 
 		LogLevel:  p.str("ATLAS_LOG_LEVEL", "info"),
 		LogFormat: p.str("ATLAS_LOG_FORMAT", "json"),

@@ -460,7 +460,7 @@ decide the rest:
 |--------|-----------------|--------|
 | Stale records: instances whose owning node isn't alive (their process may be gone, but the record lives until the owner returns or is reaped) | `ATLAS_ROUTING_STALE_POLICY` / `?stale=` | `prefer-live` (default): use them only when no live-owner instance exists. `exclude`: never. `include`: treat them like any other. |
 | Latency: measured round-trip time to each owning node | `ATLAS_ROUTING_LATENCY` / `?latency=` | `nearest` (default): only the nearest nodes. `off`: ignore latency. |
-| Latency tolerance | `ATLAS_ROUTING_LATENCY_TOLERANCE` / `?tolerance=` | Nodes within this duration of the nearest count as equally near, so load spreads across them (default `0`). |
+| Latency tolerance | `ATLAS_ROUTING_LATENCY_TOLERANCE` / `?tolerance=` | Nodes within this duration of the nearest count as equally near, so load spreads across them (default `5ms`, which absorbs probe jitter between nodes on one network; `0s` routes strictly to the single nearest). |
 
 A node's own instances always count as nearest. DNS answers follow the same
 stale-record policy.
@@ -1020,7 +1020,7 @@ TLS mode, and timing changes require a restart.
 | `ATLAS_HEALTH_CHECK_INTERVAL` / `_TIMEOUT` | `5s` / `1s` | Default probe interval (a service can set `check_interval_seconds`) and the deadline for each probe. Up to 16 probes run at once. |
 | `ATLAS_ORPHAN_SERVICE_REAP` | `10m` | Delete services whose owning node has been gone this long; `0` disables. Minimum `1m`, so a restarting node keeps its services. |
 | `ATLAS_ROUTING_STALE_POLICY` | `prefer-live` | How lookups and DNS treat instances whose owning node isn't alive: `include`, `prefer-live` or `exclude`. |
-| `ATLAS_ROUTING_LATENCY` / `_TOLERANCE` | `nearest` / `0` | Prefer the nearest measured nodes (`nearest`) or ignore latency (`off`); the tolerance makes nodes this close to the nearest count as equal. |
+| `ATLAS_ROUTING_LATENCY` / `_TOLERANCE` | `nearest` / `5ms` | Prefer the nearest measured nodes (`nearest`) or ignore latency (`off`); the tolerance makes nodes this close to the nearest count as equal. |
 | `ATLAS_HISTORY_RETENTION` | `168h` | How long service change history is kept; `0` turns history off. |
 | `ATLAS_ANALYTICS_ENABLED` | `false` | Accept anonymous usage events from a hosted console at `POST /v1/telemetry/event`. Visitor IDs are stored only as day-scoped hashes; data is capped per day and kept 90 days. |
 | `ATLAS_TELEMETRY_KEY` 🔒 | — | Shared key (32+ characters) that telemetry events must carry. Without it, anyone can submit events and countries are ignored. |

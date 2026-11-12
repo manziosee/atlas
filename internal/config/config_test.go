@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -46,6 +47,21 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Env != EnvDevelopment || cfg.GossipFanout != 3 || len(cfg.GossipKeys) != 1 || cfg.PprofAddr != "127.0.0.1:6060" || cfg.AnalyticsEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+	if cfg.RoutingLatencyTolerance != 5*time.Millisecond {
+		t.Fatalf("default latency tolerance = %v, want 5ms", cfg.RoutingLatencyTolerance)
+	}
+}
+
+func TestLoadStrictLatencyTolerance(t *testing.T) {
+	vars := base()
+	vars["ATLAS_ROUTING_LATENCY_TOLERANCE"] = "0s"
+	cfg, err := Load(env(vars))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RoutingLatencyTolerance != 0 {
+		t.Fatalf("explicit zero tolerance = %v, want 0 (strictly nearest)", cfg.RoutingLatencyTolerance)
 	}
 }
 
