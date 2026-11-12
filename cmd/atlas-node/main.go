@@ -33,6 +33,7 @@ import (
 	"github.com/manziosee/atlas/internal/storage"
 	"github.com/manziosee/atlas/internal/transport"
 	"github.com/manziosee/atlas/internal/version"
+	"github.com/manziosee/atlas/internal/webhooks"
 )
 
 const shutdownTimeout = 15 * time.Second
@@ -149,6 +150,8 @@ func run() error {
 	wg.Go(func() { pruneHistory(ctx, registry, cfg.HistoryRetention, log) })
 	wg.Go(func() { pruneAnalytics(ctx, registry, log) })
 	wg.Go(func() { pruneAudit(ctx, registry, log) })
+	webhookDispatcher := webhooks.New(registry, broker, log.With("component", "webhooks"), webhooks.Options{UserAgent: "Atlas-Webhook/" + version.Version})
+	wg.Go(func() { webhookDispatcher.Run(ctx) })
 	if cfg.AnalyticsEnabled && cfg.TelemetryKey == "" && cfg.Env == config.EnvProduction {
 		log.Warn("telemetry is enabled without ATLAS_TELEMETRY_KEY: anyone can submit events and countries are ignored")
 	}
@@ -175,6 +178,7 @@ func run() error {
 		CORSOrigins:      cfg.CORSOrigins,
 		ConsoleURL:       cfg.ConsoleURL,
 		Location:         apiLocation(cfg.Location),
+		Webhooks:         webhookDispatcher,
 	}
 	wg.Go(func() { reloadConfigLoop(ctx, cfg, keyring, auth, limiter, ml, logLevel, log) })
 	apiSrv := api.NewServer(cfg.HTTPAddr, api.NewHandler(apiDeps))

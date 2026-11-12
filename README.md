@@ -483,6 +483,45 @@ record. A `PATCH` replaces the whole map, like `tags`, and `{}` removes it.
 
 The limits keep a record small enough to travel in ordinary gossip packets.
 
+**Webhooks.** For systems that can't keep an event stream open, a node can
+POST events to an HTTP endpoint (admin scope):
+
+```bash
+curl -X POST -H "Authorization: Bearer $ATLAS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"url":"https://hooks.example.com/atlas","kinds":["service"],"service":"payments"}' \
+  http://127.0.0.1:8081/v1/admin/webhooks
+```
+
+The response includes a signing `secret`, shown only once. Each delivery is the
+same JSON as an `/v1/events` event, with these headers:
+
+- `X-Atlas-Event`: the event type;
+- `X-Atlas-Delivery`: a unique delivery ID;
+- `X-Atlas-Timestamp`: Unix seconds;
+- `X-Atlas-Signature`: `sha256=` and the hex HMAC-SHA256, keyed with the
+  secret, of `<timestamp>.<body>`.
+
+Verify the signature and reject old timestamps. The Go client's
+`atlas.VerifyWebhook` does both.
+
+Delivery behaviour:
+
+- **Retries:** network errors, 5xx, 408 and 429 responses are retried with
+  exponential backoff, up to 8 attempts. Other responses fail the delivery
+  straight away.
+- **Order:** each webhook receives events in order. A slow endpoint never
+  delays other webhooks or the event stream.
+- **Safety:** redirects are not followed, and link-local addresses such as
+  cloud metadata endpoints are refused, even through DNS.
+- **Ownership:** a webhook belongs to the node it was created on, which is the
+  only node that delivers it, so each event arrives once. For redundancy,
+  register the same endpoint on two nodes and deduplicate on the service `id`
+  and `revision`.
+
+`GET /v1/admin/webhooks` shows delivery counters, `POST
+/v1/admin/webhooks/{id}/test` sends a test event, and the console's Node admin
+page manages them.
+
 **History.** Every node records each committed change to a service (registered,
 updated, health, deregistered) with the record as it was afterwards. That
 includes changes learned from peers, and history survives deregistration. It
@@ -1337,6 +1376,10 @@ atlas/
 - [x] **Service metadata:** key/value labels on every instance, replicated
   through gossip within a fixed size budget, filterable in listings and lookups
   (`meta=key:value`), editable in the console and supported by every client.
+- [x] **Webhooks:** signed (HMAC-SHA256) event deliveries to HTTP endpoints,
+  filtered by kind and service, retried with backoff in per-webhook order,
+  with SSRF protections, delivery counters, a test endpoint, console
+  management and `VerifyWebhook` in the Go client.
 - [x] **Phase 5, dashboard foundation:** an authenticated, resumable stream of
   membership and registry events.
 - [x] **Phase 5, Atlas Console:** a separate Next.js app (`atlas-console/`) that

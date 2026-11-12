@@ -279,7 +279,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
-const schemaVersion = 8
+const schemaVersion = 9
 
 // migrations[n] upgrades a database from schema version n-1 to n.
 var migrations = [...]string{
@@ -387,6 +387,17 @@ ALTER TABLE services ADD COLUMN traffic_weight INTEGER NOT NULL DEFAULT 1 CHECK 
 `,
 	8: `
 ALTER TABLE services ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+`,
+	9: `
+CREATE TABLE IF NOT EXISTS webhooks (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  kinds TEXT NOT NULL DEFAULT '[]',
+  service TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
 `,
 }
 

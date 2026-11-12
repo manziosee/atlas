@@ -407,6 +407,95 @@ paths:
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
+  /v1/admin/webhooks:
+    get:
+      tags: [admin]
+      summary: List this node's webhooks and their delivery counters
+      description: >-
+        A webhook belongs to the node it was created on, and only that node
+        delivers it. Signing secrets are never returned here.
+      responses:
+        '200':
+          description: The node's webhooks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  webhooks: { type: array, items: { $ref: '#/components/schemas/Webhook' } }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [admin]
+      summary: Deliver events to an HTTP endpoint
+      description: >-
+        Each matching event is POSTed as JSON, the same shape as /v1/events, with
+        headers X-Atlas-Event, X-Atlas-Delivery, X-Atlas-Timestamp and
+        X-Atlas-Signature: sha256= followed by the hex HMAC-SHA256, keyed with the
+        returned secret, of the timestamp, a dot and the raw body. Failures
+        (network errors, 5xx, 408, 429) are retried with exponential backoff;
+        other responses are not. Redirects are not followed, and link-local
+        addresses such as cloud metadata endpoints are refused. At most 32 per
+        node.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              additionalProperties: false
+              properties:
+                url: { type: string, format: uri, maxLength: 2048, description: 'http:// or https:// endpoint; no credentials or fragment' }
+                kinds: { type: array, items: { type: string, enum: [member, service] }, description: Event kinds to send; empty means both }
+                service: { type: string, description: Only service events for this service name }
+                description: { type: string, maxLength: 256 }
+      responses:
+        '201':
+          description: Created. The secret is shown only in this response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook: { $ref: '#/components/schemas/Webhook' }
+                  secret: { type: string, description: Signing secret; store it now }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /v1/admin/webhooks/{id}:
+    delete:
+      tags: [admin]
+      summary: Stop delivering a webhook
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/admin/webhooks/{id}/test:
+    post:
+      tags: [admin]
+      summary: Send a webhook.test event now, without retries
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The outcome of the test delivery.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivered: { type: boolean }
+                  result:
+                    type: object
+                    properties:
+                      status_code: { type: integer }
+                      error: { type: string }
+                      duration_ms: { type: integer }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /v1/admin/audit:
     get:
       tags: [admin]
@@ -597,6 +686,26 @@ components:
         draining: { type: boolean, description: 'Keep the record but send it no traffic: lookups, DNS and client load balancers skip it.' }
         traffic_weight: { type: integer, minimum: 1, maximum: 1000, default: 1, description: 'Relative traffic share after health, stale, region and latency filtering.' }
         metadata: { $ref: '#/components/schemas/Metadata' }
+    Webhook:
+      type: object
+      properties:
+        id: { type: string }
+        url: { type: string }
+        kinds: { type: array, items: { type: string, enum: [member, service] } }
+        service: { type: string }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+        status:
+          type: object
+          description: Delivery counters since the node started.
+          properties:
+            delivered: { type: integer }
+            failed: { type: integer, description: Events given up on after retries or rejected by the endpoint }
+            dropped: { type: integer, description: Events dropped because the endpoint fell too far behind }
+            pending: { type: integer }
+            last_success_at: { type: string, format: date-time }
+            last_failure_at: { type: string, format: date-time }
+            last_error: { type: string }
     Metadata:
       type: object
       description: >-
