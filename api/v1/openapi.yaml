@@ -259,7 +259,7 @@ paths:
             prefer-live (use them only when no live-owner instance exists), or exclude them.
           schema: { type: string, enum: [include, prefer-live, exclude] }
         - { in: query, name: latency, description: Rank by measured node latency (nearest) or ignore it (off), schema: { type: string, enum: [nearest, off] } }
-        - { in: query, name: tolerance, description: 'With latency=nearest, nodes within this duration of the nearest count as equal, for example 10ms', schema: { type: string } }
+        - { in: query, name: tolerance, description: 'With latency=nearest, nodes within this duration of the nearest count as equal, for example 10ms. Defaults to the node setting (5ms unless configured); 0s means strictly the nearest.', schema: { type: string } }
       responses:
         '200': { $ref: '#/components/responses/Service' }
         '400': { $ref: '#/components/responses/Error' }

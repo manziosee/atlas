@@ -50,8 +50,16 @@ const (
 	LatencyOff LatencyMode = "off"
 )
 
+// DefaultLatencyTolerance is the node default for Policy.Tolerance. Healthy
+// nodes on one network differ by well under a millisecond of probe jitter, so
+// with no tolerance all traffic would go to whichever measured a fraction of a
+// millisecond faster, and could switch between them from one probe to the
+// next. 5ms treats such nodes as equally near while still steering away from
+// a node in another region or one that has become slow.
+const DefaultLatencyTolerance = 5 * time.Millisecond
+
 // Policy configures instance selection. The zero value is StalePreferLive
-// with LatencyNearest and no tolerance.
+// with LatencyNearest and no tolerance (strictly the single nearest).
 type Policy struct {
 	Stale     StalePolicy
 	Latency   LatencyMode

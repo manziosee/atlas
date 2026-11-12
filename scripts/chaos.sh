@@ -258,11 +258,10 @@ start=$(date +%s)
 wait_for_owner chaos-route atlas-2
 echo "   routing moved away from slow atlas-1 after $(( $(date +%s) - start ))s"
 
-# With zero tolerance only the single fastest node is eligible, and once the
-# delay is gone atlas-1 and atlas-2 differ by microseconds of jitter, so either
-# may win. Recovery means atlas-1 is eligible again: with a 50ms tolerance both
-# healthy nodes share traffic as soon as atlas-1's RTT average (which decays
-# by 1/8 per probe) falls back near atlas-2's.
+# Recovery means atlas-1 is eligible again. Its RTT average decays by 1/8 per
+# probe, so after 200ms of delay it takes many probes to fall within the 5ms
+# default of atlas-2; a 50ms tolerance confirms recovery without waiting for
+# the average to settle completely.
 start=$(date +%s)
 netem 1 del dev eth0 root
 wait_for_owner chaos-route atlas-1 "&tolerance=50ms"
