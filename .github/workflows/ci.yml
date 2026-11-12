@@ -65,7 +65,7 @@ jobs:
         run: cat "$RUNNER_TEMP/node.log"
 
   service-examples:
-    name: Go and Python service examples against a live node
+    name: Go, Python and C# service examples against a live node
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -73,9 +73,15 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 8.0.x }
       - name: Start a single development node
         run: ./scripts/start-test-node.sh
-      - name: Run, call, re-register and shut down both examples
+      - name: Run, call, re-register and shut down every example
+        env:
+          ATLAS_EXAMPLES_REQUIRE_DOTNET: "1"
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
         run: bash examples/test.sh
       - name: Node log on failure
         if: failure()
@@ -242,6 +248,36 @@ jobs:
         run: |
           java -version
           mvn -B -ntp test
+      - name: Node log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/node.log"
+
+  csharp-client:
+    name: C# client against a live node
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 8.0.x }
+      - name: Start a single development node
+        run: ./scripts/start-test-node.sh
+      - name: Build, test and pack the C# client
+        working-directory: clients/csharp
+        env:
+          ATLAS_TEST_REQUIRE_LIVE: "1"
+        run: |
+          dotnet --version
+          dotnet test tests/Atlas.Client.Tests -c Release --logger "console;verbosity=normal"
+          dotnet pack src/Atlas.Client -c Release -o "$RUNNER_TEMP/nuget"
+          dotnet pack src/Atlas.Client.DependencyInjection -c Release -o "$RUNNER_TEMP/nuget"
+          ls -l "$RUNNER_TEMP/nuget"
       - name: Node log on failure
         if: failure()
         run: cat "$RUNNER_TEMP/node.log"

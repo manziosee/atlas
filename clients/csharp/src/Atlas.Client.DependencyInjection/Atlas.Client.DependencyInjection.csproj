@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>Atlas.Client.DependencyInjection</RootNamespace>
+
+    <PackageId>Manziosee.Atlas.Client.DependencyInjection</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Atlas contributors</Authors>
+    <Description>Registers the Atlas client with Microsoft.Extensions.DependencyInjection on top of IHttpClientFactory.</Description>
+    <PackageTags>atlas;service-discovery;dependency-injection</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/manziosee/atlas</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/manziosee/atlas</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Atlas.Client\Atlas.Client.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+  </ItemGroup>
+
+</Project>

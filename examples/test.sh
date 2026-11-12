@@ -85,3 +85,21 @@ wait_for_service example-python
 python3 "$ROOT/examples/python/service.py" client | verify_call Python
 force_expire example-python
 stop_and_verify_deregistered example-python
+
+if ! command -v dotnet >/dev/null 2>&1; then
+  if [[ "${ATLAS_EXAMPLES_REQUIRE_DOTNET:-}" == "1" ]]; then
+    echo "dotnet is required for the C# example" >&2
+    exit 1
+  fi
+  echo "skipping C# example: dotnet is not installed"
+  exit 0
+fi
+dotnet build "$ROOT/examples/csharp" -c Release -o "$WORK/example-csharp" -nologo -v quiet
+
+echo "starting C# example"
+dotnet "$WORK/example-csharp/example-csharp.dll" >"$WORK/csharp.log" 2>&1 &
+service_pid=$!
+wait_for_service example-csharp
+dotnet "$WORK/example-csharp/example-csharp.dll" client | verify_call 'C#'
+force_expire example-csharp
+stop_and_verify_deregistered example-csharp

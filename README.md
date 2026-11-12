@@ -674,9 +674,34 @@ atlas.watch("service", "payments", null, true, event -> {
 For a private CA or mutual TLS, pass an `HttpClient` built with your
 `SSLContext`.
 
-### Runnable Go and Python services
+### C# / .NET client
 
-[`examples/go`](examples/go) and [`examples/python`](examples/python) show a
+[`clients/csharp`](clients/csharp) targets .NET 8 and uses only `HttpClient`
+and `System.Text.Json`. Every call is async and takes a `CancellationToken`,
+and the event stream is an `IAsyncEnumerable<AtlasEvent>` that reconnects and
+resumes on its own. An optional package registers the client with
+`IHttpClientFactory` (`services.AddAtlasClient(...)`).
+
+```csharp
+using var atlas = new AtlasClient("https://atlas.example:8080", Environment.GetEnvironmentVariable("ATLAS_TOKEN")!);
+var me = await atlas.RegisterAsync(new ServiceSpec("payments", "10.0.0.7:8443") { TtlSeconds = 15 },
+    idempotencyKey: "payments-" + Environment.MachineName);
+await atlas.HeartbeatAsync(me.Id);
+
+var instance = await atlas.LookupAsync("payments", new LookupOptions { Region = "eu", Stale = "exclude" });
+await foreach (var change in atlas.WatchAsync(new WatchOptions { Kinds = "service", Service = "payments" }, ct))
+{
+    Console.WriteLine($"{change.Type} {change.Service?.Address}");
+}
+```
+
+For a private CA or mutual TLS, pass a `SocketsHttpHandler` configured with your
+certificates. See [`clients/csharp/README.md`](clients/csharp/README.md).
+
+### Runnable Go, Python and C# services
+
+[`examples/go`](examples/go), [`examples/python`](examples/python) and
+[`examples/csharp`](examples/csharp) show a
 service registering itself with a hostname-based idempotency key, refreshing
 its 15-second TTL every five seconds, re-registering after an expired record,
 and deregistering on shutdown. Each also includes a client command that looks
@@ -717,8 +742,16 @@ set +a
 python3 examples/python/service.py client
 ```
 
-Press Ctrl-C to stop the service cleanly. The examples require only Go and
-Python standard libraries, and CI runs both against a live Atlas node.
+The C# example is an ASP.NET Core app built on the .NET client; it needs the
+.NET 8 SDK:
+
+```bash
+ATLAS_ADDR=http://127.0.0.1:8081 dotnet run --project examples/csharp
+ATLAS_ADDR=http://127.0.0.1:8081 dotnet run --project examples/csharp -- client
+```
+
+Press Ctrl-C to stop a service cleanly. The Go and Python examples need only
+their standard libraries, and CI runs all three against a live Atlas node.
 
 For a fully containerized run, the optional Compose profile gives the service
 an address other containers can reach:
@@ -1179,7 +1212,8 @@ atlas/
 ├── clients/python/         # Python client (sync + asyncio) and its live-node tests
 ├── clients/node/           # TypeScript client for Node.js 20+, no runtime dependencies
 ├── clients/java/           # Java 17+ client on java.net.http, no runtime dependencies
-├── examples/               # runnable Go and Python services registered with Atlas
+├── clients/csharp/         # .NET 8 client on HttpClient, plus optional DI integration
+├── examples/               # runnable Go, Python and C# services registered with Atlas
 ├── pkg/atlas/              # public Go HTTP client
 ├── cmd/
 │   ├── atlas-node/         # the node daemon, TTL expiry and orphan reaper loops
@@ -1263,6 +1297,11 @@ atlas/
   dependencies, tested against a live node in CI; a service-history API
   (`/v1/services/{id}/history`, `/v1/history`, gRPC `GetServiceHistory`); and
   configurable stale-record and latency-routing policies, per node and per lookup.
+- [x] **Adoption follow-up:** a C# / .NET 8 client (`clients/csharp`) on
+  `HttpClient` and `System.Text.Json`, with async calls, an `IAsyncEnumerable`
+  event stream that resumes after drops, admin operations, optional
+  `IHttpClientFactory` registration and a runnable ASP.NET Core example, tested
+  against a live node in CI.
 - [x] **Adoption follow-up:** zero-setup dev mode (`docker run` prints a token
   and dashboard link), an `:edge` image from `main`, and `atlas-agent`, which
   registers Docker containers from `atlas.*` labels with health, draining and
