@@ -12,11 +12,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@netlify/blobs": "^11.1.6",
+    "@netlify/blobs": "^11.1.7",
     "@radix-ui/react-dialog": "^1.1.15",
     "d3-geo": "^3.1.1",
-    "lucide-react": "^1.61.0",
-    "marked": "^18.1.1",
+    "lucide-react": "^1.66.0",
+    "marked": "^18.1.2",
     "next": "16.4.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -28,7 +28,7 @@
     "@netlify/functions": "^6.0.3",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/d3-geo": "^3.1.1",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/topojson-client": "^3.1.5",
