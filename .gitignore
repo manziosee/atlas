@@ -43,3 +43,8 @@ clients/csharp/**/bin/
 clients/csharp/**/obj/
 examples/csharp/bin/
 examples/csharp/obj/
+
+# Python packaging output
+*.egg-info/
+clients/python/dist/
+clients/python/build/

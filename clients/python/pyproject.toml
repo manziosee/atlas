@@ -1,14 +1,30 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-service-discovery"
-version = "0.2.0"
+version = "0.1.0"
 description = "Python client for the Atlas service registry"
+readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+authors = [{ name = "Manzi Osee" }]
+keywords = ["service-discovery", "service-registry", "atlas", "load-balancing"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Distributed Computing",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/manziosee/atlas"
+Documentation = "https://atlas-console.netlify.app/docs"
+Source = "https://github.com/manziosee/atlas/tree/main/clients/python"
+Issues = "https://github.com/manziosee/atlas/issues"
 
 [tool.setuptools]
 packages = ["atlas"]
