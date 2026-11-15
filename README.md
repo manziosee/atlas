@@ -1499,6 +1499,10 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). Architecture changes need an
 [ADR](docs/adr/0000-template.md). Report security issues privately: see
 [SECURITY.md](SECURITY.md).
 
+Changes are listed in [CHANGELOG.md](CHANGELOG.md), and
+[RELEASING.md](RELEASING.md) explains how releases and client packages are
+published.
+
 ## License
 
 [Apache 2.0](LICENSE)

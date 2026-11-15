@@ -18,8 +18,9 @@
     }
   },
   "files": [
-    "dist/index.js",
-    "dist/index.d.ts"
+    "README.md",
+    "dist/index.d.ts",
+    "dist/index.js"
   ],
   "engines": {
     "node": ">=20"
@@ -31,5 +32,20 @@
   "devDependencies": {
     "@types/node": "26.6.6",
     "typescript": "7.0.2"
+  },
+  "homepage": "https://github.com/manziosee/atlas/tree/main/clients/node#readme",
+  "bugs": {
+    "url": "https://github.com/manziosee/atlas/issues"
+  },
+  "keywords": [
+    "service-discovery",
+    "service-registry",
+    "atlas",
+    "load-balancing",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
