@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}", persist-credentials: false }
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - name: Build
         working-directory: clients/python
@@ -64,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}", persist-credentials: false }
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -110,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}", persist-credentials: false }
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
